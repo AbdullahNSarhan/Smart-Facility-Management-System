@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LCI-SFM Air-Gapped Command &amp; Control Dashboard</title>
+  <!-- Air-Gapped Local Stylesheet -->
+  <link rel="stylesheet" href="/standalone/styles.css" />
+</head>
+<body>
+  <!-- Fixed Sidebar Navigation -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">LCI-SFM Facility Control</div>
+    <nav class="sidebar-nav">
+      <button class="nav-btn active" data-view="view-1">01. Main Command Center</button>
+      <button class="nav-btn" data-view="view-2">02. Smart Access &amp; Biometrics</button>
+      <button class="nav-btn" data-view="view-3">03. Environmental Monitoring</button>
+      <button class="nav-btn" data-view="view-4">04. Audit Logs &amp; DB Explorer</button>
+      <button class="nav-btn" data-view="view-5">05. System Health &amp; Diagnostics</button>
+      <button class="nav-btn" data-view="view-6">06. System Management</button>
+    </nav>
+  </aside>
+
+  <!-- Main Viewport -->
+  <div class="main-shell">
+    <header class="top-bar">
+      <span class="tabular-nums">LCI-SFM // NODE-RED AIR-GAPPED BUS (192.168.10.2:1880)</span>
+      <button class="btn-action btn-cyber" id="open-ip-modal-btn">Configure Node IPs</button>
+    </header>
+
+    <!-- View 1: Main Command Center -->
+    <section id="view-1" class="view-container active">
+      <div id="global-status-banner" class="status-banner">
+        <strong>GLOBAL FACILITY STATUS: NOMINAL</strong>
+        <span class="tabular-nums" id="banner-smoke-readout">SMOKE/GAS: 118 PPM</span>
+      </div>
+      <div class="grid-3">
+        <div class="glass-card">
+          <div>Door State (Reed Switch)</div>
+          <h2 class="tabular-nums" id="snap-door-state">CLOSED</h2>
+        </div>
+        <div class="glass-card">
+          <div>LDR Light State &amp; HVAC Fan Relay</div>
+          <h2 class="tabular-nums"><span id="snap-light-state">ON</span> / <span id="snap-fan-relay">ON</span></h2>
+        </div>
+        <div class="glass-card">
+          <div>Temperature &amp; Humidity</div>
+          <h2 class="tabular-nums"><span id="snap-temp">22.4</span>°C · <span id="snap-hum">46.0</span>%</h2>
+        </div>
+      </div>
+    </section>
+
+    <!-- View 2: Smart Access & Biometrics -->
+    <section id="view-2" class="view-container">
+      <div class="grid-2">
+        <div class="glass-card">
+          <h3>2-out-of-3 MFA Live Tracker</h3>
+          <p class="tabular-nums" id="mfa-status-label">STATUS: IDLE</p>
+        </div>
+        <div class="glass-card">
+          <h3>Biometric Camera Feed (ip_node3)</h3>
+          <img id="biometric-camera-feed" alt="Biometric Node 3 Feed" referrerPolicy="no-referrer" />
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Startup Dynamic IP Configuration Modal -->
+  <div id="startup-ip-modal" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <h3>Initial Node IP Configuration</h3>
+      <p>Configure air-gapped LCI-SFM subsystem endpoints in localStorage:</p>
+      <form id="startup-ip-form">
+        <label>Access Node (ip_node1)</label>
+        <input type="text" id="input-ip-node1" value="192.168.10.11" required />
+        <label>Environment Node (ip_node2)</label>
+        <input type="text" id="input-ip-node2" value="192.168.10.12" required />
+        <label>Face Recognition Node (ip_node3)</label>
+        <input type="text" id="input-ip-node3" value="192.168.10.13" required />
+        <button type="submit" class="btn-action btn-cyber">Save to localStorage</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Local Air-Gapped ES6 Modules -->
+  <script type="module" src="/standalone/app.js"></script>
+</body>
+</html>
