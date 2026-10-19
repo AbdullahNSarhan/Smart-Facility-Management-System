@@ -1,24 +1,20 @@
 /**
- * LCI-SFM Air-Gapped Smart Facility Management — Modular Vanilla ES6 Logic
- * Includes:
- * 1. Light/Dark Theme Toggle with localStorage persistence
- * 2. Soft/Muted Color Palette (Soft Mint, Soft Coral, Slate Blue-Gray)
- * 3. Vanilla Toast Notification System (Stacked, 3-second auto-dismiss)
- * 4. Anti-Spam Quick Action Buttons (1.5-second disabled + CSS loading spinner)
- * 5. Collapsible Sidebar with smooth layout & chart expansion
- * Strict Global Variable & JSON Naming per Node-RED Specification
+ * LCI-SFM Air-Gapped Smart Facility Management — Final Production ES6 Module
+ * Strictly connected to live WebSockets (ws://192.168.10.2:1880/ws/telemetry & /ws/mfa)
+ * and HTTP REST APIs (http://192.168.10.2:1880/api/...).
+ * Zero mock generators, zero fake fallbacks, zero console debugging clutter.
  */
 import { LocalFIFOChart } from './chart.local.js';
 
 // ============================================================================
 // 1. STRICT GLOBAL VARIABLES (Node-RED Backend Contract)
 // ============================================================================
-export let temperature = 22.4;
-export let humidity = 46.0;
-export let smoke_gas_level = 118;
-export let light_state = 'ON';
+export let temperature = 0;
+export let humidity = 0;
+export let smoke_gas_level = 0;
+export let light_state = 'OFF';
 export let door_state = 'CLOSED';
-export let fan_relay = 'ON';
+export let fan_relay = 'OFF';
 
 export let isFacePassed = false;
 export let isCardPassed = false;
@@ -35,13 +31,19 @@ export let ip_node2 = localStorage.getItem('ip_node2') || '';
 export let ip_node3 = localStorage.getItem('ip_node3') || '';
 
 const CENTRAL_SERVER = '192.168.10.2:1880';
+const SMOKE_DANGER_THRESHOLD = 400;
+
 let mfaCountdownTimer = null;
 let mfaSecondsRemaining = 10;
 let tempChartInstance = null;
 let smokeChartInstance = null;
+let activeAuditTable = 'access_logs';
+let activityHistory = [];
+let wsOnline = false;
+let lastWsPingTime = '--:--:--';
 
 // ============================================================================
-// 2. FEATURE 1: LIGHT / DARK MODE TOGGLE (CSS Variables + localStorage)
+// 2. LIGHT / DARK MODE TOGGLE (CSS Variables + localStorage)
 // ============================================================================
 export function initThemeToggle() {
   const savedTheme = localStorage.getItem('lci_theme') || 'dark';
@@ -54,7 +56,7 @@ export function initThemeToggle() {
       const next = current === 'dark' ? 'light' : 'dark';
       applyTheme(next);
       localStorage.setItem('lci_theme', next);
-      showToast(`Switched to ${next === 'dark' ? 'Dark' : 'Light'} Mode`, 'info');
+      showToast(`Theme switched to ${next === 'dark' ? 'Dark' : 'Light'} Mode`, 'info');
     });
   }
 }
@@ -68,7 +70,7 @@ export function applyTheme(theme) {
 }
 
 // ============================================================================
-// 3. FEATURE 3: VANILLA TOAST NOTIFICATION SYSTEM (Stacked, 3s Auto-Dismiss)
+// 3. VANILLA TOAST NOTIFICATION SYSTEM (Stacked, 3s Auto-Dismiss)
 // ============================================================================
 export function showToast(message, type = 'info', durationMs = 3000) {
   const container = document.getElementById('toast-container');
@@ -89,7 +91,7 @@ export function showToast(message, type = 'info', durationMs = 3000) {
       <span style="width: 8px; height: 8px; border-radius: 50%; background: ${indicatorColor}; flex-shrink: 0;"></span>
       <span>${message}</span>
     </div>
-    <span class="tabular-nums" style="font-size: 0.7rem; color: var(--text-secondary);">3.0s</span>
+    <span class="tabular-nums text-secondary" style="font-size: 0.7rem;">3.0s</span>
   `;
 
   container.appendChild(toast);
@@ -103,7 +105,7 @@ export function showToast(message, type = 'info', durationMs = 3000) {
 }
 
 // ============================================================================
-// 4. FEATURE 4: BUTTON LOADING STATES (1.5s Anti-Spam + Pure CSS Spinner)
+// 4. BUTTON LOADING STATES (1.5s Anti-Spam Lock + Pure CSS Spinner)
 // ============================================================================
 export function withButtonLoading(buttonEl, actionCallback, durationMs = 1500) {
   if (!buttonEl || buttonEl.disabled) return;
@@ -113,7 +115,7 @@ export function withButtonLoading(buttonEl, actionCallback, durationMs = 1500) {
   buttonEl.classList.add('is-loading');
 
   const labelEl = buttonEl.querySelector('.btn-label');
-  const labelText = labelEl ? labelEl.textContent : 'Processing';
+  const labelText = labelEl ? labelEl.textContent : 'Executing';
 
   buttonEl.innerHTML = `
     <span style="display: inline-flex; align-items: center; gap: 8px;">
@@ -136,7 +138,7 @@ export function withButtonLoading(buttonEl, actionCallback, durationMs = 1500) {
 }
 
 // ============================================================================
-// 5. FEATURE 5: COLLAPSIBLE SIDEBAR (Smooth Content & Chart Expansion)
+// 5. COLLAPSIBLE SIDEBAR
 // ============================================================================
 export function initCollapsibleSidebar() {
   const sidebar = document.getElementById('app-sidebar');
@@ -159,7 +161,6 @@ export function initCollapsibleSidebar() {
       if (toggleLabel) {
         toggleLabel.textContent = isCollapsed ? 'Expand Menu' : 'Collapse Menu';
       }
-      // Redraw charts after sidebar transition so canvas fills expanded width
       setTimeout(() => {
         if (tempChartInstance) tempChartInstance.render();
         if (smokeChartInstance) smokeChartInstance.render();
@@ -182,10 +183,11 @@ export function checkDynamicIpSetup() {
   } else {
     if (modal) modal.classList.add('hidden');
     syncNodeIpInputs();
+    updateCameraFeedSource();
   }
 }
 
-export function saveNodeIps(n1, n2, n3) {
+export async function saveNodeIps(n1, n2, n3) {
   ip_node1 = n1.trim();
   ip_node2 = n2.trim();
   ip_node3 = n3.trim();
@@ -193,14 +195,20 @@ export function saveNodeIps(n1, n2, n3) {
   localStorage.setItem('ip_node2', ip_node2);
   localStorage.setItem('ip_node3', ip_node3);
   syncNodeIpInputs();
+  updateCameraFeedSource();
+  renderHeartbeatGrid();
 
-  fetch(`http://${CENTRAL_SERVER}/api/config/nodes`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ip_node1, ip_node2, ip_node3 }),
-  }).catch(() => {});
-
-  showToast(`Saved Node IPs (${ip_node1}, ${ip_node2}, ${ip_node3})`, 'success');
+  try {
+    const res = await fetch(`http://${CENTRAL_SERVER}/api/config/nodes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip_node1, ip_node2, ip_node3 }),
+    });
+    if (!res.ok) throw new Error('HTTP status ' + res.status);
+    showToast('Node IPs saved to localStorage and synced with Node-RED', 'success');
+  } catch (_) {
+    showToast('Saved Node IPs to localStorage (Node-RED server unreachable)', 'error');
+  }
 }
 
 function syncNodeIpInputs() {
@@ -212,28 +220,58 @@ function syncNodeIpInputs() {
   if (f3) f3.value = ip_node3;
 }
 
+function updateCameraFeedSource() {
+  const imgEl = document.getElementById('biometric-camera-feed');
+  if (imgEl && ip_node3) {
+    imgEl.src = `http://${ip_node3}/capture?ts=${Date.now()}`;
+  }
+}
+
 // ============================================================================
-// 7. WEBSOCKET REAL-TIME STREAMS (ws://192.168.10.2:1880/ws/telemetry & /ws/mfa)
+// 7. LIVE WEBSOCKETS (ws://192.168.10.2:1880/ws/telemetry & /ws/mfa)
 // ============================================================================
 export function connectWebSockets() {
   try {
     const wsTelemetry = new WebSocket(`ws://${CENTRAL_SERVER}/ws/telemetry`);
+    wsTelemetry.onopen = () => {
+      wsOnline = true;
+      lastWsPingTime = new Date().toLocaleTimeString('en-GB', { hour12: false });
+      updateConnectionIndicators();
+      showToast('Connected to Node-RED Telemetry WebSocket', 'success');
+    };
     wsTelemetry.onmessage = (event) => {
+      wsOnline = true;
+      lastWsPingTime = new Date().toLocaleTimeString('en-GB', { hour12: false });
       const payload = JSON.parse(event.data);
       handleTelemetryPayload(payload);
     };
+    wsTelemetry.onerror = () => {
+      wsOnline = false;
+      updateConnectionIndicators();
+      showToast('WebSocket connection error (ws://192.168.10.2:1880/ws/telemetry)', 'error');
+    };
+    wsTelemetry.onclose = () => {
+      wsOnline = false;
+      updateConnectionIndicators();
+    };
   } catch (_) {
-    // Fallback to local air-gapped state when offline
+    wsOnline = false;
+    updateConnectionIndicators();
+    showToast('Unable to initialize Telemetry WebSocket', 'error');
   }
 
   try {
     const wsMfa = new WebSocket(`ws://${CENTRAL_SERVER}/ws/mfa`);
     wsMfa.onmessage = (event) => {
+      lastWsPingTime = new Date().toLocaleTimeString('en-GB', { hour12: false });
       const payload = JSON.parse(event.data);
       handleMfaPayload(payload);
     };
+    wsMfa.onerror = () => {
+      showToast('MFA WebSocket connection failed (ws://192.168.10.2:1880/ws/mfa)', 'error');
+    };
   } catch (_) {
-    // Fallback to local air-gapped state when offline
+    showToast('Unable to initialize MFA WebSocket', 'error');
   }
 }
 
@@ -249,7 +287,9 @@ export function handleTelemetryPayload(payload) {
   if (tempChartInstance) tempChartInstance.pushDataPoint(ts, temperature);
   if (smokeChartInstance) smokeChartInstance.pushDataPoint(ts, smoke_gas_level);
 
+  pushActivityEvent(`Telemetry update: ${temperature.toFixed(1)}°C, ${humidity.toFixed(1)}%, Gas ${smoke_gas_level} PPM`);
   updateDashboardDom();
+
   Object.assign(window, {
     temperature,
     humidity,
@@ -272,23 +312,22 @@ export function handleMfaPayload(payload) {
   } else if (passedCount === 1) {
     mfa_status = 'AWAITING_STAGE2';
     startMfaCountdown();
+    pushActivityEvent('MFA Stage 1 Passed — Awaiting Stage 2 (10s window)');
     showToast('Stage 1 Verified — 10s Stage 2 countdown started', 'info');
   } else if (passedCount >= 2) {
     mfa_status = 'UNLOCKED';
     door_state = 'OPEN';
     clearInterval(mfaCountdownTimer);
-    showToast('2-of-3 MFA Passed — Solenoid Lock UNLOCKED', 'success');
+    pushActivityEvent('2-of-3 MFA Verified — Solenoid Lock UNLOCKED');
+    showToast('2-of-3 MFA Verified — Solenoid Lock UNLOCKED', 'success');
   }
 
   if (payload.mfa_status) {
     mfa_status = payload.mfa_status;
   }
 
-  if (isFacePassed && ip_node3) {
-    const imgEl = document.getElementById('biometric-camera-feed');
-    if (imgEl) {
-      imgEl.src = `http://${ip_node3}/capture?ts=${Date.now()}`;
-    }
+  if (isFacePassed) {
+    updateCameraFeedSource();
   }
 
   updateDashboardDom();
@@ -300,12 +339,14 @@ function startMfaCountdown() {
   mfaSecondsRemaining = 10;
   mfaCountdownTimer = setInterval(() => {
     mfaSecondsRemaining -= 1;
+    updateDashboardDom();
     if (mfaSecondsRemaining <= 0) {
       clearInterval(mfaCountdownTimer);
       isFacePassed = false;
       isCardPassed = false;
       isPinPassed = false;
       mfa_status = 'IDLE';
+      pushActivityEvent('MFA Stage 2 (10s) expired — Reset to IDLE');
       showToast('MFA Stage 2 (10s) expired — Reset to IDLE', 'error');
       updateDashboardDom();
     }
@@ -317,30 +358,140 @@ function startMfaCountdown() {
 // ============================================================================
 export async function fetchSqliteLogs() {
   const tables = ['access_logs', 'environmental_telemetry', 'camera_events', 'system_errors'];
+  let failed = false;
+
   for (const table of tables) {
     try {
       const res = await fetch(`http://${CENTRAL_SERVER}/api/logs/${table}`);
-      if (res.ok) {
-        const rows = await res.json();
-        if (table === 'access_logs') access_logs = rows;
-        if (table === 'environmental_telemetry') environmental_telemetry = rows;
-        if (table === 'camera_events') camera_events = rows;
-        if (table === 'system_errors') system_errors = rows;
-      }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const rows = await res.json();
+      if (table === 'access_logs') access_logs = Array.isArray(rows) ? rows : [];
+      if (table === 'environmental_telemetry') environmental_telemetry = Array.isArray(rows) ? rows : [];
+      if (table === 'camera_events') camera_events = Array.isArray(rows) ? rows : [];
+      if (table === 'system_errors') system_errors = Array.isArray(rows) ? rows : [];
     } catch (_) {
-      // Offline air-gapped state preserved
+      failed = true;
     }
   }
+
+  if (failed) {
+    showToast('SQLite REST API unreachable (http://192.168.10.2:1880/api/logs/...)', 'error');
+  }
+
+  renderAuditTable();
+  renderSystemErrorsTable();
+  Object.assign(window, { access_logs, environmental_telemetry, camera_events, system_errors });
+}
+
+function pushActivityEvent(text) {
+  const ts = new Date().toLocaleTimeString('en-GB', { hour12: false });
+  activityHistory = [{ ts, text }, ...activityHistory.slice(0, 4)];
+  const listEl = document.getElementById('live-activity-list');
+  if (!listEl) return;
+  listEl.innerHTML = activityHistory
+    .map((item) => `<li class="tabular-nums">[${item.ts}] ${item.text}</li>`)
+    .join('');
+}
+
+function updateConnectionIndicators() {
+  const statusEl = document.getElementById('ws-sidebar-status');
+  if (statusEl) {
+    statusEl.textContent = wsOnline ? 'ONLINE' : 'OFFLINE';
+    statusEl.className = wsOnline ? 'text-mint' : 'text-coral';
+  }
+  renderHeartbeatGrid();
+}
+
+function renderHeartbeatGrid() {
+  const grid = document.getElementById('heartbeat-grid');
+  if (!grid) return;
+  const nodes = [
+    { name: 'Central Node-RED Server', ip: CENTRAL_SERVER },
+    { name: 'Node 1 (Access)', ip: ip_node1 || 'Unconfigured' },
+    { name: 'Node 2 (Environment)', ip: ip_node2 || 'Unconfigured' },
+    { name: 'Node 3 (Face Biometrics)', ip: ip_node3 || 'Unconfigured' },
+  ];
+  grid.innerHTML = nodes
+    .map(
+      (n) => `
+      <div class="glass-card">
+        <div class="card-label">${n.name}</div>
+        <div class="${wsOnline ? 'text-mint' : 'text-coral'}" style="font-weight: 700;">
+          ${wsOnline ? 'ONLINE' : 'OFFLINE'}
+        </div>
+        <div class="text-secondary" style="font-size: 0.75rem; margin-top: 4px;">
+          IP: ${n.ip} · Last Ping: ${lastWsPingTime}
+        </div>
+      </div>`
+    )
+    .join('');
+}
+
+function renderAuditTable() {
+  const tbody = document.getElementById('audit-table-body');
+  if (!tbody) return;
+  const query = (document.getElementById('audit-search-input')?.value || '').toLowerCase();
+  const source =
+    activeAuditTable === 'access_logs'
+      ? access_logs
+      : activeAuditTable === 'camera_events'
+      ? camera_events
+      : environmental_telemetry;
+
+  const filtered = source.filter((row) => JSON.stringify(row).toLowerCase().includes(query));
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" class="text-secondary">No records in ${activeAuditTable}.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered
+    .slice(0, 15)
+    .map((row) => {
+      const ts = row.timestamp || '--';
+      const col2 = row.user_name || row.subject_name || `Temp: ${row.temperature ?? '--'}°C`;
+      const col3 = row.mfa_status || row.event_type || `Gas: ${row.smoke_gas_level ?? '--'} PPM`;
+      const col4 = row.node_ip || '--';
+      return `<tr><td>${ts}</td><td>${col2}</td><td>${col3}</td><td>${col4}</td></tr>`;
+    })
+    .join('');
+}
+
+function renderSystemErrorsTable() {
+  const tbody = document.getElementById('system-errors-body');
+  if (!tbody) return;
+  if (system_errors.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" class="text-secondary">No system errors reported.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = system_errors
+    .map(
+      (err) =>
+        `<tr><td>${err.timestamp || '--'}</td><td class="text-coral">${err.error_code || '--'}</td><td>${
+          err.subsystem || '--'
+        }</td><td>${err.message || '--'}</td></tr>`
+    )
+    .join('');
 }
 
 function updateDashboardDom() {
+  const isEmergency = smoke_gas_level >= SMOKE_DANGER_THRESHOLD;
+  const bannerEl = document.getElementById('global-status-banner');
+  const bannerTitle = document.getElementById('global-status-title');
+  const bannerSmoke = document.getElementById('banner-smoke-readout');
+
+  if (bannerEl) bannerEl.classList.toggle('emergency', isEmergency);
+  if (bannerTitle) {
+    bannerTitle.textContent = isEmergency
+      ? 'GLOBAL FACILITY STATUS: EMERGENCY ALERT'
+      : 'GLOBAL FACILITY STATUS: NORMAL OPERATION';
+  }
+  if (bannerSmoke) bannerSmoke.textContent = `SMOKE/GAS: ${smoke_gas_level} PPM`;
+
   const doorEl = document.getElementById('snap-door-state');
   const lightEl = document.getElementById('snap-light-state');
   const fanEl = document.getElementById('snap-fan-relay');
   const tempEl = document.getElementById('snap-temp');
   const humEl = document.getElementById('snap-hum');
-  const btnFanState = document.getElementById('btn-fan-state');
-  const btnLightState = document.getElementById('btn-light-state');
 
   if (doorEl) {
     doorEl.textContent = door_state;
@@ -356,21 +507,63 @@ function updateDashboardDom() {
   }
   if (tempEl) tempEl.textContent = `${temperature.toFixed(1)}°C`;
   if (humEl) humEl.textContent = `${humidity.toFixed(1)}%`;
+
+  const btnFanState = document.getElementById('btn-fan-state');
+  const btnLightState = document.getElementById('btn-light-state');
   if (btnFanState) btnFanState.textContent = fan_relay;
   if (btnLightState) btnLightState.textContent = light_state;
+
+  // View 2 Access & MFA DOM
+  const reedEl = document.getElementById('access-reed-state');
+  const solEl = document.getElementById('access-solenoid-state');
+  const mfaLabel = document.getElementById('mfa-status-label');
+  const mfaBar = document.getElementById('mfa-progress-bar');
+  const chkFace = document.getElementById('chk-face');
+  const chkCard = document.getElementById('chk-card');
+  const chkPin = document.getElementById('chk-pin');
+
+  if (reedEl) reedEl.textContent = door_state;
+  if (solEl) solEl.textContent = mfa_status === 'UNLOCKED' ? 'UNLOCKED' : 'LOCKED';
+  if (mfaLabel) {
+    mfaLabel.textContent =
+      mfa_status === 'AWAITING_STAGE2'
+        ? `mfa_status: AWAITING_STAGE2 · Countdown: ${mfaSecondsRemaining}s`
+        : `mfa_status: ${mfa_status}`;
+  }
+  if (mfaBar) {
+    const passed = [isFacePassed, isCardPassed, isPinPassed].filter(Boolean).length;
+    mfaBar.style.transform = `scaleX(${Math.min(1, passed / 2)})`;
+  }
+  if (chkFace) chkFace.textContent = `isFacePassed: ${isFacePassed}`;
+  if (chkCard) chkCard.textContent = `isCardPassed: ${isCardPassed}`;
+  if (chkPin) chkPin.textContent = `isPinPassed: ${isPinPassed}`;
+
+  // View 3 Gauges
+  const gTemp = document.getElementById('gauge-temp');
+  const gHum = document.getElementById('gauge-hum');
+  const gSmoke = document.getElementById('gauge-smoke');
+  if (gTemp) gTemp.textContent = `${temperature.toFixed(1)}°C`;
+  if (gHum) gHum.textContent = `${humidity.toFixed(1)}%`;
+  if (gSmoke) {
+    gSmoke.textContent = `${smoke_gas_level} PPM`;
+    gSmoke.className = `tabular-nums ${isEmergency ? 'text-coral' : 'text-mint'}`;
+  }
 }
 
 // ============================================================================
-// 9. DOM BOOTSTRAP & EVENT WIRING
+// 9. PRODUCTION DOM BOOTSTRAP
 // ============================================================================
 document.addEventListener('DOMContentLoaded', () => {
   initThemeToggle();
   initCollapsibleSidebar();
   checkDynamicIpSetup();
+  renderHeartbeatGrid();
   connectWebSockets();
   fetchSqliteLogs();
 
-  // Initialize Soft UI Charts (Soft Blue & Soft Mint)
+  // 5-second WebSocket heartbeat status refresh
+  setInterval(renderHeartbeatGrid, 5000);
+
   const tempCanvas = document.getElementById('chart-temperature');
   if (tempCanvas) {
     tempChartInstance = new LocalFIFOChart(tempCanvas, {
@@ -378,10 +571,8 @@ document.addEventListener('DOMContentLoaded', () => {
       label: 'Temperature',
       unit: '°C',
       color: '#60a5fa',
-      minY: 10,
-      maxY: 45,
-      initialLabels: ['05:00', '05:01', '05:02', '05:03'],
-      initialData: [22.1, 22.3, 22.5, 22.4],
+      minY: 0,
+      maxY: 50,
     });
   }
 
@@ -392,15 +583,13 @@ document.addEventListener('DOMContentLoaded', () => {
       label: 'Smoke/Gas',
       unit: ' PPM',
       color: '#34d399',
-      dangerThreshold: 400,
+      dangerThreshold: SMOKE_DANGER_THRESHOLD,
       minY: 0,
-      maxY: 700,
-      initialLabels: ['05:00', '05:01', '05:02', '05:03'],
-      initialData: [115, 118, 120, 118],
+      maxY: 1000,
     });
   }
 
-  // Sidebar View Switching
+  // Sidebar Navigation
   document.querySelectorAll('.nav-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.nav-btn').forEach((b) => b.classList.remove('active'));
@@ -412,19 +601,35 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Feature 4: Anti-Spam Quick Action Buttons with 1.5s Spinner + Toast Feedback
+  // Audit Table Tabs & Search
+  document.querySelectorAll('.tab-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeAuditTable = btn.getAttribute('data-table') || 'access_logs';
+      renderAuditTable();
+    });
+  });
+
+  document.getElementById('audit-search-input')?.addEventListener('input', renderAuditTable);
+  document.getElementById('btn-refresh-logs')?.addEventListener('click', fetchSqliteLogs);
+
+  // Quick Action Buttons (1.5s Anti-Spam + Live HTTP POST)
   const btnEmergency = document.getElementById('btn-emergency-unlock');
   if (btnEmergency) {
     btnEmergency.addEventListener('click', () => {
       withButtonLoading(btnEmergency, async () => {
-        door_state = 'OPEN';
-        mfa_status = 'UNLOCKED';
-        await fetch(`http://${CENTRAL_SERVER}/api/command`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: 'EMERGENCY_DOOR_UNLOCK', target_ip: ip_node1 }),
-        }).catch(() => {});
-        showToast(`Emergency Door Unlock dispatched to Node 1 (${ip_node1 || '192.168.10.11'})`, 'error');
+        try {
+          const res = await fetch(`http://${CENTRAL_SERVER}/api/command`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'EMERGENCY_DOOR_UNLOCK', target_ip: ip_node1 }),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          showToast('Emergency Door Unlock dispatched to Node-RED', 'success');
+        } catch (_) {
+          showToast('Failed to reach Node-RED for Emergency Door Unlock', 'error');
+        }
       });
     });
   }
@@ -433,13 +638,19 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnFan) {
     btnFan.addEventListener('click', () => {
       withButtonLoading(btnFan, async () => {
-        fan_relay = fan_relay === 'ON' ? 'OFF' : 'ON';
-        await fetch(`http://${CENTRAL_SERVER}/api/command`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: 'TOGGLE_HVAC_FAN', fan_relay, target_ip: ip_node2 }),
-        }).catch(() => {});
-        showToast(`HVAC Fan Relay switched ${fan_relay}`, fan_relay === 'ON' ? 'success' : 'info');
+        const nextFan = fan_relay === 'ON' ? 'OFF' : 'ON';
+        try {
+          const res = await fetch(`http://${CENTRAL_SERVER}/api/command`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'TOGGLE_HVAC_FAN', fan_relay: nextFan, target_ip: ip_node2 }),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          fan_relay = nextFan;
+          showToast(`HVAC Fan Relay switched ${fan_relay}`, 'success');
+        } catch (_) {
+          showToast('Failed to reach Node-RED for HVAC Fan command', 'error');
+        }
       });
     });
   }
@@ -448,34 +659,61 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnLight) {
     btnLight.addEventListener('click', () => {
       withButtonLoading(btnLight, async () => {
-        light_state = light_state === 'ON' ? 'OFF' : 'ON';
-        await fetch(`http://${CENTRAL_SERVER}/api/command`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: 'TOGGLE_AUX_LIGHT', light_state, target_ip: ip_node2 }),
-        }).catch(() => {});
-        showToast(`Auxiliary Light switched ${light_state}`, light_state === 'ON' ? 'success' : 'info');
+        const nextLight = light_state === 'ON' ? 'OFF' : 'ON';
+        try {
+          const res = await fetch(`http://${CENTRAL_SERVER}/api/command`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'TOGGLE_AUX_LIGHT', light_state: nextLight, target_ip: ip_node2 }),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          light_state = nextLight;
+          showToast(`Auxiliary Light switched ${light_state}`, 'success');
+        } catch (_) {
+          showToast('Failed to reach Node-RED for Aux Light command', 'error');
+        }
       });
     });
   }
 
-  // Startup IP Modal Submission
-  const startupForm = document.getElementById('startup-ip-form');
-  if (startupForm) {
-    startupForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const n1 = document.getElementById('input-ip-node1')?.value || '192.168.10.11';
-      const n2 = document.getElementById('input-ip-node2')?.value || '192.168.10.12';
-      const n3 = document.getElementById('input-ip-node3')?.value || '192.168.10.13';
-      saveNodeIps(n1, n2, n3);
-      document.getElementById('startup-ip-modal')?.classList.add('hidden');
-    });
-  }
+  // Startup & Management Node IP Forms
+  document.getElementById('startup-ip-form')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const n1 = document.getElementById('input-ip-node1')?.value || '';
+    const n2 = document.getElementById('input-ip-node2')?.value || '';
+    const n3 = document.getElementById('input-ip-node3')?.value || '';
+    saveNodeIps(n1, n2, n3);
+    document.getElementById('startup-ip-modal')?.classList.add('hidden');
+  });
 
-  const openModalBtn = document.getElementById('open-ip-modal-btn');
-  if (openModalBtn) {
-    openModalBtn.addEventListener('click', () => {
-      document.getElementById('startup-ip-modal')?.classList.remove('hidden');
-    });
-  }
+  document.getElementById('node-ip-update-form')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const n1 = document.getElementById('mgmt-ip-node1')?.value || '';
+    const n2 = document.getElementById('mgmt-ip-node2')?.value || '';
+    const n3 = document.getElementById('mgmt-ip-node3')?.value || '';
+    saveNodeIps(n1, n2, n3);
+  });
+
+  document.getElementById('user-provision-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = document.getElementById('prov-username')?.value || '';
+    const rfid = document.getElementById('prov-rfid')?.value || '';
+    const face = document.getElementById('prov-face')?.value || '';
+    try {
+      const res = await fetch(`http://${CENTRAL_SERVER}/api/users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, rfid_uid: rfid, face_template_id: face }),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      showToast(`Operator "${username}" provisioned on Node-RED`, 'success');
+      e.target.reset();
+    } catch (_) {
+      showToast('Failed to provision user: Node-RED backend offline', 'error');
+    }
+  });
+
+  document.getElementById('open-ip-modal-btn')?.addEventListener('click', () => {
+    document.getElementById('startup-ip-modal')?.classList.remove('hidden');
+  });
 });

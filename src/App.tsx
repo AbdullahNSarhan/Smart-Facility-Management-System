@@ -22,8 +22,6 @@ import {
   RefreshCw,
   UserPlus,
   Network,
-  CheckCircle2,
-  Sliders,
   Sun,
   Moon,
   PanelLeftClose,
@@ -43,16 +41,6 @@ import {
   ActivityFeedItem,
   NodeHeartbeatStatus,
 } from './types/lci';
-import {
-  INITIAL_ACCESS_LOGS,
-  INITIAL_ENVIRONMENTAL_TELEMETRY,
-  INITIAL_CAMERA_EVENTS,
-  INITIAL_SYSTEM_ERRORS,
-  INITIAL_PROVISIONED_USERS,
-  INITIAL_ACTIVITY_FEED,
-  generateInitialHistoryWindow,
-} from './data/initialFacilityData';
-import { generateBiometricCameraJpeg } from './utils/cameraFrameGenerator';
 import { CircularGauge, FifoLineChart } from './components/EnvironmentalWidgets';
 import { VanillaExportModal } from './components/VanillaExportModal';
 
@@ -89,7 +77,7 @@ function formatNowTimestamp(): string {
 
 export default function App() {
   // ==========================================================================
-  // NEW FEATURE 1: LIGHT / DARK MODE TOGGLE (Persisted in localStorage)
+  // 1. LIGHT / DARK MODE TOGGLE (Persisted in localStorage)
   // ==========================================================================
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = localStorage.getItem('lci_theme');
@@ -102,7 +90,7 @@ export default function App() {
   }, [theme]);
 
   // ==========================================================================
-  // NEW FEATURE 5: COLLAPSIBLE SIDEBAR (Persisted in localStorage)
+  // 2. COLLAPSIBLE SIDEBAR (Persisted in localStorage)
   // ==========================================================================
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     return localStorage.getItem('lci_sidebar_collapsed') === 'true';
@@ -117,7 +105,7 @@ export default function App() {
   };
 
   // ==========================================================================
-  // NEW FEATURE 3: VANILLA TOAST NOTIFICATION STACK (3-Second Auto-Dismiss)
+  // 3. VANILLA TOAST NOTIFICATION STACK (3-Second Auto-Dismiss)
   // ==========================================================================
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
 
@@ -130,7 +118,7 @@ export default function App() {
   }, []);
 
   // ==========================================================================
-  // NEW FEATURE 4: ANTI-SPAM QUICK ACTION LOADING STATES (1.5s CSS Spinner)
+  // 4. ANTI-SPAM QUICK ACTION LOADING STATES (1.5s CSS Spinner)
   // ==========================================================================
   const [loadingButtons, setLoadingButtons] = useState<{
     emergency: boolean;
@@ -143,7 +131,7 @@ export default function App() {
   });
 
   // ==========================================================================
-  // 1. DYNAMIC IP CONFIGURATION STATE (localStorage: ip_node1, ip_node2, ip_node3)
+  // 5. DYNAMIC IP CONFIGURATION STATE (localStorage: ip_node1, ip_node2, ip_node3)
   // ==========================================================================
   const [ip_node1, setIpNode1] = useState<string>(() => localStorage.getItem('ip_node1') || '');
   const [ip_node2, setIpNode2] = useState<string>(() => localStorage.getItem('ip_node2') || '');
@@ -165,14 +153,14 @@ export default function App() {
   const effectiveNode3 = ip_node3 || '192.168.10.13';
 
   // ==========================================================================
-  // 2. STRICT GLOBAL VARIABLES (Environment Telemetry & MFA Tracker)
+  // 6. STRICT GLOBAL VARIABLES (Environment Telemetry, MFA Tracker & SQLite)
   // ==========================================================================
-  const [temperature, setTemperature] = useState<number>(22.4);
-  const [humidity, setHumidity] = useState<number>(46.2);
-  const [smoke_gas_level, setSmokeGasLevel] = useState<number>(118);
-  const [light_state, setLightState] = useState<LightState>('ON');
+  const [temperature, setTemperature] = useState<number>(0);
+  const [humidity, setHumidity] = useState<number>(0);
+  const [smoke_gas_level, setSmokeGasLevel] = useState<number>(0);
+  const [light_state, setLightState] = useState<LightState>('OFF');
   const [door_state, setDoorState] = useState<DoorState>('CLOSED');
-  const [fan_relay, setFanRelay] = useState<FanRelayState>('ON');
+  const [fan_relay, setFanRelay] = useState<FanRelayState>('OFF');
 
   const [isFacePassed, setIsFacePassed] = useState<boolean>(false);
   const [isCardPassed, setIsCardPassed] = useState<boolean>(false);
@@ -182,31 +170,32 @@ export default function App() {
 
   const [fanControlMode, setFanControlMode] = useState<ControlMode>('AUTO');
   const [lightControlMode, setLightControlMode] = useState<ControlMode>('AUTO');
-  const [emergencyOverrideActive, setEmergencyOverrideActive] = useState<boolean>(false);
+
+  const [access_logs, setAccessLogs] = useState<AccessLogRecord[]>([]);
+  const [environmental_telemetry, setEnvironmentalTelemetry] = useState<EnvironmentalTelemetryRecord[]>([]);
+  const [camera_events, setCameraEvents] = useState<CameraEventRecord[]>([]);
+  const [system_errors, setSystemErrors] = useState<SystemErrorRecord[]>([]);
 
   // ==========================================================================
-  // 3. STRICT SQLITE DATABASE TABLES
-  // ==========================================================================
-  const [access_logs, setAccessLogs] = useState<AccessLogRecord[]>(INITIAL_ACCESS_LOGS);
-  const [environmental_telemetry, setEnvironmentalTelemetry] = useState<EnvironmentalTelemetryRecord[]>(
-    INITIAL_ENVIRONMENTAL_TELEMETRY
-  );
-  const [camera_events, setCameraEvents] = useState<CameraEventRecord[]>(INITIAL_CAMERA_EVENTS);
-  const [system_errors, setSystemErrors] = useState<SystemErrorRecord[]>(INITIAL_SYSTEM_ERRORS);
-
-  // ==========================================================================
-  // 4. UI NAVIGATION, CHARTS (30-PT FIFO), CAMERA JPEG & DIAGNOSTICS STATE
+  // 7. UI NAVIGATION, CHARTS (30-PT FIFO) & PRODUCTION CONNECTION STATE
   // ==========================================================================
   const [activeView, setActiveView] = useState<ViewId>('view1');
-  const [activityFeed, setActivityFeed] = useState<ActivityFeedItem[]>(INITIAL_ACTIVITY_FEED);
-  const [fifoHistory, setFifoHistory] = useState(() => generateInitialHistoryWindow(30));
-  const [cameraMode, setCameraMode] = useState<'STANDBY' | 'MOTION' | 'FACE_VERIFIED' | 'UNAUTHORIZED'>('FACE_VERIFIED');
-  const [cameraFrameUrl, setCameraFrameUrl] = useState<string>('');
-  const [cameraLastTimestamp, setCameraLastTimestamp] = useState<string>('2026-10-19 05:08:10');
-  const [liveSimEnabled, setLiveSimEnabled] = useState<boolean>(true);
-  const [wsConnectionState, setWsConnectionState] = useState<'LOCAL_AIRGAP_SIM' | 'CONNECTED_LAN'>('LOCAL_AIRGAP_SIM');
+  const [activityFeed, setActivityFeed] = useState<ActivityFeedItem[]>([]);
+  const [fifoHistory, setFifoHistory] = useState<{
+    labels: string[];
+    temps: number[];
+    hums: number[];
+    gases: number[];
+  }>({
+    labels: [],
+    temps: [],
+    hums: [],
+    gases: [],
+  });
+  const [wsOnline, setWsOnline] = useState<boolean>(false);
+  const [cameraStreamFailed, setCameraStreamFailed] = useState<boolean>(false);
+  const [cameraFrameKey, setCameraFrameKey] = useState<number>(() => Date.now());
   const [showVanillaModal, setShowVanillaModal] = useState<boolean>(false);
-  const [showSimDrawer, setShowSimDrawer] = useState<boolean>(false);
 
   // View 4 Audit Log Explorer State
   const [activeAuditTab, setActiveAuditTab] = useState<AuditTableTab>('access_logs');
@@ -221,50 +210,50 @@ export default function App() {
       name: 'Central Node-RED Server',
       role: 'WebSocket Broker & SQLite Engine',
       ip: CENTRAL_NODE_RED_HOST,
-      online: true,
-      latencyMs: 2.1,
-      lastPing: formatNowTime(),
-      packetLoss: 0,
+      online: false,
+      latencyMs: 0,
+      lastPing: '--:--:--',
+      packetLoss: 100,
     },
     {
       id: 'node1',
       name: 'Node 1 · Access & Lock Controller',
       role: 'RFID Reader, Keypad, Reed & Solenoid',
       ip: effectiveNode1,
-      online: true,
-      latencyMs: 4.8,
-      lastPing: formatNowTime(),
-      packetLoss: 0,
+      online: false,
+      latencyMs: 0,
+      lastPing: '--:--:--',
+      packetLoss: 100,
     },
     {
       id: 'node2',
       name: 'Node 2 · Environmental Telemetry',
       role: 'DHT22, MQ-2 Smoke/Gas, LDR & HVAC Relays',
       ip: effectiveNode2,
-      online: true,
-      latencyMs: 5.3,
-      lastPing: formatNowTime(),
-      packetLoss: 0,
+      online: false,
+      latencyMs: 0,
+      lastPing: '--:--:--',
+      packetLoss: 100,
     },
     {
       id: 'node3',
       name: 'Node 3 · Biometric Vision Unit',
       role: 'Optical Camera Stream & Face Embedding Node',
       ip: effectiveNode3,
-      online: true,
-      latencyMs: 8.4,
-      lastPing: formatNowTime(),
-      packetLoss: 0,
+      online: false,
+      latencyMs: 0,
+      lastPing: '--:--:--',
+      packetLoss: 100,
     },
   ]);
 
   // View 6 User Provisioning & Node Management Forms
-  const [provisionedUsers, setProvisionedUsers] = useState<ProvisionedUser[]>(INITIAL_PROVISIONED_USERS);
+  const [provisionedUsers, setProvisionedUsers] = useState<ProvisionedUser[]>([]);
   const [newUsername, setNewUsername] = useState<string>('');
   const [newDepartment, setNewDepartment] = useState<string>('Facility Engineering');
-  const [newRfidUid, setNewRfidUid] = useState<string>('04:E9:2C:71');
-  const [newFaceTemplate, setNewFaceTemplate] = useState<string>('BIO_VEC_7741');
-  const [newPinCode, setNewPinCode] = useState<string>('4829');
+  const [newRfidUid, setNewRfidUid] = useState<string>('');
+  const [newFaceTemplate, setNewFaceTemplate] = useState<string>('');
+  const [newPinCode, setNewPinCode] = useState<string>('');
 
   const pushActivity = useCallback(
     (category: ActivityFeedItem['category'], message: string, status: ActivityFeedItem['status'] = 'NOMINAL') => {
@@ -282,7 +271,7 @@ export default function App() {
     []
   );
 
-  // Sync strict global variables onto `window` for Node-RED / browser console inspection
+  // Sync strict global variables onto `window` for Node-RED contract compliance
   useEffect(() => {
     window.temperature = temperature;
     window.humidity = humidity;
@@ -321,20 +310,8 @@ export default function App() {
     effectiveNode3,
   ]);
 
-  useEffect(() => {
-    const dataUri = generateBiometricCameraJpeg({
-      ipNode3: effectiveNode3,
-      mode: cameraMode,
-      subjectName: 'ENG_SARHAN',
-      confidence: 99.4,
-      timestamp: cameraLastTimestamp,
-      doorState: door_state,
-    });
-    setCameraFrameUrl(dataUri);
-  }, [effectiveNode3, cameraMode, cameraLastTimestamp, door_state]);
-
   // ==========================================================================
-  // 5. WEBSOCKET CONNECTION & REST API LOG FETCHING
+  // 8. PRODUCTION WEBSOCKET & REST API CONNECTION (NO MOCK FALLBACKS)
   // ==========================================================================
   const fetchHistoricalLogsFromNodeRed = useCallback(async () => {
     const endpoints: { key: AuditTableTab | 'system_errors'; url: string }[] = [
@@ -344,26 +321,32 @@ export default function App() {
       { key: 'system_errors', url: `http://${CENTRAL_NODE_RED_HOST}/api/logs/system_errors` },
     ];
 
+    let anyFailed = false;
     for (const ep of endpoints) {
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 1200);
+        const timer = setTimeout(() => controller.abort(), 2000);
         const res = await fetch(ep.url, { signal: controller.signal });
         clearTimeout(timer);
-        if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data)) {
-            if (ep.key === 'access_logs') setAccessLogs(data);
-            if (ep.key === 'environmental_telemetry') setEnvironmentalTelemetry(data);
-            if (ep.key === 'camera_events') setCameraEvents(data);
-            if (ep.key === 'system_errors') setSystemErrors(data);
-          }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          if (ep.key === 'access_logs') setAccessLogs(data);
+          if (ep.key === 'environmental_telemetry') setEnvironmentalTelemetry(data);
+          if (ep.key === 'camera_events') setCameraEvents(data);
+          if (ep.key === 'system_errors') setSystemErrors(data);
         }
       } catch {
-        // Air-gapped local SQLite state remains active when 192.168.10.2 is unreachable
+        anyFailed = true;
       }
     }
-  }, []);
+
+    if (anyFailed) {
+      showToast(`Node-RED SQLite REST API (${CENTRAL_NODE_RED_HOST}) unreachable — Offline`, 'error');
+    } else {
+      showToast('Synchronized SQLite tables from Node-RED REST API', 'success');
+    }
+  }, [showToast]);
 
   useEffect(() => {
     fetchHistoricalLogsFromNodeRed();
@@ -371,54 +354,100 @@ export default function App() {
     let wsTelemetry: WebSocket | null = null;
     let wsMfa: WebSocket | null = null;
 
-    if (window.location.protocol === 'http:') {
-      try {
-        wsTelemetry = new WebSocket(`ws://${CENTRAL_NODE_RED_HOST}/ws/telemetry`);
-        wsTelemetry.onopen = () => setWsConnectionState('CONNECTED_LAN');
-        wsTelemetry.onmessage = (evt) => {
-          try {
-            const payload = JSON.parse(evt.data);
-            if (typeof payload.temperature === 'number') setTemperature(payload.temperature);
-            if (typeof payload.humidity === 'number') setHumidity(payload.humidity);
-            if (typeof payload.smoke_gas_level === 'number') setSmokeGasLevel(payload.smoke_gas_level);
-            if (payload.light_state === 'ON' || payload.light_state === 'OFF') setLightState(payload.light_state);
-            if (payload.door_state === 'OPEN' || payload.door_state === 'CLOSED') setDoorState(payload.door_state);
-            if (payload.fan_relay === 'ON' || payload.fan_relay === 'OFF') setFanRelay(payload.fan_relay);
-          } catch {
-            // Ignore malformed frame
-          }
-        };
-        wsTelemetry.onerror = () => setWsConnectionState('LOCAL_AIRGAP_SIM');
-      } catch {
-        setWsConnectionState('LOCAL_AIRGAP_SIM');
-      }
+    try {
+      wsTelemetry = new WebSocket(`ws://${CENTRAL_NODE_RED_HOST}/ws/telemetry`);
+      wsTelemetry.onopen = () => {
+        setWsOnline(true);
+        const pingTs = formatNowTime();
+        setHeartbeats((prev) =>
+          prev.map((n) => ({ ...n, online: true, lastPing: pingTs, packetLoss: 0 }))
+        );
+        showToast('Connected to ws://192.168.10.2:1880/ws/telemetry', 'success');
+      };
+      wsTelemetry.onmessage = (evt) => {
+        const payload = JSON.parse(evt.data);
+        const ts = formatNowTime();
+        setWsOnline(true);
 
-      try {
-        wsMfa = new WebSocket(`ws://${CENTRAL_NODE_RED_HOST}/ws/mfa`);
-        wsMfa.onmessage = (evt) => {
-          try {
-            const payload = JSON.parse(evt.data);
-            if (typeof payload.isFacePassed === 'boolean') setIsFacePassed(payload.isFacePassed);
-            if (typeof payload.isCardPassed === 'boolean') setIsCardPassed(payload.isCardPassed);
-            if (typeof payload.isPinPassed === 'boolean') setIsPinPassed(payload.isPinPassed);
-            if (payload.mfa_status) setMfaStatus(payload.mfa_status);
-          } catch {
-            // Ignore malformed frame
-          }
-        };
-      } catch {
-        // Fallback handled by simulator
-      }
+        if (typeof payload.temperature === 'number') setTemperature(payload.temperature);
+        if (typeof payload.humidity === 'number') setHumidity(payload.humidity);
+        if (typeof payload.smoke_gas_level === 'number') setSmokeGasLevel(payload.smoke_gas_level);
+        if (payload.light_state === 'ON' || payload.light_state === 'OFF') setLightState(payload.light_state);
+        if (payload.door_state === 'OPEN' || payload.door_state === 'CLOSED') setDoorState(payload.door_state);
+        if (payload.fan_relay === 'ON' || payload.fan_relay === 'OFF') setFanRelay(payload.fan_relay);
+
+        setFifoHistory((prev) => ({
+          labels: [...prev.labels.slice(-29), ts],
+          temps: [...prev.temps.slice(-29), Number(payload.temperature ?? 0)],
+          hums: [...prev.hums.slice(-29), Number(payload.humidity ?? 0)],
+          gases: [...prev.gases.slice(-29), Number(payload.smoke_gas_level ?? 0)],
+        }));
+
+        pushActivity(
+          'ENVIRONMENT',
+          `Telemetry packet received: ${payload.temperature ?? '--'}°C, Gas ${payload.smoke_gas_level ?? '--'} PPM`,
+          (payload.smoke_gas_level ?? 0) >= SMOKE_DANGER_THRESHOLD ? 'ALERT' : 'NOMINAL'
+        );
+      };
+      wsTelemetry.onerror = () => {
+        setWsOnline(false);
+        setHeartbeats((prev) => prev.map((n) => ({ ...n, online: false })));
+        showToast('WebSocket connection failed: ws://192.168.10.2:1880/ws/telemetry is offline', 'error');
+      };
+      wsTelemetry.onclose = () => {
+        setWsOnline(false);
+        setHeartbeats((prev) => prev.map((n) => ({ ...n, online: false })));
+      };
+    } catch {
+      setWsOnline(false);
+      showToast('WebSocket unreachable (ws://192.168.10.2:1880/ws/telemetry)', 'error');
+    }
+
+    try {
+      wsMfa = new WebSocket(`ws://${CENTRAL_NODE_RED_HOST}/ws/mfa`);
+      wsMfa.onmessage = (evt) => {
+        const payload = JSON.parse(evt.data);
+        if (typeof payload.isFacePassed === 'boolean') setIsFacePassed(payload.isFacePassed);
+        if (typeof payload.isCardPassed === 'boolean') setIsCardPassed(payload.isCardPassed);
+        if (typeof payload.isPinPassed === 'boolean') setIsPinPassed(payload.isPinPassed);
+        if (payload.mfa_status) setMfaStatus(payload.mfa_status);
+        if (payload.isFacePassed) {
+          setCameraStreamFailed(false);
+          setCameraFrameKey(Date.now());
+        }
+      };
+      wsMfa.onerror = () => {
+        showToast('MFA WebSocket offline (ws://192.168.10.2:1880/ws/mfa)', 'error');
+      };
+    } catch {
+      // Handled by telemetry toast
     }
 
     return () => {
       if (wsTelemetry) wsTelemetry.close();
       if (wsMfa) wsMfa.close();
     };
-  }, [fetchHistoricalLogsFromNodeRed]);
+  }, [fetchHistoricalLogsFromNodeRed, pushActivity, showToast]);
+
+  // 5-second Heartbeat IP sync
+  useEffect(() => {
+    setHeartbeats((prev) =>
+      prev.map((node) => ({
+        ...node,
+        ip:
+          node.id === 'node1'
+            ? effectiveNode1
+            : node.id === 'node2'
+            ? effectiveNode2
+            : node.id === 'node3'
+            ? effectiveNode3
+            : CENTRAL_NODE_RED_HOST,
+      }))
+    );
+  }, [effectiveNode1, effectiveNode2, effectiveNode3]);
 
   // ==========================================================================
-  // 6. 2-OUT-OF-3 MFA LIVE TRACKER & 10-SECOND COUNTDOWN LOGIC
+  // 9. 2-OUT-OF-3 MFA LIVE TRACKER & 10-SECOND COUNTDOWN LOGIC
   // ==========================================================================
   const mfaTimerRef = useRef<number | null>(null);
 
@@ -438,7 +467,6 @@ export default function App() {
     } else if (passedFactors.length === 1) {
       setMfaStatus('AWAITING_STAGE2');
       setMfaCountdown(10);
-      showToast(`Stage 1 (${passedFactors[0]}) passed — 10s Stage 2 countdown started`, 'info');
       if (mfaTimerRef.current) window.clearInterval(mfaTimerRef.current);
 
       mfaTimerRef.current = window.setInterval(() => {
@@ -452,25 +480,7 @@ export default function App() {
             setIsCardPassed(false);
             setIsPinPassed(false);
             setMfaStatus('IDLE');
-            showToast(`Stage 2 MFA 10s window expired — Solenoid remained LOCKED`, 'error');
-            pushActivity(
-              'ACCESS',
-              `Stage 2 MFA 10s countdown expired after ${passedFactors[0]} — Solenoid remained LOCKED`,
-              'WARNING'
-            );
-            setAccessLogs((logs) => [
-              {
-                id: (logs[0]?.id || 1048) + 1,
-                timestamp: formatNowTimestamp(),
-                user_name: 'Unverified Stage 2',
-                card_uid: '04:A2:9F:3B',
-                factors_used: `${passedFactors[0]} ONLY (TIMEOUT)`,
-                mfa_status: 'DENIED_TIMEOUT',
-                door_state: 'CLOSED',
-                node_ip: effectiveNode1,
-              },
-              ...logs,
-            ]);
+            showToast('Stage 2 MFA 10s window expired — Solenoid remained LOCKED', 'error');
             return 10;
           }
           return prev - 1;
@@ -483,26 +493,6 @@ export default function App() {
       }
       setMfaStatus('UNLOCKED');
       setDoorState('OPEN');
-      const factorString = passedFactors.join(' + ');
-      showToast(`2-of-3 MFA Verified (${factorString}) — Door Unlocked`, 'success');
-      pushActivity(
-        'ACCESS',
-        `2-of-3 MFA Passed (${factorString}) — Solenoid Lock UNLOCKED & Door OPEN`,
-        'NOMINAL'
-      );
-      setAccessLogs((logs) => [
-        {
-          id: (logs[0]?.id || 1048) + 1,
-          timestamp: formatNowTimestamp(),
-          user_name: 'Eng. A. Sarhan',
-          card_uid: '04:A2:9F:3B',
-          factors_used: factorString,
-          mfa_status: 'UNLOCKED',
-          door_state: 'OPEN',
-          node_ip: effectiveNode1,
-        },
-        ...logs,
-      ]);
     }
 
     return () => {
@@ -511,119 +501,37 @@ export default function App() {
         mfaTimerRef.current = null;
       }
     };
-  }, [isFacePassed, isCardPassed, isPinPassed, effectiveNode1, pushActivity, showToast]);
+  }, [isFacePassed, isCardPassed, isPinPassed, showToast]);
 
   // ==========================================================================
-  // 7. PERIODIC TELEMETRY FIFO STREAM & 5-SECOND HEARTBEAT PING
+  // 10. DIRECT SERVER COMMAND HANDLERS (1.5s Anti-Spam + Live HTTP POST)
   // ==========================================================================
-  useEffect(() => {
-    if (!liveSimEnabled) return;
-
-    const telemetryInterval = window.setInterval(() => {
-      const ts = formatNowTime();
-      setTemperature((prevTemp) => {
-        const delta = (Math.random() - 0.48) * 0.4;
-        const nextTemp = Number(Math.min(48, Math.max(16, prevTemp + delta)).toFixed(1));
-
-        setHumidity((prevHum) => {
-          const humDelta = (Math.random() - 0.5) * 0.7;
-          const nextHum = Number(Math.min(95, Math.max(25, prevHum + humDelta)).toFixed(1));
-
-          setSmokeGasLevel((prevGas) => {
-            const nextGas =
-              prevGas >= SMOKE_DANGER_THRESHOLD
-                ? prevGas
-                : Math.max(95, Math.min(320, Math.round(prevGas + (Math.random() - 0.5) * 6)));
-
-            setFifoHistory((prevWin) => ({
-              labels: [...prevWin.labels.slice(-29), ts],
-              temps: [...prevWin.temps.slice(-29), nextTemp],
-              hums: [...prevWin.hums.slice(-29), nextHum],
-              gases: [...prevWin.gases.slice(-29), nextGas],
-            }));
-
-            return nextGas;
-          });
-
-          return nextHum;
-        });
-
-        return nextTemp;
-      });
-    }, 3500);
-
-    const heartbeatInterval = window.setInterval(() => {
-      const pingTs = formatNowTime();
-      setHeartbeats((prev) =>
-        prev.map((node) => {
-          const updatedIp =
-            node.id === 'node1'
-              ? effectiveNode1
-              : node.id === 'node2'
-              ? effectiveNode2
-              : node.id === 'node3'
-              ? effectiveNode3
-              : CENTRAL_NODE_RED_HOST;
-          return {
-            ...node,
-            ip: updatedIp,
-            lastPing: pingTs,
-            latencyMs: Number((node.latencyMs * 0.7 + (2 + Math.random() * 6) * 0.3).toFixed(1)),
-          };
-        })
-      );
-    }, 5000);
-
-    return () => {
-      window.clearInterval(telemetryInterval);
-      window.clearInterval(heartbeatInterval);
-    };
-  }, [liveSimEnabled, effectiveNode1, effectiveNode2, effectiveNode3]);
-
-  // ==========================================================================
-  // 8. DIRECT SERVER COMMAND HANDLERS WITH 1.5s ANTI-SPAM LOADING + TOASTS
-  // ==========================================================================
-  const sendNodeRedCommand = async (command: string, payload: Record<string, unknown>) => {
-    try {
-      await fetch(`http://${CENTRAL_NODE_RED_HOST}/api/command`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command, ...payload, timestamp: formatNowTimestamp() }),
-      });
-    } catch {
-      // Local air-gapped bus execution completed
-    }
-  };
-
   const handleEmergencyDoorUnlock = () => {
     if (loadingButtons.emergency) return;
     setLoadingButtons((prev) => ({ ...prev, emergency: true }));
 
-    window.setTimeout(() => {
-      setEmergencyOverrideActive(true);
-      setMfaStatus('UNLOCKED');
-      setDoorState('OPEN');
-      sendNodeRedCommand('EMERGENCY_DOOR_UNLOCK', { target_ip: effectiveNode1, door_state: 'OPEN' });
-      pushActivity(
-        'ACCESS',
-        `Command Center dispatched EMERGENCY DOOR UNLOCK to Node 1 (${effectiveNode1})`,
-        'ALERT'
-      );
-      setAccessLogs((prev) => [
-        {
-          id: (prev[0]?.id || 1048) + 1,
-          timestamp: formatNowTimestamp(),
-          user_name: 'Executive Command Center',
-          card_uid: 'HTTP_POST_CMD',
-          factors_used: 'EMERGENCY_UNLOCK_BUTTON',
-          mfa_status: 'EMERGENCY_OVERRIDE',
-          door_state: 'OPEN',
-          node_ip: effectiveNode1,
-        },
-        ...prev,
-      ]);
-      setLoadingButtons((prev) => ({ ...prev, emergency: false }));
-      showToast(`Emergency Door Unlock dispatched to Node 1 (${effectiveNode1})`, 'error');
+    window.setTimeout(async () => {
+      try {
+        const res = await fetch(`http://${CENTRAL_NODE_RED_HOST}/api/command`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            command: 'EMERGENCY_DOOR_UNLOCK',
+            target_ip: effectiveNode1,
+            door_state: 'OPEN',
+            timestamp: formatNowTimestamp(),
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setDoorState('OPEN');
+        setMfaStatus('UNLOCKED');
+        pushActivity('ACCESS', `Emergency Door Unlock executed on Node 1 (${effectiveNode1})`, 'ALERT');
+        showToast(`Emergency Door Unlock executed on Node 1 (${effectiveNode1})`, 'success');
+      } catch {
+        showToast(`Command failed: Node-RED (${CENTRAL_NODE_RED_HOST}) is offline`, 'error');
+      } finally {
+        setLoadingButtons((prev) => ({ ...prev, emergency: false }));
+      }
     }, 1500);
   };
 
@@ -631,20 +539,28 @@ export default function App() {
     if (loadingButtons.fan) return;
     setLoadingButtons((prev) => ({ ...prev, fan: true }));
 
-    window.setTimeout(() => {
+    window.setTimeout(async () => {
       const nextState: FanRelayState = fan_relay === 'ON' ? 'OFF' : 'ON';
-      setFanRelay(nextState);
-      sendNodeRedCommand('TOGGLE_HVAC_FAN', { target_ip: effectiveNode2, fan_relay: nextState });
-      pushActivity(
-        'ENVIRONMENT',
-        `HVAC Fan Relay switched ${nextState} on Node 2 (${effectiveNode2})`,
-        'NOMINAL'
-      );
-      setLoadingButtons((prev) => ({ ...prev, fan: false }));
-      showToast(
-        `HVAC Fan Relay switched ${nextState} on Node 2 (${effectiveNode2})`,
-        nextState === 'ON' ? 'success' : 'info'
-      );
+      try {
+        const res = await fetch(`http://${CENTRAL_NODE_RED_HOST}/api/command`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            command: 'TOGGLE_HVAC_FAN',
+            target_ip: effectiveNode2,
+            fan_relay: nextState,
+            timestamp: formatNowTimestamp(),
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setFanRelay(nextState);
+        pushActivity('ENVIRONMENT', `HVAC Fan Relay switched ${nextState} on Node 2`, 'NOMINAL');
+        showToast(`HVAC Fan Relay switched ${nextState}`, 'success');
+      } catch {
+        showToast(`HVAC Fan command failed: Node-RED (${CENTRAL_NODE_RED_HOST}) is offline`, 'error');
+      } finally {
+        setLoadingButtons((prev) => ({ ...prev, fan: false }));
+      }
     }, 1500);
   };
 
@@ -652,24 +568,32 @@ export default function App() {
     if (loadingButtons.light) return;
     setLoadingButtons((prev) => ({ ...prev, light: true }));
 
-    window.setTimeout(() => {
+    window.setTimeout(async () => {
       const nextState: LightState = light_state === 'ON' ? 'OFF' : 'ON';
-      setLightState(nextState);
-      sendNodeRedCommand('TOGGLE_AUX_LIGHT', { target_ip: effectiveNode2, light_state: nextState });
-      pushActivity(
-        'ENVIRONMENT',
-        `Auxiliary Corridor Lighting switched ${nextState} on Node 2 (${effectiveNode2})`,
-        'NOMINAL'
-      );
-      setLoadingButtons((prev) => ({ ...prev, light: false }));
-      showToast(
-        `Auxiliary Light switched ${nextState} on Node 2 (${effectiveNode2})`,
-        nextState === 'ON' ? 'success' : 'info'
-      );
+      try {
+        const res = await fetch(`http://${CENTRAL_NODE_RED_HOST}/api/command`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            command: 'TOGGLE_AUX_LIGHT',
+            target_ip: effectiveNode2,
+            light_state: nextState,
+            timestamp: formatNowTimestamp(),
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setLightState(nextState);
+        pushActivity('ENVIRONMENT', `Auxiliary Light switched ${nextState} on Node 2`, 'NOMINAL');
+        showToast(`Auxiliary Light switched ${nextState}`, 'success');
+      } catch {
+        showToast(`Aux Light command failed: Node-RED (${CENTRAL_NODE_RED_HOST}) is offline`, 'error');
+      } finally {
+        setLoadingButtons((prev) => ({ ...prev, light: false }));
+      }
     }, 1500);
   };
 
-  const handleSaveDynamicIps = (e: React.FormEvent) => {
+  const handleSaveDynamicIps = async (e: React.FormEvent) => {
     e.preventDefault();
     const clean1 = modalIp1.trim() || '192.168.10.11';
     const clean2 = modalIp2.trim() || '192.168.10.12';
@@ -685,107 +609,62 @@ export default function App() {
     setIsNodesConfigured(true);
     setShowStartupModal(false);
 
-    sendNodeRedCommand('UPDATE_NODE_IPS', {
-      ip_node1: clean1,
-      ip_node2: clean2,
-      ip_node3: clean3,
-    });
-
-    pushActivity(
-      'SYSTEM',
-      `Saved Node IPs to localStorage (Node1: ${clean1}, Node2: ${clean2}, Node3: ${clean3})`,
-      'NOMINAL'
-    );
-    showToast(`Saved Node IPs (${clean1}, ${clean2}, ${clean3}) to localStorage`, 'success');
-  };
-
-  const handleTriggerCameraCapture = (mode: 'STANDBY' | 'MOTION' | 'FACE_VERIFIED' | 'UNAUTHORIZED') => {
-    const ts = formatNowTimestamp();
-    setCameraMode(mode);
-    setCameraLastTimestamp(ts);
-
-    if (mode === 'FACE_VERIFIED') {
-      setIsFacePassed(true);
+    try {
+      const res = await fetch(`http://${CENTRAL_NODE_RED_HOST}/api/config/nodes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip_node1: clean1, ip_node2: clean2, ip_node3: clean3 }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      showToast(`Saved Node IPs (${clean1}, ${clean2}, ${clean3}) & notified Node-RED`, 'success');
+    } catch {
+      showToast(`Saved Node IPs to localStorage (Node-RED ${CENTRAL_NODE_RED_HOST} unreachable)`, 'info');
     }
-
-    setCameraEvents((prev) => [
-      {
-        id: (prev[0]?.id || 309) + 1,
-        timestamp: ts,
-        event_type:
-          mode === 'FACE_VERIFIED'
-            ? 'FACE_MATCH'
-            : mode === 'UNAUTHORIZED'
-            ? 'UNKNOWN_FACE'
-            : mode === 'MOTION'
-            ? 'MOTION_DETECTED'
-            : 'MANUAL_SNAPSHOT',
-        subject_name:
-          mode === 'FACE_VERIFIED'
-            ? 'Eng. A. Sarhan'
-            : mode === 'UNAUTHORIZED'
-            ? 'Unregistered Subject'
-            : 'Corridor Vestibule',
-        confidence: mode === 'FACE_VERIFIED' ? 99.4 : mode === 'UNAUTHORIZED' ? 38.2 : 92.0,
-        frame_ref: `/captures/cam03_${Date.now()}.jpg`,
-        node_ip: effectiveNode3,
-      },
-      ...prev,
-    ]);
-
-    pushActivity(
-      'CAMERA',
-      `Node 3 (${effectiveNode3}) captured JPEG frame [${mode}]`,
-      mode === 'UNAUTHORIZED' ? 'ALERT' : 'NOMINAL'
-    );
-    showToast(
-      `Biometric Camera (${effectiveNode3}) frame updated: ${mode}`,
-      mode === 'UNAUTHORIZED' ? 'error' : mode === 'FACE_VERIFIED' ? 'success' : 'info'
-    );
   };
 
   const handleProvisionUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUsername.trim()) return;
 
-    const createdUser: ProvisionedUser = {
-      id: `USR-00${provisionedUsers.length + 1}`,
+    const payload = {
       username: newUsername.trim(),
       department: newDepartment.trim(),
       rfid_uid: newRfidUid.trim().toUpperCase(),
       face_template_id: newFaceTemplate.trim().toUpperCase(),
-      pin_configured: Boolean(newPinCode.trim()),
-      created_at: formatNowTimestamp().split(' ')[0],
+      pin_hash: newPinCode,
+      target_access_node: effectiveNode1,
+      target_face_node: effectiveNode3,
     };
 
     try {
-      await fetch(`http://${CENTRAL_NODE_RED_HOST}/api/users`, {
+      const res = await fetch(`http://${CENTRAL_NODE_RED_HOST}/api/users`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...createdUser,
-          pin_hash: newPinCode,
-          target_access_node: effectiveNode1,
-          target_face_node: effectiveNode3,
-        }),
+        body: JSON.stringify(payload),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const created: ProvisionedUser = {
+        id: `USR-${Date.now().toString().slice(-4)}`,
+        username: payload.username,
+        department: payload.department,
+        rfid_uid: payload.rfid_uid,
+        face_template_id: payload.face_template_id,
+        pin_configured: Boolean(newPinCode),
+        created_at: formatNowTimestamp().split(' ')[0],
+      };
+      setProvisionedUsers((prev) => [created, ...prev]);
+      setNewUsername('');
+      setNewRfidUid('');
+      setNewFaceTemplate('');
+      setNewPinCode('');
+      showToast(`Operator "${created.username}" provisioned on Node-RED`, 'success');
     } catch {
-      // Stored locally in air-gapped registry
+      showToast(`User provisioning failed: Node-RED (${CENTRAL_NODE_RED_HOST}) is offline`, 'error');
     }
-
-    setProvisionedUsers((prev) => [createdUser, ...prev]);
-    pushActivity(
-      'SYSTEM',
-      `Provisioned new user "${createdUser.username}" (RFID: ${createdUser.rfid_uid}, Face ID: ${createdUser.face_template_id})`,
-      'NOMINAL'
-    );
-    setNewUsername('');
-    showToast(`Operator "${createdUser.username}" provisioned via HTTP POST`, 'success');
   };
 
   const isEmergencyAlert =
     smoke_gas_level >= SMOKE_DANGER_THRESHOLD ||
-    emergencyOverrideActive ||
     system_errors.some((err) => !err.resolved && err.severity === 'CRITICAL');
 
   const passedMfaCount = [isFacePassed, isCardPassed, isPinPassed].filter(Boolean).length;
@@ -835,7 +714,7 @@ export default function App() {
       style={{ backgroundColor: 'var(--bg-canvas)', color: 'var(--text-primary)' }}
     >
       {/* ====================================================================
-          NEW FEATURE 3: VANILLA TOAST NOTIFICATION STACK (Top-Right, 3s Auto-Dismiss)
+          VANILLA TOAST NOTIFICATION STACK (Top-Right, 3s Auto-Dismiss)
           ==================================================================== */}
       <div
         className="fixed top-16 right-6 z-50 flex flex-col gap-2.5 max-w-sm w-full pointer-events-none"
@@ -880,9 +759,6 @@ export default function App() {
 
       {/* ====================================================================
           TOP BAR CONTRACT: 3 Zones separated by gap-8
-          Zone 1: Single text element wordmark
-          Zone 2: 5 concise single-line text nav links
-          Zone 3: Primary Theme Toggle & Vanilla Code Action
           ==================================================================== */}
       <header
         className="sticky top-0 z-30 flex items-center justify-between gap-8 px-6 py-3.5 backdrop-blur-md"
@@ -931,12 +807,11 @@ export default function App() {
         </nav>
 
         <div className="flex items-center gap-2.5 shrink-0">
-          {/* Feature 1: Light / Dark Mode Toggle */}
           <button
             onClick={() => {
               const next = theme === 'dark' ? 'light' : 'dark';
               setTheme(next);
-              showToast(`Switched to ${next === 'dark' ? 'Dark' : 'Light'} Mode (saved to localStorage)`, 'info');
+              showToast(`Switched to ${next === 'dark' ? 'Dark' : 'Light'} Mode`, 'info');
             }}
             className="flex items-center gap-2 px-3.5 py-2 text-xs font-medium rounded-lg lci-surface hover:opacity-90 transition-opacity whitespace-nowrap shrink-0"
             style={{ color: 'var(--text-primary)' }}
@@ -961,7 +836,6 @@ export default function App() {
           MAIN WORKSPACE SHELL: Collapsible Sidebar + Expanding 6-Section Viewport
           ==================================================================== */}
       <div className="flex flex-1 min-h-0 relative">
-        {/* Feature 5: Collapsible Sidebar Navigation */}
         <aside
           className={`shrink-0 flex flex-col justify-between select-none transition-all duration-200 overflow-hidden ${
             sidebarCollapsed ? 'w-0 p-0 border-r-0 opacity-0' : 'w-64 p-4 opacity-100'
@@ -1055,9 +929,12 @@ export default function App() {
                 className="pt-2 text-[11px] flex items-center justify-between"
                 style={{ borderTop: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}
               >
-                <span>Bus Mode</span>
-                <span className="font-mono tabular-nums" style={{ color: 'var(--soft-mint)' }}>
-                  {wsConnectionState === 'CONNECTED_LAN' ? 'WS LIVE LAN' : 'AIR-GAP SIM'}
+                <span>Node-RED WS</span>
+                <span
+                  className="font-mono tabular-nums font-semibold"
+                  style={{ color: wsOnline ? 'var(--soft-mint)' : 'var(--soft-coral)' }}
+                >
+                  {wsOnline ? 'ONLINE' : 'OFFLINE'}
                 </span>
               </div>
             </div>
@@ -1068,30 +945,18 @@ export default function App() {
             style={{ borderTop: '1px solid var(--border-subtle)' }}
           >
             <button
-              onClick={() => setShowSimDrawer((prev) => !prev)}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0"
-              style={{
-                backgroundColor: 'var(--soft-blue-bg)',
-                color: 'var(--soft-blue)',
-                border: '1px solid var(--soft-blue-border)',
-              }}
-            >
-              <Sliders className="w-3.5 h-3.5" />
-              {showSimDrawer ? 'Hide Telemetry Testbench' : 'Open Telemetry Testbench'}
-            </button>
-            <button
               onClick={() => setShowVanillaModal(true)}
               className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium rounded-lg lci-elevated transition-colors whitespace-nowrap shrink-0"
               style={{ color: 'var(--text-primary)' }}
             >
-              Inspect Vanilla ES6 Files
+              Inspect Production Files
             </button>
           </div>
         </aside>
 
         {/* Main Expanding Content Viewport */}
         <main className="flex-1 min-w-0 p-6 lg:p-8 space-y-6 max-w-[1440px] mx-auto w-full transition-all duration-200">
-          {/* Workspace Sub-Toolbar: Collapsible Sidebar Toggle + Context Trail */}
+          {/* Workspace Sub-Toolbar: Collapsible Sidebar Toggle + Connection Status */}
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <button
@@ -1112,18 +977,14 @@ export default function App() {
                 )}
               </button>
               <span className="text-xs font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                LCI-SFM · Soft UI Theme: {theme.toUpperCase()} · Node-RED: {CENTRAL_NODE_RED_HOST}
+                Node-RED Bus: {CENTRAL_NODE_RED_HOST} · Status:{' '}
+                <strong style={{ color: wsOnline ? 'var(--soft-mint)' : 'var(--soft-coral)' }}>
+                  {wsOnline ? 'ONLINE' : 'OFFLINE'}
+                </strong>
               </span>
             </div>
 
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowSimDrawer((v) => !v)}
-                className="px-3 py-1.5 text-xs font-medium rounded-lg lci-surface whitespace-nowrap shrink-0"
-                style={{ color: 'var(--text-secondary)' }}
-              >
-                {showSimDrawer ? 'Close Simulator' : 'Telemetry Simulator'}
-              </button>
               <button
                 onClick={() => setShowVanillaModal(true)}
                 className="px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap shrink-0"
@@ -1133,7 +994,7 @@ export default function App() {
                   border: '1px solid var(--soft-blue-border)',
                 }}
               >
-                View Updated HTML / CSS / JS
+                View Production HTML / CSS / JS
               </button>
             </div>
           </div>
@@ -1154,7 +1015,7 @@ export default function App() {
                   Node IPs (<code className="font-mono">ip_node1</code>,{' '}
                   <code className="font-mono">ip_node2</code>,{' '}
                   <code className="font-mono">ip_node3</code>) were not found in{' '}
-                  <code className="font-mono">localStorage</code>. Confirm the default subnet addresses or open the Startup Modal.
+                  <code className="font-mono">localStorage</code>. Configure or confirm the facility node addresses.
                 </p>
               </div>
               <div className="flex items-center gap-3 shrink-0">
@@ -1174,189 +1035,8 @@ export default function App() {
                     border: '1px solid var(--soft-mint-border)',
                   }}
                 >
-                  Save Default Subnet IPs
+                  Save Node IPs
                 </button>
-              </div>
-            </div>
-          )}
-
-          {/* ================================================================
-              INTERACTIVE TELEMETRY & WEBSOCKET PAYLOAD TESTBENCH (Collapsible)
-              ================================================================ */}
-          {showSimDrawer && (
-            <div className="lci-surface rounded-xl p-5 space-y-4" style={{ borderColor: 'var(--soft-blue-border)' }}>
-              <div
-                className="flex flex-wrap items-center justify-between gap-4 pb-3"
-                style={{ borderBottom: '1px solid var(--border-subtle)' }}
-              >
-                <div>
-                  <h2 className="text-sm font-semibold" style={{ color: 'var(--soft-blue)' }}>
-                    Node-RED WebSocket Payload Injector &amp; Hardware Testbench
-                  </h2>
-                  <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                    Simulate live JSON frames on <code className="font-mono">ws://192.168.10.2:1880/ws/telemetry</code> and{' '}
-                    <code className="font-mono">ws://192.168.10.2:1880/ws/mfa</code>
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => setLiveSimEnabled((v) => !v)}
-                    className="px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0"
-                    style={
-                      liveSimEnabled
-                        ? {
-                            backgroundColor: 'var(--soft-mint-bg)',
-                            color: 'var(--soft-mint)',
-                            border: '1px solid var(--soft-mint-border)',
-                          }
-                        : {
-                            backgroundColor: 'var(--bg-elevated)',
-                            color: 'var(--text-secondary)',
-                            border: '1px solid var(--border-subtle)',
-                          }
-                    }
-                  >
-                    Auto Telemetry Stream: {liveSimEnabled ? 'ON' : 'PAUSED'}
-                  </button>
-                  <button
-                    onClick={() => {
-                      const nextGas = smoke_gas_level >= SMOKE_DANGER_THRESHOLD ? 118 : 540;
-                      setSmokeGasLevel(nextGas);
-                      showToast(
-                        nextGas >= SMOKE_DANGER_THRESHOLD
-                          ? 'Simulated Smoke/Gas Danger Spike (540 PPM)'
-                          : 'Smoke/Gas cleared to nominal (118 PPM)',
-                        nextGas >= SMOKE_DANGER_THRESHOLD ? 'error' : 'success'
-                      );
-                    }}
-                    className="px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0"
-                    style={{
-                      backgroundColor: 'var(--soft-coral-bg)',
-                      color: 'var(--soft-coral)',
-                      border: '1px solid var(--soft-coral-border)',
-                    }}
-                  >
-                    {smoke_gas_level >= SMOKE_DANGER_THRESHOLD
-                      ? 'Clear Smoke Alarm (118 PPM)'
-                      : 'Simulate Smoke Danger (540 PPM)'}
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs">
-                <div className="space-y-1.5">
-                  <label className="flex justify-between font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                    <span>temperature</span>
-                    <span style={{ color: 'var(--soft-blue)' }}>{temperature.toFixed(1)}°C</span>
-                  </label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="50"
-                    step="0.5"
-                    value={temperature}
-                    onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="flex justify-between font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                    <span>humidity</span>
-                    <span style={{ color: 'var(--soft-blue)' }}>{humidity.toFixed(1)}%</span>
-                  </label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="1"
-                    value={humidity}
-                    onChange={(e) => setHumidity(parseFloat(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="flex justify-between font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                    <span>smoke_gas_level</span>
-                    <span
-                      style={{
-                        color:
-                          smoke_gas_level >= SMOKE_DANGER_THRESHOLD
-                            ? 'var(--soft-coral)'
-                            : 'var(--soft-mint)',
-                      }}
-                    >
-                      {smoke_gas_level} PPM
-                    </span>
-                  </label>
-                  <input
-                    type="range"
-                    min="50"
-                    max="900"
-                    step="10"
-                    value={smoke_gas_level}
-                    onChange={(e) => setSmokeGasLevel(parseInt(e.target.value, 10))}
-                    className="w-full"
-                  />
-                </div>
-                <div className="flex items-end gap-2">
-                  <button
-                    onClick={() => setIsFacePassed((v) => !v)}
-                    className="flex-1 py-2 px-2.5 rounded-lg font-mono text-[11px] transition-colors whitespace-nowrap shrink-0"
-                    style={
-                      isFacePassed
-                        ? {
-                            backgroundColor: 'var(--soft-mint-bg)',
-                            color: 'var(--soft-mint)',
-                            border: '1px solid var(--soft-mint-border)',
-                          }
-                        : {
-                            backgroundColor: 'var(--bg-elevated)',
-                            color: 'var(--text-secondary)',
-                            border: '1px solid var(--border-subtle)',
-                          }
-                    }
-                  >
-                    Face: {String(isFacePassed)}
-                  </button>
-                  <button
-                    onClick={() => setIsCardPassed((v) => !v)}
-                    className="flex-1 py-2 px-2.5 rounded-lg font-mono text-[11px] transition-colors whitespace-nowrap shrink-0"
-                    style={
-                      isCardPassed
-                        ? {
-                            backgroundColor: 'var(--soft-mint-bg)',
-                            color: 'var(--soft-mint)',
-                            border: '1px solid var(--soft-mint-border)',
-                          }
-                        : {
-                            backgroundColor: 'var(--bg-elevated)',
-                            color: 'var(--text-secondary)',
-                            border: '1px solid var(--border-subtle)',
-                          }
-                    }
-                  >
-                    Card: {String(isCardPassed)}
-                  </button>
-                  <button
-                    onClick={() => setIsPinPassed((v) => !v)}
-                    className="flex-1 py-2 px-2.5 rounded-lg font-mono text-[11px] transition-colors whitespace-nowrap shrink-0"
-                    style={
-                      isPinPassed
-                        ? {
-                            backgroundColor: 'var(--soft-mint-bg)',
-                            color: 'var(--soft-mint)',
-                            border: '1px solid var(--soft-mint-border)',
-                          }
-                        : {
-                            backgroundColor: 'var(--bg-elevated)',
-                            color: 'var(--text-secondary)',
-                            border: '1px solid var(--border-subtle)',
-                          }
-                    }
-                  >
-                    PIN: {String(isPinPassed)}
-                  </button>
-                </div>
               </div>
             </div>
           )}
@@ -1366,7 +1046,6 @@ export default function App() {
               ================================================================ */}
           {activeView === 'view1' && (
             <section className="space-y-6" aria-label="Main Command Center">
-              {/* Global Status Banner: Soft Mint Green (Normal) or Soft Coral/Rose (Emergency) */}
               <div
                 className="rounded-xl p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors"
                 style={
@@ -1396,44 +1075,21 @@ export default function App() {
                         : 'GLOBAL FACILITY STATUS: NORMAL OPERATION'}
                     </h1>
                     <p className="text-xs font-mono tabular-nums mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                      Node-RED Central Bus: {CENTRAL_NODE_RED_HOST} · Smoke/Gas: {smoke_gas_level} PPM · MFA State:{' '}
-                      {mfa_status}
+                      Node-RED Central Bus: {CENTRAL_NODE_RED_HOST} ({wsOnline ? 'ONLINE' : 'OFFLINE'}) · Smoke/Gas:{' '}
+                      {smoke_gas_level} PPM · MFA State: {mfa_status}
                     </p>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-3 shrink-0">
-                  {isEmergencyAlert && (
-                    <button
-                      onClick={() => {
-                        setEmergencyOverrideActive(false);
-                        setSmokeGasLevel(118);
-                        setDoorState('CLOSED');
-                        setMfaStatus('IDLE');
-                        setIsFacePassed(false);
-                        setIsCardPassed(false);
-                        setIsPinPassed(false);
-                        pushActivity('SYSTEM', 'Emergency state reset to NORMAL by operator', 'NOMINAL');
-                        showToast('Facility status restored to NORMAL OPERATION', 'success');
-                      }}
-                      className="px-4 py-2 text-xs font-semibold rounded-lg transition-opacity hover:opacity-90 whitespace-nowrap shrink-0"
-                      style={{
-                        backgroundColor: 'var(--soft-mint-strong)',
-                        color: '#0f172a',
-                      }}
-                    >
-                      Acknowledge &amp; Reset Normal
-                    </button>
-                  )}
                   <span className="text-xs font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                    Nodes Online: 4/4
+                    Nodes Online: {wsOnline ? '4/4' : '0/4'}
                   </span>
                 </div>
               </div>
 
               {/* Quick Telemetry Snapshot: 5 Soft UI Mini-Cards */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-                {/* 1. door_state */}
                 <div className="lci-surface rounded-xl p-4 flex flex-col justify-between">
                   <div className="flex items-center justify-between text-xs" style={{ color: 'var(--text-secondary)' }}>
                     <span>Door Reed State</span>
@@ -1458,7 +1114,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* 2. light_state (LDR Sensor) */}
                 <div className="lci-surface rounded-xl p-4 flex flex-col justify-between">
                   <div className="flex items-center justify-between text-xs" style={{ color: 'var(--text-secondary)' }}>
                     <span>Aux Light (LDR)</span>
@@ -1482,7 +1137,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* 3. fan_relay */}
                 <div className="lci-surface rounded-xl p-4 flex flex-col justify-between">
                   <div className="flex items-center justify-between text-xs" style={{ color: 'var(--text-secondary)' }}>
                     <span>HVAC Fan Relay</span>
@@ -1506,7 +1160,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* 4. temperature */}
                 <div className="lci-surface rounded-xl p-4 flex flex-col justify-between">
                   <div className="flex items-center justify-between text-xs" style={{ color: 'var(--text-secondary)' }}>
                     <span>Temperature</span>
@@ -1522,7 +1175,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* 5. humidity */}
                 <div className="lci-surface rounded-xl p-4 flex flex-col justify-between">
                   <div className="flex items-center justify-between text-xs" style={{ color: 'var(--text-secondary)' }}>
                     <span>Relative Humidity</span>
@@ -1541,19 +1193,17 @@ export default function App() {
 
               {/* Split Row: Quick Action Panel (1.5s Anti-Spam Spinners) + Live Activity Feed */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-                {/* Quick Action Panel with Feature 4 (1.5s Anti-Spam Loading Spinners) */}
                 <div className="lg:col-span-5 lci-surface rounded-xl p-6 flex flex-col justify-between space-y-5">
                   <div>
                     <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
                       Quick Action Panel (1.5s Anti-Spam Lock)
                     </h2>
                     <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
-                      Dispatches HTTP POST commands to <code className="font-mono">http://192.168.10.2:1880/api/command</code> with 1.5s anti-spam lockout
+                      Dispatches live HTTP POST commands to <code className="font-mono">http://192.168.10.2:1880/api/command</code>
                     </p>
                   </div>
 
                   <div className="space-y-3">
-                    {/* 1. Emergency Door Unlock */}
                     <button
                       onClick={handleEmergencyDoorUnlock}
                       disabled={loadingButtons.emergency}
@@ -1589,7 +1239,6 @@ export default function App() {
                       </span>
                     </button>
 
-                    {/* 2. Toggle HVAC Fan */}
                     <button
                       onClick={handleToggleHvacFan}
                       disabled={loadingButtons.fan}
@@ -1625,7 +1274,6 @@ export default function App() {
                       </span>
                     </button>
 
-                    {/* 3. Toggle Aux Light */}
                     <button
                       onClick={handleToggleAuxLight}
                       disabled={loadingButtons.light}
@@ -1679,7 +1327,7 @@ export default function App() {
                         Live Activity Feed (Rolling 5-Event Ticker)
                       </h2>
                       <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                        Real-time stream of access transitions, relay actuations, and camera triggers
+                        Real-time stream of incoming WebSocket events from Node-RED
                       </p>
                     </div>
                     <span className="text-xs font-mono tabular-nums" style={{ color: 'var(--soft-blue)' }}>
@@ -1688,37 +1336,43 @@ export default function App() {
                   </div>
 
                   <div className="flex-1 flex flex-col justify-center">
-                    {activityFeed.slice(0, 5).map((item, idx) => (
-                      <div
-                        key={item.id}
-                        className="py-3 first:pt-0 last:pb-0 flex items-start justify-between gap-4 text-xs"
-                        style={
-                          idx > 0 ? { borderTop: '1px solid var(--border-subtle)' } : undefined
-                        }
-                      >
-                        <div className="space-y-0.5">
-                          <div className="font-medium" style={{ color: 'var(--text-primary)' }}>
-                            {item.message}
-                          </div>
-                          <div className="font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                            {item.category} · {item.status} · {item.timestamp}
-                          </div>
-                        </div>
-                        <span
-                          className="font-mono tabular-nums font-semibold shrink-0"
-                          style={{
-                            color:
-                              item.status === 'ALERT'
-                                ? 'var(--soft-coral)'
-                                : item.status === 'WARNING'
-                                ? 'var(--soft-amber)'
-                                : 'var(--soft-mint)',
-                          }}
-                        >
-                          {item.status}
-                        </span>
+                    {activityFeed.length === 0 ? (
+                      <div className="text-xs font-mono tabular-nums py-8 text-center" style={{ color: 'var(--text-secondary)' }}>
+                        Awaiting live events from ws://{CENTRAL_NODE_RED_HOST}/ws/telemetry &amp; /ws/mfa...
                       </div>
-                    ))}
+                    ) : (
+                      activityFeed.slice(0, 5).map((item, idx) => (
+                        <div
+                          key={item.id}
+                          className="py-3 first:pt-0 last:pb-0 flex items-start justify-between gap-4 text-xs"
+                          style={
+                            idx > 0 ? { borderTop: '1px solid var(--border-subtle)' } : undefined
+                          }
+                        >
+                          <div className="space-y-0.5">
+                            <div className="font-medium" style={{ color: 'var(--text-primary)' }}>
+                              {item.message}
+                            </div>
+                            <div className="font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+                              {item.category} · {item.status} · {item.timestamp}
+                            </div>
+                          </div>
+                          <span
+                            className="font-mono tabular-nums font-semibold shrink-0"
+                            style={{
+                              color:
+                                item.status === 'ALERT'
+                                  ? 'var(--soft-coral)'
+                                  : item.status === 'WARNING'
+                                  ? 'var(--soft-amber)'
+                                  : 'var(--soft-mint)',
+                            }}
+                          >
+                            {item.status}
+                          </span>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               </div>
@@ -1731,7 +1385,6 @@ export default function App() {
           {activeView === 'view2' && (
             <section className="space-y-6" aria-label="Smart Access and Biometrics">
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-                {/* Door & Lock Visualizer */}
                 <div className="lg:col-span-5 lci-surface rounded-xl p-6 flex flex-col justify-between space-y-5">
                   <div>
                     <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
@@ -1788,40 +1441,6 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-
-                  <div className="flex items-center gap-3 pt-2">
-                    <button
-                      onClick={() => {
-                        const nextDoor: DoorState = door_state === 'CLOSED' ? 'OPEN' : 'CLOSED';
-                        setDoorState(nextDoor);
-                        pushActivity('ACCESS', `Magnetic Reed Switch state changed to ${nextDoor}`, 'NOMINAL');
-                        showToast(`Magnetic Reed Switch state: ${nextDoor}`, nextDoor === 'CLOSED' ? 'success' : 'error');
-                      }}
-                      className="flex-1 py-2.5 px-3 text-xs font-medium rounded-lg lci-elevated transition-colors whitespace-nowrap shrink-0"
-                      style={{ color: 'var(--text-primary)' }}
-                    >
-                      Toggle Reed ({door_state === 'CLOSED' ? 'Simulate Open' : 'Close Door'})
-                    </button>
-                    <button
-                      onClick={() => {
-                        setIsFacePassed(false);
-                        setIsCardPassed(false);
-                        setIsPinPassed(false);
-                        setMfaStatus('IDLE');
-                        setDoorState('CLOSED');
-                        setEmergencyOverrideActive(false);
-                        showToast('Airlock re-locked and MFA reset to IDLE', 'info');
-                      }}
-                      className="py-2.5 px-3 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0"
-                      style={{
-                        backgroundColor: 'var(--soft-blue-bg)',
-                        color: 'var(--soft-blue)',
-                        border: '1px solid var(--soft-blue-border)',
-                      }}
-                    >
-                      Re-Lock Airlock
-                    </button>
-                  </div>
                 </div>
 
                 {/* 2-out-of-3 MFA Live Tracker */}
@@ -1833,7 +1452,7 @@ export default function App() {
                       </h2>
                       <p className="text-xs font-mono tabular-nums mt-0.5" style={{ color: 'var(--text-secondary)' }}>
                         mfa_status: <strong style={{ color: 'var(--soft-blue)' }}>{mfa_status}</strong> · Checkpoints Passed:{' '}
-                        {passedMfaCount}/3 (Requires ≥ 2 within 10s)
+                        {passedMfaCount}/3 (ws://{CENTRAL_NODE_RED_HOST}/ws/mfa)
                       </p>
                     </div>
 
@@ -1867,7 +1486,6 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Visual Progress Bar */}
                   <div className="space-y-2">
                     <div className="w-full h-2.5 lci-input rounded-full overflow-hidden">
                       <div
@@ -1894,15 +1512,10 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* 3 Checkpoints: isFacePassed, isCardPassed, isPinPassed */}
+                  {/* 3 Live Readout Checkpoints: isFacePassed, isCardPassed, isPinPassed */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <button
-                      onClick={() => {
-                        const next = !isFacePassed;
-                        setIsFacePassed(next);
-                        if (next) handleTriggerCameraCapture('FACE_VERIFIED');
-                      }}
-                      className="p-4 rounded-xl text-left transition-colors"
+                    <div
+                      className="p-4 rounded-xl text-left"
                       style={
                         isFacePassed
                           ? {
@@ -1927,11 +1540,10 @@ export default function App() {
                       <div className="text-[11px] font-mono tabular-nums mt-0.5" style={{ color: 'var(--text-secondary)' }}>
                         isFacePassed: {String(isFacePassed)}
                       </div>
-                    </button>
+                    </div>
 
-                    <button
-                      onClick={() => setIsCardPassed((v) => !v)}
-                      className="p-4 rounded-xl text-left transition-colors"
+                    <div
+                      className="p-4 rounded-xl text-left"
                       style={
                         isCardPassed
                           ? {
@@ -1956,11 +1568,10 @@ export default function App() {
                       <div className="text-[11px] font-mono tabular-nums mt-0.5" style={{ color: 'var(--text-secondary)' }}>
                         isCardPassed: {String(isCardPassed)}
                       </div>
-                    </button>
+                    </div>
 
-                    <button
-                      onClick={() => setIsPinPassed((v) => !v)}
-                      className="p-4 rounded-xl text-left transition-colors"
+                    <div
+                      className="p-4 rounded-xl text-left"
                       style={
                         isPinPassed
                           ? {
@@ -1985,7 +1596,7 @@ export default function App() {
                       <div className="text-[11px] font-mono tabular-nums mt-0.5" style={{ color: 'var(--text-secondary)' }}>
                         isPinPassed: {String(isPinPassed)}
                       </div>
-                    </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2000,53 +1611,49 @@ export default function App() {
                         Biometric Camera Feed (Node 3 Optical Capture)
                       </h2>
                       <p className="text-xs font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                        Source Endpoint: http://{effectiveNode3}/capture · Triggered on PIR Motion / Face Verification
+                        Live Endpoint: http://{effectiveNode3}/capture
                       </p>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleTriggerCameraCapture('MOTION')}
-                      className="px-3 py-1.5 text-xs font-medium rounded-lg lci-elevated whitespace-nowrap shrink-0"
-                      style={{ color: 'var(--text-primary)' }}
-                    >
-                      Simulate Motion Frame
-                    </button>
-                    <button
-                      onClick={() => handleTriggerCameraCapture('FACE_VERIFIED')}
-                      className="px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap shrink-0"
-                      style={{
-                        backgroundColor: 'var(--soft-mint-bg)',
-                        color: 'var(--soft-mint)',
-                        border: '1px solid var(--soft-mint-border)',
-                      }}
-                    >
-                      Capture Verified Face
-                    </button>
-                    <button
-                      onClick={() => handleTriggerCameraCapture('UNAUTHORIZED')}
-                      className="px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap shrink-0"
-                      style={{
-                        backgroundColor: 'var(--soft-coral-bg)',
-                        color: 'var(--soft-coral)',
-                        border: '1px solid var(--soft-coral-border)',
-                      }}
-                    >
-                      Simulate Unknown Face
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => {
+                      setCameraStreamFailed(false);
+                      setCameraFrameKey(Date.now());
+                    }}
+                    className="px-3.5 py-1.5 text-xs font-medium rounded-lg lci-elevated whitespace-nowrap shrink-0"
+                    style={{ color: 'var(--text-primary)' }}
+                  >
+                    Refresh Camera Frame
+                  </button>
                 </div>
 
-                <div className="rounded-xl overflow-hidden bg-slate-950 relative" style={{ border: '1px solid var(--border-subtle)' }}>
-                  {cameraFrameUrl && (
+                <div
+                  className="rounded-xl overflow-hidden lci-input min-h-[240px] flex items-center justify-center p-4"
+                  style={{ border: '1px solid var(--border-subtle)' }}
+                >
+                  {!cameraStreamFailed ? (
                     <img
                       id="biometric-camera-feed"
-                      src={cameraFrameUrl}
-                      alt={`Latest biometric JPEG frame from Face Recognition Node ${effectiveNode3}`}
+                      src={`http://${effectiveNode3}/capture?ts=${cameraFrameKey}`}
+                      alt={`Biometric JPEG capture from Face Recognition Node ${effectiveNode3}`}
                       referrerPolicy="no-referrer"
+                      onError={() => {
+                        setCameraStreamFailed(true);
+                        showToast(`Biometric Node 3 (http://${effectiveNode3}/capture) offline`, 'error');
+                      }}
                       className="w-full max-h-[420px] object-contain mx-auto block"
                     />
+                  ) : (
+                    <div className="text-center space-y-2 py-10">
+                      <Camera className="w-8 h-8 mx-auto" style={{ color: 'var(--soft-coral)' }} />
+                      <div className="text-sm font-semibold font-mono tabular-nums" style={{ color: 'var(--soft-coral)' }}>
+                        CAMERA NODE OFFLINE (http://{effectiveNode3}/capture)
+                      </div>
+                      <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        Awaiting live JPEG frame from Face Recognition Node 3 upon motion detection.
+                      </p>
+                    </div>
                   )}
                 </div>
               </div>
@@ -2058,7 +1665,6 @@ export default function App() {
               ================================================================ */}
           {activeView === 'view3' && (
             <section className="space-y-6" aria-label="Environmental Monitoring">
-              {/* 3 Circular Gauges with Soft UI Accents */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <CircularGauge
                   label="Ambient Temperature (temperature)"
@@ -2095,7 +1701,6 @@ export default function App() {
                 />
               </div>
 
-              {/* Interactive Line Charts with 30-Point Sliding Window (FIFO Queue) */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <FifoLineChart
                   title="Thermal Telemetry Stream (0–50°C)"
@@ -2103,8 +1708,8 @@ export default function App() {
                   labels={fifoHistory.labels}
                   data={fifoHistory.temps}
                   unit="°C"
-                  minY={10}
-                  maxY={45}
+                  minY={0}
+                  maxY={50}
                   color={theme === 'light' ? '#3b82f6' : '#60a5fa'}
                   dangerThreshold={38}
                   theme={theme}
@@ -2116,7 +1721,7 @@ export default function App() {
                   data={fifoHistory.gases}
                   unit=" PPM"
                   minY={0}
-                  maxY={700}
+                  maxY={1000}
                   color={theme === 'light' ? '#10b981' : '#34d399'}
                   dangerThreshold={SMOKE_DANGER_THRESHOLD}
                   theme={theme}
@@ -2136,7 +1741,6 @@ export default function App() {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* HVAC Fan Relay Control Card */}
                   <div className="p-4 rounded-xl lci-elevated flex flex-col justify-between gap-4">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2.5">
@@ -2216,7 +1820,6 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Auxiliary Lighting Relay Control Card */}
                   <div className="p-4 rounded-xl lci-elevated flex flex-col justify-between gap-4">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2.5">
@@ -2316,26 +1919,20 @@ export default function App() {
                     </p>
                   </div>
 
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => {
-                        fetchHistoricalLogsFromNodeRed();
-                        showToast(`Synced SQLite table "${activeAuditTab}" via REST GET`, 'info');
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0"
-                      style={{
-                        backgroundColor: 'var(--soft-blue-bg)',
-                        color: 'var(--soft-blue)',
-                        border: '1px solid var(--soft-blue-border)',
-                      }}
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      Sync SQLite via REST
-                    </button>
-                  </div>
+                  <button
+                    onClick={fetchHistoricalLogsFromNodeRed}
+                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0"
+                    style={{
+                      backgroundColor: 'var(--soft-blue-bg)',
+                      color: 'var(--soft-blue)',
+                      border: '1px solid var(--soft-blue-border)',
+                    }}
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Sync SQLite via REST
+                  </button>
                 </div>
 
-                {/* SQLite Table Tabs + Search Input */}
                 <div
                   className="flex flex-wrap items-center justify-between gap-4 pt-3"
                   style={{ borderTop: '1px solid var(--border-subtle)' }}
@@ -2389,33 +1986,33 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* High-Density Data Table */}
                 <div
                   className="overflow-x-auto rounded-xl lci-input"
                   style={{ border: '1px solid var(--border-subtle)' }}
                 >
-                  {activeAuditTab === 'access_logs' && (
-                    <table className="w-full text-left border-collapse text-xs">
-                      <thead>
-                        <tr
-                          className="lci-elevated"
-                          style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}
-                        >
-                          <th className="py-3 px-4 font-semibold">ID</th>
-                          <th className="py-3 px-4 font-semibold">Timestamp</th>
-                          <th className="py-3 px-4 font-semibold">Personnel</th>
-                          <th className="py-3 px-4 font-semibold">RFID UID</th>
-                          <th className="py-3 px-4 font-semibold">MFA Checkpoints</th>
-                          <th className="py-3 px-4 font-semibold">mfa_status</th>
-                          <th className="py-3 px-4 font-semibold text-right">Node IP</th>
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr
+                        className="lci-elevated"
+                        style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}
+                      >
+                        <th className="py-3 px-4 font-semibold">ID</th>
+                        <th className="py-3 px-4 font-semibold">Timestamp</th>
+                        <th className="py-3 px-4 font-semibold">Details / Subject</th>
+                        <th className="py-3 px-4 font-semibold">Status / Metrics</th>
+                        <th className="py-3 px-4 font-semibold text-right">Node IP</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paginatedAuditRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-8 px-4 text-center font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+                            No records received from http://{CENTRAL_NODE_RED_HOST}/api/logs/{activeAuditTab}
+                          </td>
                         </tr>
-                      </thead>
-                      <tbody>
-                        {(paginatedAuditRows as AccessLogRecord[]).map((row) => (
-                          <tr
-                            key={row.id}
-                            style={{ borderBottom: '1px solid var(--border-subtle)' }}
-                          >
+                      ) : (
+                        paginatedAuditRows.map((row: any) => (
+                          <tr key={row.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
                             <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
                               #{row.id}
                             </td>
@@ -2423,171 +2020,21 @@ export default function App() {
                               {row.timestamp}
                             </td>
                             <td className="py-2.5 px-4 font-medium" style={{ color: 'var(--text-primary)' }}>
-                              {row.user_name}
+                              {row.user_name || row.subject_name || `${row.temperature}°C / ${row.humidity}%`}
                             </td>
                             <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--soft-blue)' }}>
-                              {row.card_uid}
+                              {row.mfa_status || row.event_type || `Gas: ${row.smoke_gas_level} PPM`}
                             </td>
-                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                              {row.factors_used}
-                            </td>
-                            <td
-                              className="py-2.5 px-4 font-mono tabular-nums font-semibold"
-                              style={{
-                                color:
-                                  row.mfa_status === 'UNLOCKED'
-                                    ? 'var(--soft-mint)'
-                                    : row.mfa_status === 'DENIED_TIMEOUT'
-                                    ? 'var(--soft-coral)'
-                                    : 'var(--soft-amber)',
-                              }}
-                            >
-                              {row.mfa_status}
-                            </td>
-                            <td
-                              className="py-2.5 px-4 font-mono tabular-nums text-right"
-                              style={{ color: 'var(--text-secondary)' }}
-                            >
+                            <td className="py-2.5 px-4 font-mono tabular-nums text-right" style={{ color: 'var(--text-secondary)' }}>
                               {row.node_ip}
                             </td>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-
-                  {activeAuditTab === 'camera_events' && (
-                    <table className="w-full text-left border-collapse text-xs">
-                      <thead>
-                        <tr
-                          className="lci-elevated"
-                          style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}
-                        >
-                          <th className="py-3 px-4 font-semibold">ID</th>
-                          <th className="py-3 px-4 font-semibold">Timestamp</th>
-                          <th className="py-3 px-4 font-semibold">Event Type</th>
-                          <th className="py-3 px-4 font-semibold">Subject / Vector</th>
-                          <th className="py-3 px-4 font-semibold text-right">Confidence</th>
-                          <th className="py-3 px-4 font-semibold">Frame Archive Path</th>
-                          <th className="py-3 px-4 font-semibold text-right">Node IP</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(paginatedAuditRows as CameraEventRecord[]).map((row) => (
-                          <tr
-                            key={row.id}
-                            style={{ borderBottom: '1px solid var(--border-subtle)' }}
-                          >
-                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                              #{row.id}
-                            </td>
-                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                              {row.timestamp}
-                            </td>
-                            <td
-                              className="py-2.5 px-4 font-mono tabular-nums font-semibold"
-                              style={{
-                                color:
-                                  row.event_type === 'FACE_MATCH'
-                                    ? 'var(--soft-mint)'
-                                    : row.event_type === 'UNKNOWN_FACE'
-                                    ? 'var(--soft-coral)'
-                                    : 'var(--soft-blue)',
-                              }}
-                            >
-                              {row.event_type}
-                            </td>
-                            <td className="py-2.5 px-4 font-medium" style={{ color: 'var(--text-primary)' }}>
-                              {row.subject_name}
-                            </td>
-                            <td
-                              className="py-2.5 px-4 font-mono tabular-nums text-right"
-                              style={{ color: 'var(--text-primary)' }}
-                            >
-                              {row.confidence.toFixed(1)}%
-                            </td>
-                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                              {row.frame_ref}
-                            </td>
-                            <td
-                              className="py-2.5 px-4 font-mono tabular-nums text-right"
-                              style={{ color: 'var(--text-secondary)' }}
-                            >
-                              {row.node_ip}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-
-                  {activeAuditTab === 'environmental_telemetry' && (
-                    <table className="w-full text-left border-collapse text-xs">
-                      <thead>
-                        <tr
-                          className="lci-elevated"
-                          style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}
-                        >
-                          <th className="py-3 px-4 font-semibold">ID</th>
-                          <th className="py-3 px-4 font-semibold">Timestamp</th>
-                          <th className="py-3 px-4 font-semibold text-right">temperature</th>
-                          <th className="py-3 px-4 font-semibold text-right">humidity</th>
-                          <th className="py-3 px-4 font-semibold text-right">smoke_gas_level</th>
-                          <th className="py-3 px-4 font-semibold">light_state</th>
-                          <th className="py-3 px-4 font-semibold">fan_relay</th>
-                          <th className="py-3 px-4 font-semibold text-right">Node IP</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(paginatedAuditRows as EnvironmentalTelemetryRecord[]).map((row) => (
-                          <tr
-                            key={row.id}
-                            style={{ borderBottom: '1px solid var(--border-subtle)' }}
-                          >
-                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                              #{row.id}
-                            </td>
-                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                              {row.timestamp}
-                            </td>
-                            <td
-                              className="py-2.5 px-4 font-mono tabular-nums text-right"
-                              style={{ color: 'var(--soft-blue)' }}
-                            >
-                              {row.temperature.toFixed(1)}°C
-                            </td>
-                            <td
-                              className="py-2.5 px-4 font-mono tabular-nums text-right"
-                              style={{ color: 'var(--soft-blue)' }}
-                            >
-                              {row.humidity.toFixed(1)}%
-                            </td>
-                            <td
-                              className="py-2.5 px-4 font-mono tabular-nums text-right"
-                              style={{ color: 'var(--soft-mint)' }}
-                            >
-                              {row.smoke_gas_level} PPM
-                            </td>
-                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-primary)' }}>
-                              {row.light_state}
-                            </td>
-                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-primary)' }}>
-                              {row.fan_relay}
-                            </td>
-                            <td
-                              className="py-2.5 px-4 font-mono tabular-nums text-right"
-                              style={{ color: 'var(--text-secondary)' }}
-                            >
-                              {row.node_ip}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
+                        ))
+                      )}
+                    </tbody>
+                  </table>
                 </div>
 
-                {/* Pagination Controls */}
                 <div className="flex items-center justify-between text-xs pt-1" style={{ color: 'var(--text-secondary)' }}>
                   <span className="font-mono tabular-nums">
                     Showing {paginatedAuditRows.length} of {filteredAuditRows.length} records in SQLite table{' '}
@@ -2628,36 +2075,13 @@ export default function App() {
           {activeView === 'view5' && (
             <section className="space-y-6" aria-label="System Health and Diagnostics">
               <div className="lci-surface rounded-xl p-6 space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
-                      Network Heartbeat Monitor (5-Second WebSocket Ping Interval)
-                    </h2>
-                    <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                      Real-time reachability for Central Node-RED Server and the 3 Field Subsystem Nodes
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => {
-                      const now = formatNowTime();
-                      setHeartbeats((prev) =>
-                        prev.map((n) => ({
-                          ...n,
-                          lastPing: now,
-                          latencyMs: Number((1.8 + Math.random() * 5.5).toFixed(1)),
-                        }))
-                      );
-                      showToast('Heartbeat ping completed across all 4 facility nodes', 'success');
-                    }}
-                    className="px-3.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0"
-                    style={{
-                      backgroundColor: 'var(--soft-blue-bg)',
-                      color: 'var(--soft-blue)',
-                      border: '1px solid var(--soft-blue-border)',
-                    }}
-                  >
-                    Trigger Immediate Ping
-                  </button>
+                <div>
+                  <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    Network Heartbeat Monitor (5-Second WebSocket Ping Interval)
+                  </h2>
+                  <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                    Live reachability status for Central Node-RED Server and the 3 Field Subsystem Nodes
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -2675,21 +2099,14 @@ export default function App() {
                             {node.role}
                           </div>
                         </div>
-                        <button
-                          onClick={() =>
-                            setHeartbeats((prev) =>
-                              prev.map((item) =>
-                                item.id === node.id ? { ...item, online: !item.online } : item
-                              )
-                            )
-                          }
+                        <span
                           className="font-mono tabular-nums text-xs font-semibold whitespace-nowrap shrink-0"
                           style={{
                             color: node.online ? 'var(--soft-mint)' : 'var(--soft-coral)',
                           }}
                         >
                           {node.online ? 'ONLINE' : 'OFFLINE'}
-                        </button>
+                        </span>
                       </div>
 
                       <div
@@ -2701,12 +2118,6 @@ export default function App() {
                           <span style={{ color: 'var(--soft-blue)' }}>{node.ip}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span style={{ color: 'var(--text-secondary)' }}>WS RTT Latency</span>
-                          <span style={{ color: 'var(--text-primary)' }}>
-                            {node.online ? `${node.latencyMs} ms` : 'TIMEOUT'}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
                           <span style={{ color: 'var(--text-secondary)' }}>Last Ping</span>
                           <span style={{ color: 'var(--text-secondary)' }}>{node.lastPing}</span>
                         </div>
@@ -2716,37 +2127,14 @@ export default function App() {
                 </div>
               </div>
 
-              {/* System Errors Table (system_errors) */}
               <div className="lci-surface rounded-xl p-6 space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
-                      System Diagnostic &amp; Fault Log (SQLite Table: system_errors)
-                    </h2>
-                    <p className="text-xs font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                      Tracks disconnected sensors, frame buffer drops, and MFA timeouts across LCI-SFM nodes
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      const newErr: SystemErrorRecord = {
-                        id: (system_errors[0]?.id || 84) + 1,
-                        timestamp: formatNowTimestamp(),
-                        error_code: 'ERR_DHT22_BUS_CRC',
-                        subsystem: 'NODE_2_ENV',
-                        severity: 'WARNING',
-                        message: `Single-wire CRC checksum retry on Node 2 (${effectiveNode2}); recovered on next cycle.`,
-                        resolved: false,
-                      };
-                      setSystemErrors((prev) => [newErr, ...prev]);
-                      showToast(`Logged diagnostic warning ERR_DHT22_BUS_CRC on ${effectiveNode2}`, 'error');
-                    }}
-                    className="px-3.5 py-1.5 text-xs font-medium rounded-lg lci-elevated whitespace-nowrap shrink-0"
-                    style={{ color: 'var(--text-primary)' }}
-                  >
-                    Simulate Sensor Fault Entry
-                  </button>
+                <div>
+                  <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    System Diagnostic &amp; Fault Log (SQLite Table: system_errors)
+                  </h2>
+                  <p className="text-xs font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+                    GET http://{CENTRAL_NODE_RED_HOST}/api/logs/system_errors
+                  </p>
                 </div>
 
                 <div
@@ -2764,52 +2152,39 @@ export default function App() {
                         <th className="py-3 px-4 font-semibold">Error Code</th>
                         <th className="py-3 px-4 font-semibold">Subsystem</th>
                         <th className="py-3 px-4 font-semibold">Diagnostic Message</th>
-                        <th className="py-3 px-4 font-semibold text-right">State</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {system_errors.map((err) => (
-                        <tr key={err.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                          <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                            #{err.id}
-                          </td>
-                          <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                            {err.timestamp}
-                          </td>
-                          <td
-                            className="py-2.5 px-4 font-mono tabular-nums font-semibold"
-                            style={{ color: 'var(--soft-coral)' }}
-                          >
-                            {err.error_code}
-                          </td>
-                          <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--soft-blue)' }}>
-                            {err.subsystem}
-                          </td>
-                          <td className="py-2.5 px-4" style={{ color: 'var(--text-primary)' }}>
-                            {err.message}
-                          </td>
-                          <td className="py-2.5 px-4 text-right font-mono tabular-nums">
-                            {err.resolved ? (
-                              <span style={{ color: 'var(--soft-mint)' }}>RESOLVED</span>
-                            ) : (
-                              <button
-                                onClick={() => {
-                                  setSystemErrors((prev) =>
-                                    prev.map((item) =>
-                                      item.id === err.id ? { ...item, resolved: true } : item
-                                    )
-                                  );
-                                  showToast(`Diagnostic #${err.id} marked as RESOLVED`, 'success');
-                                }}
-                                className="hover:underline whitespace-nowrap shrink-0"
-                                style={{ color: 'var(--soft-amber)' }}
-                              >
-                                Acknowledge
-                              </button>
-                            )}
+                      {system_errors.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-8 px-4 text-center font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+                            No system errors reported from http://{CENTRAL_NODE_RED_HOST}/api/logs/system_errors
                           </td>
                         </tr>
-                      ))}
+                      ) : (
+                        system_errors.map((err) => (
+                          <tr key={err.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+                              #{err.id}
+                            </td>
+                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+                              {err.timestamp}
+                            </td>
+                            <td
+                              className="py-2.5 px-4 font-mono tabular-nums font-semibold"
+                              style={{ color: 'var(--soft-coral)' }}
+                            >
+                              {err.error_code}
+                            </td>
+                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--soft-blue)' }}>
+                              {err.subsystem}
+                            </td>
+                            <td className="py-2.5 px-4" style={{ color: 'var(--text-primary)' }}>
+                              {err.message}
+                            </td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -2823,7 +2198,6 @@ export default function App() {
           {activeView === 'view6' && (
             <section className="space-y-6" aria-label="System Management and Provisioning">
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-                {/* User Management Form (HTTP POST JSON) */}
                 <div className="lg:col-span-6 lci-surface rounded-xl p-6 flex flex-col justify-between space-y-5">
                   <div>
                     <div className="flex items-center gap-2">
@@ -2833,7 +2207,7 @@ export default function App() {
                       </h2>
                     </div>
                     <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
-                      Registers operator credentials and dispatches JSON via HTTP POST to{' '}
+                      Dispatches operator credentials via HTTP POST to{' '}
                       <code className="font-mono">http://{CENTRAL_NODE_RED_HOST}/api/users</code>
                     </p>
                   </div>
@@ -2870,52 +2244,30 @@ export default function App() {
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                       <div className="space-y-1.5">
-                        <label className="font-medium flex justify-between" style={{ color: 'var(--text-secondary)' }}>
-                          <span>RFID Card UID</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const hex = () =>
-                                Math.floor(16 + Math.random() * 239)
-                                  .toString(16)
-                                  .toUpperCase();
-                              setNewRfidUid(`04:${hex()}:${hex()}:${hex()}`);
-                            }}
-                            className="hover:underline text-[11px]"
-                            style={{ color: 'var(--soft-blue)' }}
-                          >
-                            Generate
-                          </button>
+                        <label className="font-medium block" style={{ color: 'var(--text-secondary)' }}>
+                          RFID Card UID
                         </label>
                         <input
                           type="text"
                           required
                           value={newRfidUid}
                           onChange={(e) => setNewRfidUid(e.target.value)}
+                          placeholder="04:A2:9F:3B"
                           className="w-full px-3 py-2 rounded-lg lci-input font-mono tabular-nums focus:outline-none"
                           style={{ color: 'var(--soft-blue)' }}
                         />
                       </div>
 
                       <div className="space-y-1.5">
-                        <label className="font-medium flex justify-between" style={{ color: 'var(--text-secondary)' }}>
-                          <span>Face Template ID</span>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setNewFaceTemplate(`BIO_VEC_${Math.floor(1000 + Math.random() * 8999)}`)
-                            }
-                            className="hover:underline text-[11px]"
-                            style={{ color: 'var(--soft-blue)' }}
-                          >
-                            Enroll Cam
-                          </button>
+                        <label className="font-medium block" style={{ color: 'var(--text-secondary)' }}>
+                          Face Template ID
                         </label>
                         <input
                           type="text"
                           required
                           value={newFaceTemplate}
                           onChange={(e) => setNewFaceTemplate(e.target.value)}
+                          placeholder="BIO_VEC_8821"
                           className="w-full px-3 py-2 rounded-lg lci-input font-mono tabular-nums focus:outline-none"
                           style={{ color: 'var(--soft-mint)' }}
                         />
@@ -2931,6 +2283,7 @@ export default function App() {
                           required
                           value={newPinCode}
                           onChange={(e) => setNewPinCode(e.target.value)}
+                          placeholder="••••"
                           className="w-full px-3 py-2 rounded-lg lci-input font-mono tabular-nums focus:outline-none"
                         />
                       </div>
@@ -3026,65 +2379,53 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Provisioned Operators Directory */}
-              <div className="lci-surface rounded-xl p-6 space-y-4">
-                <div className="flex items-center justify-between">
+              {provisionedUsers.length > 0 && (
+                <div className="lci-surface rounded-xl p-6 space-y-4">
                   <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                    Provisioned Facility Personnel Registry ({provisionedUsers.length} Active)
+                    Provisioned Facility Personnel ({provisionedUsers.length})
                   </h3>
-                  <span className="text-xs font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                    Synced with {effectiveNode1} &amp; {effectiveNode3}
-                  </span>
-                </div>
-
-                <div
-                  className="overflow-x-auto rounded-xl lci-input"
-                  style={{ border: '1px solid var(--border-subtle)' }}
-                >
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr
-                        className="lci-elevated"
-                        style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}
-                      >
-                        <th className="py-3 px-4 font-semibold">User ID</th>
-                        <th className="py-3 px-4 font-semibold">Username</th>
-                        <th className="py-3 px-4 font-semibold">Department</th>
-                        <th className="py-3 px-4 font-semibold">RFID Card UID</th>
-                        <th className="py-3 px-4 font-semibold">Face Template ID</th>
-                        <th className="py-3 px-4 font-semibold text-right">Provisioned Date</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {provisionedUsers.map((u) => (
-                        <tr key={u.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                          <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                            {u.id}
-                          </td>
-                          <td className="py-2.5 px-4 font-medium" style={{ color: 'var(--text-primary)' }}>
-                            {u.username}
-                          </td>
-                          <td className="py-2.5 px-4" style={{ color: 'var(--text-secondary)' }}>
-                            {u.department}
-                          </td>
-                          <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--soft-blue)' }}>
-                            {u.rfid_uid}
-                          </td>
-                          <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--soft-mint)' }}>
-                            {u.face_template_id}
-                          </td>
-                          <td
-                            className="py-2.5 px-4 font-mono tabular-nums text-right"
-                            style={{ color: 'var(--text-secondary)' }}
-                          >
-                            {u.created_at}
-                          </td>
+                  <div
+                    className="overflow-x-auto rounded-xl lci-input"
+                    style={{ border: '1px solid var(--border-subtle)' }}
+                  >
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr
+                          className="lci-elevated"
+                          style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}
+                        >
+                          <th className="py-3 px-4 font-semibold">User ID</th>
+                          <th className="py-3 px-4 font-semibold">Username</th>
+                          <th className="py-3 px-4 font-semibold">Department</th>
+                          <th className="py-3 px-4 font-semibold">RFID Card UID</th>
+                          <th className="py-3 px-4 font-semibold">Face Template ID</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {provisionedUsers.map((u) => (
+                          <tr key={u.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+                              {u.id}
+                            </td>
+                            <td className="py-2.5 px-4 font-medium" style={{ color: 'var(--text-primary)' }}>
+                              {u.username}
+                            </td>
+                            <td className="py-2.5 px-4" style={{ color: 'var(--text-secondary)' }}>
+                              {u.department}
+                            </td>
+                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--soft-blue)' }}>
+                              {u.rfid_uid}
+                            </td>
+                            <td className="py-2.5 px-4 font-mono tabular-nums" style={{ color: 'var(--soft-mint)' }}>
+                              {u.face_template_id}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              </div>
+              )}
             </section>
           )}
         </main>
@@ -3186,7 +2527,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Standalone Vanilla HTML5/CSS3/ES6 Source Export Modal */}
       <VanillaExportModal
         isOpen={showVanillaModal}
         onClose={() => setShowVanillaModal(false)}

@@ -1,37 +1,37 @@
 /* ==========================================================================
-   LCI-SFM Air-Gapped Smart Facility Management Dashboard — Vanilla CSS3
+   LCI-SFM Air-Gapped Smart Facility Management Dashboard — Production CSS3
    Soft UI Palette · Light/Dark Theme Variables · Collapsible Sidebar · Toasts
    Zero External Fonts / Zero CDN Dependencies
    ========================================================================== */
 
 :root,
 [data-theme="dark"] {
-  /* Slate Gray / Blue-Gray Dark Mode Surfaces */
   --bg-canvas: #0f172a;
   --bg-surface: #1e293b;
   --bg-elevated: #263349;
   --bg-sidebar: #131c31;
-  --bg-header: rgba(19, 28, 49, 0.88);
+  --bg-header: rgba(19, 28, 49, 0.9);
   --bg-input: #0f172a;
   --border-subtle: rgba(148, 163, 184, 0.16);
   --border-focus: rgba(125, 166, 217, 0.45);
 
-  /* Typography */
   --text-primary: #f1f5f9;
   --text-secondary: #94a3b8;
   --text-muted: #64748b;
 
-  /* Soft / Muted Semantic Accents (Soft UI) */
+  /* Soft Mint Green (Normal / ON / Success) */
   --soft-mint: #5eead4;
   --soft-mint-strong: #34d399;
   --soft-mint-bg: rgba(52, 211, 153, 0.12);
   --soft-mint-border: rgba(52, 211, 153, 0.32);
 
+  /* Soft Coral / Rose (Emergency / OFF / Errors) */
   --soft-coral: #fda4af;
   --soft-coral-strong: #fb7185;
   --soft-coral-bg: rgba(251, 113, 133, 0.12);
   --soft-coral-border: rgba(251, 113, 133, 0.32);
 
+  /* Slate Gray / Blue-Gray Accents */
   --soft-blue: #93c5fd;
   --soft-blue-strong: #60a5fa;
   --soft-blue-bg: rgba(96, 165, 250, 0.12);
@@ -49,22 +49,19 @@
 }
 
 [data-theme="light"] {
-  /* Soft Slate / Cool Alabaster Light Mode Surfaces */
   --bg-canvas: #f1f5f9;
   --bg-surface: #ffffff;
   --bg-elevated: #f8fafc;
   --bg-sidebar: #ffffff;
-  --bg-header: rgba(255, 255, 255, 0.9);
+  --bg-header: rgba(255, 255, 255, 0.92);
   --bg-input: #f8fafc;
   --border-subtle: rgba(100, 116, 139, 0.18);
   --border-focus: rgba(59, 130, 246, 0.45);
 
-  /* Typography */
   --text-primary: #1e293b;
   --text-secondary: #475569;
   --text-muted: #64748b;
 
-  /* Soft / Muted Semantic Accents (Adjusted for Light Contrast) */
   --soft-mint: #059669;
   --soft-mint-strong: #10b981;
   --soft-mint-bg: rgba(16, 185, 129, 0.1);
@@ -137,9 +134,6 @@ body {
   letter-spacing: 0.01em;
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-primary);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
 }
 
 .sidebar-nav {
@@ -183,7 +177,6 @@ body {
   color: var(--text-secondary);
 }
 
-/* Main Content Shell */
 .main-shell {
   margin-left: var(--sidebar-width);
   flex: 1;
@@ -277,6 +270,13 @@ body {
   margin-bottom: 20px;
 }
 
+.grid-4 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
 .grid-3 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -291,7 +291,6 @@ body {
   margin-bottom: 20px;
 }
 
-/* Soft Status Banner */
 .status-banner {
   padding: 16px 20px;
   border-radius: 12px;
@@ -320,6 +319,23 @@ body {
 
 .text-blue {
   color: var(--soft-blue);
+}
+
+.text-secondary {
+  color: var(--text-secondary);
+}
+
+.card-label {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.section-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--text-primary);
 }
 
 /* ==========================================================================
@@ -365,7 +381,6 @@ body {
   color: var(--soft-blue);
 }
 
-/* Anti-Spam Disabled & Loading State (1.5s duration) */
 .btn-action:disabled,
 .btn-action.is-loading {
   cursor: not-allowed;
@@ -416,7 +431,7 @@ body {
   padding: 12px 16px;
   box-shadow: var(--shadow-soft);
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   font-size: 0.82rem;
@@ -433,22 +448,64 @@ body {
 
 .toast-item.toast-success {
   border-color: var(--soft-mint-border);
-  background: var(--bg-surface);
 }
 
 .toast-item.toast-error {
   border-color: var(--soft-coral-border);
-  background: var(--bg-surface);
 }
 
 .toast-item.toast-info {
   border-color: var(--soft-blue-border);
-  background: var(--bg-surface);
 }
 
 /* ==========================================================================
-   6. FORMS, TABLES & MODAL
+   6. MFA PROGRESS BAR, GAUGES, FORMS, TABLES & MODAL
    ========================================================================== */
+.mfa-progress-track {
+  width: 100%;
+  height: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 12px 0;
+}
+
+.mfa-progress-fill {
+  height: 100%;
+  width: 100%;
+  transform: scaleX(0);
+  transform-origin: left;
+  background: var(--soft-blue-strong);
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1), background-color 180ms ease;
+}
+
+.tab-group {
+  display: inline-flex;
+  gap: 6px;
+  padding: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.tab-btn {
+  padding: 6px 12px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.tab-btn.active {
+  background: var(--soft-blue-bg);
+  color: var(--soft-blue);
+  border-color: var(--soft-blue-border);
+}
+
 .form-input {
   width: 100%;
   padding: 9px 12px;
@@ -457,6 +514,11 @@ body {
   background: var(--bg-input);
   color: var(--text-primary);
   font-size: 0.85rem;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
 }
 
 .data-table {
