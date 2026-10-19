@@ -1,16 +1,21 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LCI-SFM Air-Gapped Command &amp; Control Dashboard</title>
-  <!-- Air-Gapped Local Stylesheet -->
+  <!-- 100% Air-Gapped Local Stylesheet -->
   <link rel="stylesheet" href="/standalone/styles.css" />
 </head>
 <body>
-  <!-- Fixed Sidebar Navigation -->
-  <aside class="sidebar">
-    <div class="sidebar-brand">LCI-SFM Facility Control</div>
+  <!-- Stacked Vanilla Toast Notification Container (Auto-dismisses after 3s) -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- Collapsible Sidebar Navigation -->
+  <aside id="app-sidebar" class="sidebar">
+    <div class="sidebar-brand">
+      <span>LCI-SFM Facility Control</span>
+    </div>
     <nav class="sidebar-nav">
       <button class="nav-btn active" data-view="view-1">01. Main Command Center</button>
       <button class="nav-btn" data-view="view-2">02. Smart Access &amp; Biometrics</button>
@@ -19,33 +24,89 @@
       <button class="nav-btn" data-view="view-5">05. System Health &amp; Diagnostics</button>
       <button class="nav-btn" data-view="view-6">06. System Management</button>
     </nav>
+    <div class="sidebar-footer tabular-nums">
+      Node-RED Bus: 192.168.10.2:1880
+    </div>
   </aside>
 
-  <!-- Main Viewport -->
-  <div class="main-shell">
+  <!-- Main Expanding Content Shell -->
+  <div id="main-shell" class="main-shell">
     <header class="top-bar">
-      <span class="tabular-nums">LCI-SFM // NODE-RED AIR-GAPPED BUS (192.168.10.2:1880)</span>
-      <button class="btn-action btn-cyber" id="open-ip-modal-btn">Configure Node IPs</button>
+      <div class="top-bar-left">
+        <!-- Feature 5: Collapsible Sidebar Hamburger Toggle -->
+        <button id="sidebar-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Sidebar">
+          <span>☰</span>
+          <span id="sidebar-toggle-label">Collapse Menu</span>
+        </button>
+        <span class="tabular-nums" style="font-size: 0.82rem; color: var(--text-secondary);">
+          LCI-SFM · Air-Gapped Facility Telemetry
+        </span>
+      </div>
+
+      <div class="top-bar-right">
+        <!-- Feature 1: Light / Dark Mode Toggle (Persisted in localStorage) -->
+        <button id="theme-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Theme">
+          <span id="theme-toggle-icon">☀</span>
+          <span id="theme-toggle-text">Light Mode</span>
+        </button>
+        <button class="icon-btn" id="open-ip-modal-btn" type="button">
+          Configure Node IPs
+        </button>
+      </div>
     </header>
 
-    <!-- View 1: Main Command Center -->
+    <!-- View 1: Main Command Center (Executive Overview) -->
     <section id="view-1" class="view-container active">
       <div id="global-status-banner" class="status-banner">
-        <strong>GLOBAL FACILITY STATUS: NOMINAL</strong>
+        <strong>GLOBAL FACILITY STATUS: NORMAL OPERATION</strong>
         <span class="tabular-nums" id="banner-smoke-readout">SMOKE/GAS: 118 PPM</span>
       </div>
-      <div class="grid-3">
+
+      <!-- Quick Telemetry Snapshot -->
+      <div class="grid-5">
         <div class="glass-card">
-          <div>Door State (Reed Switch)</div>
-          <h2 class="tabular-nums" id="snap-door-state">CLOSED</h2>
+          <div style="font-size: 0.78rem; color: var(--text-secondary);">Door State (Reed)</div>
+          <h2 class="tabular-nums text-mint" id="snap-door-state" style="margin-top: 6px;">CLOSED</h2>
         </div>
         <div class="glass-card">
-          <div>LDR Light State &amp; HVAC Fan Relay</div>
-          <h2 class="tabular-nums"><span id="snap-light-state">ON</span> / <span id="snap-fan-relay">ON</span></h2>
+          <div style="font-size: 0.78rem; color: var(--text-secondary);">Light State (LDR)</div>
+          <h2 class="tabular-nums text-mint" id="snap-light-state" style="margin-top: 6px;">ON</h2>
         </div>
         <div class="glass-card">
-          <div>Temperature &amp; Humidity</div>
-          <h2 class="tabular-nums"><span id="snap-temp">22.4</span>°C · <span id="snap-hum">46.0</span>%</h2>
+          <div style="font-size: 0.78rem; color: var(--text-secondary);">HVAC Fan Relay</div>
+          <h2 class="tabular-nums text-mint" id="snap-fan-relay" style="margin-top: 6px;">ON</h2>
+        </div>
+        <div class="glass-card">
+          <div style="font-size: 0.78rem; color: var(--text-secondary);">Temperature</div>
+          <h2 class="tabular-nums text-blue" id="snap-temp" style="margin-top: 6px;">22.4°C</h2>
+        </div>
+        <div class="glass-card">
+          <div style="font-size: 0.78rem; color: var(--text-secondary);">Humidity</div>
+          <h2 class="tabular-nums text-blue" id="snap-hum" style="margin-top: 6px;">46.0%</h2>
+        </div>
+      </div>
+
+      <!-- Quick Action Panel (With 1.5s Anti-Spam Loading Spinners) & Live Activity Feed -->
+      <div class="grid-2">
+        <div class="glass-card" style="display: flex; flex-direction: column; gap: 12px;">
+          <h3 style="font-size: 0.95rem;">Quick Action Panel (HTTP POST with 1.5s Anti-Spam Lock)</h3>
+          <button id="btn-emergency-unlock" class="btn-action btn-coral" type="button">
+            <span class="btn-label">Emergency Door Unlock</span>
+            <span class="tabular-nums">POST → Node 1</span>
+          </button>
+          <button id="btn-toggle-fan" class="btn-action btn-blue" type="button">
+            <span class="btn-label">Toggle HVAC Fan</span>
+            <span class="tabular-nums" id="btn-fan-state">ON</span>
+          </button>
+          <button id="btn-toggle-light" class="btn-action btn-mint" type="button">
+            <span class="btn-label">Toggle Aux Light</span>
+            <span class="tabular-nums" id="btn-light-state">ON</span>
+          </button>
+        </div>
+
+        <div class="glass-card">
+          <h3 style="font-size: 0.95rem; margin-bottom: 12px;">Live Activity Feed (Last 5 Events)</h3>
+          <ul id="live-activity-list" style="list-style: none; display: flex; flex-direction: column; gap: 8px; font-size: 0.82rem;"></ul>
         </div>
       </div>
     </section>
@@ -54,12 +115,82 @@
     <section id="view-2" class="view-container">
       <div class="grid-2">
         <div class="glass-card">
-          <h3>2-out-of-3 MFA Live Tracker</h3>
-          <p class="tabular-nums" id="mfa-status-label">STATUS: IDLE</p>
+          <h3 style="margin-bottom: 10px;">2-out-of-3 MFA Live Tracker</h3>
+          <p class="tabular-nums text-blue" id="mfa-status-label" style="margin-bottom: 12px;">
+            mfa_status: IDLE (10s Stage 2 Window)
+          </p>
+          <div style="display: flex; gap: 10px;">
+            <span class="tabular-nums" id="chk-face">isFacePassed: false</span> ·
+            <span class="tabular-nums" id="chk-card">isCardPassed: false</span> ·
+            <span class="tabular-nums" id="chk-pin">isPinPassed: false</span>
+          </div>
         </div>
         <div class="glass-card">
-          <h3>Biometric Camera Feed (ip_node3)</h3>
-          <img id="biometric-camera-feed" alt="Biometric Node 3 Feed" referrerPolicy="no-referrer" />
+          <h3 style="margin-bottom: 10px;">Biometric Camera Feed (ip_node3)</h3>
+          <img id="biometric-camera-feed" alt="Biometric Node 3 Feed" referrerPolicy="no-referrer" style="max-width: 100%; border-radius: 8px;" />
+        </div>
+      </div>
+    </section>
+
+    <!-- View 3: Environmental Monitoring -->
+    <section id="view-3" class="view-container">
+      <div class="grid-2">
+        <div class="glass-card">
+          <h3 style="margin-bottom: 10px;">Temperature 30-Point FIFO Chart</h3>
+          <canvas id="chart-temperature" width="520" height="200" style="width: 100%;"></canvas>
+        </div>
+        <div class="glass-card">
+          <h3 style="margin-bottom: 10px;">Smoke &amp; Gas 30-Point FIFO Chart</h3>
+          <canvas id="chart-smoke" width="520" height="200" style="width: 100%;"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- View 4: Audit Logs & Database Explorer -->
+    <section id="view-4" class="view-container">
+      <div class="glass-card">
+        <h3 style="margin-bottom: 12px;">SQLite Audit Logs Explorer (access_logs, camera_events, environmental_telemetry)</h3>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Personnel / Event</th>
+              <th>Status</th>
+              <th>Node IP</th>
+            </tr>
+          </thead>
+          <tbody id="audit-table-body" class="tabular-nums"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- View 5: System Health & Diagnostics -->
+    <section id="view-5" class="view-container">
+      <div class="glass-card">
+        <h3 style="margin-bottom: 12px;">Network Heartbeat Monitor &amp; system_errors</h3>
+        <div id="heartbeat-grid" class="grid-3 tabular-nums"></div>
+      </div>
+    </section>
+
+    <!-- View 6: System Management & Provisioning -->
+    <section id="view-6" class="view-container">
+      <div class="grid-2">
+        <div class="glass-card">
+          <h3 style="margin-bottom: 12px;">Provision New Facility Operator</h3>
+          <form id="user-provision-form" style="display: flex; flex-direction: column; gap: 10px;">
+            <input class="form-input" type="text" id="prov-username" placeholder="Username" required />
+            <input class="form-input tabular-nums" type="text" id="prov-rfid" placeholder="RFID Card UID (e.g. 04:A2:9F:3B)" required />
+            <button type="submit" class="btn-action btn-mint">Provision Operator (HTTP POST)</button>
+          </form>
+        </div>
+        <div class="glass-card">
+          <h3 style="margin-bottom: 12px;">Update Dynamic Node IPs (localStorage)</h3>
+          <form id="node-ip-update-form" style="display: flex; flex-direction: column; gap: 10px;">
+            <input class="form-input tabular-nums" type="text" id="mgmt-ip-node1" placeholder="ip_node1 (Access Node)" required />
+            <input class="form-input tabular-nums" type="text" id="mgmt-ip-node2" placeholder="ip_node2 (Environment Node)" required />
+            <input class="form-input tabular-nums" type="text" id="mgmt-ip-node3" placeholder="ip_node3 (Face Recognition Node)" required />
+            <button type="submit" class="btn-action btn-blue">Save Node IPs &amp; Notify Node-RED</button>
+          </form>
         </div>
       </div>
     </section>
@@ -68,16 +199,20 @@
   <!-- Startup Dynamic IP Configuration Modal -->
   <div id="startup-ip-modal" class="modal-backdrop hidden">
     <div class="modal-box">
-      <h3>Initial Node IP Configuration</h3>
-      <p>Configure air-gapped LCI-SFM subsystem endpoints in localStorage:</p>
-      <form id="startup-ip-form">
-        <label>Access Node (ip_node1)</label>
-        <input type="text" id="input-ip-node1" value="192.168.10.11" required />
-        <label>Environment Node (ip_node2)</label>
-        <input type="text" id="input-ip-node2" value="192.168.10.12" required />
-        <label>Face Recognition Node (ip_node3)</label>
-        <input type="text" id="input-ip-node3" value="192.168.10.13" required />
-        <button type="submit" class="btn-action btn-cyber">Save to localStorage</button>
+      <h3 style="margin-bottom: 8px;">Initial Node IP Configuration</h3>
+      <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 16px;">
+        Configure air-gapped LCI-SFM subsystem endpoints in localStorage:
+      </p>
+      <form id="startup-ip-form" style="display: flex; flex-direction: column; gap: 12px;">
+        <label style="font-size: 0.8rem;">Access Node (ip_node1)</label>
+        <input class="form-input tabular-nums" type="text" id="input-ip-node1" value="192.168.10.11" required />
+        <label style="font-size: 0.8rem;">Environment Node (ip_node2)</label>
+        <input class="form-input tabular-nums" type="text" id="input-ip-node2" value="192.168.10.12" required />
+        <label style="font-size: 0.8rem;">Face Recognition Node (ip_node3)</label>
+        <input class="form-input tabular-nums" type="text" id="input-ip-node3" value="192.168.10.13" required />
+        <button type="submit" class="btn-action btn-blue" style="justify-content: center; margin-top: 6px;">
+          Save to localStorage
+        </button>
       </form>
     </div>
   </div>

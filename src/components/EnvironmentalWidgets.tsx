@@ -27,7 +27,6 @@ export const CircularGauge: React.FC<CircularGaugeProps> = ({
   const ratio = (clamped - min) / (max - min);
   const radius = 58;
   const circumference = 2 * Math.PI * radius;
-  // 270-degree arc (0.75 of full circle)
   const arcLength = circumference * 0.75;
   const dashOffset = arcLength - ratio * arcLength;
 
@@ -35,10 +34,11 @@ export const CircularGauge: React.FC<CircularGaugeProps> = ({
   const isWarning =
     !isDanger && warningThreshold !== undefined && value >= warningThreshold;
 
+  // Soft Coral for Danger, Soft Amber for Warning, Soft Mint/Blue for Normal
   const activeColor = isDanger
-    ? '#FF2E54'
+    ? 'var(--soft-coral-strong)'
     : isWarning
-    ? '#F59E0B'
+    ? 'var(--soft-amber)'
     : accentColor;
 
   const statusLabel = isDanger
@@ -48,9 +48,9 @@ export const CircularGauge: React.FC<CircularGaugeProps> = ({
     : 'NOMINAL OPERATING RANGE';
 
   return (
-    <div className="bg-slate-900/75 border border-slate-800/90 rounded-xl p-5 backdrop-blur-md flex flex-col items-center justify-between">
-      <div className="w-full flex items-center justify-between text-xs text-slate-400 mb-2">
-        <span className="font-medium text-slate-200">{label}</span>
+    <div className="lci-surface rounded-xl p-5 flex flex-col items-center justify-between">
+      <div className="w-full flex items-center justify-between text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>
+        <span className="font-medium" style={{ color: 'var(--text-primary)' }}>{label}</span>
         <span className="font-mono tabular-nums">
           {min}–{max} {unit}
         </span>
@@ -64,19 +64,19 @@ export const CircularGauge: React.FC<CircularGaugeProps> = ({
             cy="70"
             r={radius}
             fill="none"
-            stroke="rgba(148, 163, 184, 0.14)"
+            stroke="var(--border-subtle)"
             strokeWidth="10"
             strokeDasharray={`${arcLength} ${circumference}`}
             strokeLinecap="round"
           />
-          {/* Danger Zone Marker Arc (if applicable) */}
+          {/* Soft Coral Danger Zone Arc */}
           {dangerThreshold !== undefined && (
             <circle
               cx="70"
               cy="70"
               r={radius}
               fill="none"
-              stroke="rgba(255, 46, 84, 0.28)"
+              stroke="rgba(251, 113, 133, 0.25)"
               strokeWidth="10"
               strokeDasharray={`${
                 arcLength * ((max - dangerThreshold) / (max - min))
@@ -113,16 +113,21 @@ export const CircularGauge: React.FC<CircularGaugeProps> = ({
             {typeof value === 'number' && !Number.isInteger(value)
               ? value.toFixed(1)
               : value}
-            <span className="text-xs font-normal text-slate-400 ml-0.5">
+            <span className="text-xs font-normal ml-0.5" style={{ color: 'var(--text-secondary)' }}>
               {unit}
             </span>
           </span>
-          <span className="text-[11px] text-slate-400 mt-1">{subtitle}</span>
+          <span className="text-[11px] mt-1" style={{ color: 'var(--text-secondary)' }}>
+            {subtitle}
+          </span>
         </div>
       </div>
 
-      <div className="w-full pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
-        <span className="text-slate-400">Sensor Status</span>
+      <div
+        className="w-full pt-3 flex items-center justify-between text-xs"
+        style={{ borderTop: '1px solid var(--border-subtle)' }}
+      >
+        <span style={{ color: 'var(--text-secondary)' }}>Sensor Status</span>
         <span
           className="font-mono tabular-nums font-medium"
           style={{ color: activeColor }}
@@ -144,6 +149,7 @@ interface FifoLineChartProps {
   maxY: number;
   color: string;
   dangerThreshold?: number;
+  theme?: 'dark' | 'light';
 }
 
 export const FifoLineChart: React.FC<FifoLineChartProps> = ({
@@ -156,6 +162,7 @@ export const FifoLineChart: React.FC<FifoLineChartProps> = ({
   maxY,
   color,
   dangerThreshold,
+  theme = 'dark',
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -176,11 +183,14 @@ export const FifoLineChart: React.FC<FifoLineChartProps> = ({
     const plotW = width - padLeft - padRight;
     const plotH = height - padTop - padBottom;
 
-    // Horizontal grid lines & Y axis labels
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.12)';
+    // Soft grid lines & Y axis labels
+    ctx.strokeStyle =
+      theme === 'light'
+        ? 'rgba(100, 116, 139, 0.16)'
+        : 'rgba(148, 163, 184, 0.14)';
     ctx.lineWidth = 1;
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.fillStyle = '#94A3B8';
+    ctx.fillStyle = theme === 'light' ? '#475569' : '#94A3B8';
 
     for (let i = 0; i <= 4; i++) {
       const ratio = i / 4;
@@ -193,7 +203,7 @@ export const FifoLineChart: React.FC<FifoLineChartProps> = ({
       ctx.fillText(`${val}${unit}`, 6, y + 4);
     }
 
-    // Danger threshold line
+    // Soft Coral Danger threshold line
     if (dangerThreshold !== undefined) {
       const dRatio = Math.min(
         1,
@@ -201,13 +211,13 @@ export const FifoLineChart: React.FC<FifoLineChartProps> = ({
       );
       const dy = padTop + plotH - dRatio * plotH;
       ctx.save();
-      ctx.strokeStyle = 'rgba(255, 46, 84, 0.7)';
+      ctx.strokeStyle = 'rgba(251, 113, 133, 0.75)';
       ctx.setLineDash([5, 4]);
       ctx.beginPath();
       ctx.moveTo(padLeft, dy);
       ctx.lineTo(width - padRight, dy);
       ctx.stroke();
-      ctx.fillStyle = '#FF2E54';
+      ctx.fillStyle = theme === 'light' ? '#e11d48' : '#fb7185';
       ctx.fillText(`ALARM ≥ ${dangerThreshold}${unit}`, width - 135, dy - 5);
       ctx.restore();
     }
@@ -225,9 +235,9 @@ export const FifoLineChart: React.FC<FifoLineChartProps> = ({
       return { x, y, val, label: labelSlice[idx] || '' };
     });
 
-    // Area fill under curve
+    // Soft Area fill under curve
     const grad = ctx.createLinearGradient(0, padTop, 0, padTop + plotH);
-    grad.addColorStop(0, `${color}40`);
+    grad.addColorStop(0, `${color}36`);
     grad.addColorStop(1, `${color}03`);
     ctx.fillStyle = grad;
     ctx.beginPath();
@@ -251,7 +261,7 @@ export const FifoLineChart: React.FC<FifoLineChartProps> = ({
     points.forEach((p, idx) => {
       const isDanger =
         dangerThreshold !== undefined && p.val >= dangerThreshold;
-      ctx.fillStyle = isDanger ? '#FF2E54' : color;
+      ctx.fillStyle = isDanger ? '#fb7185' : color;
       ctx.beginPath();
       ctx.arc(
         p.x,
@@ -262,21 +272,27 @@ export const FifoLineChart: React.FC<FifoLineChartProps> = ({
       );
       ctx.fill();
 
-      if (idx === 0 || idx === Math.floor(points.length / 2) || idx === points.length - 1) {
-        ctx.fillStyle = '#64748B';
+      if (
+        idx === 0 ||
+        idx === Math.floor(points.length / 2) ||
+        idx === points.length - 1
+      ) {
+        ctx.fillStyle = theme === 'light' ? '#64748b' : '#64748B';
         ctx.fillText(p.label, Math.max(padLeft, p.x - 24), height - 8);
       }
     });
-  }, [labels, data, minY, maxY, unit, color, dangerThreshold]);
+  }, [labels, data, minY, maxY, unit, color, dangerThreshold, theme]);
 
   const latestVal = data.length > 0 ? data[data.length - 1] : 0;
 
   return (
-    <div className="bg-slate-900/75 border border-slate-800/90 rounded-xl p-5 backdrop-blur-md">
+    <div className="lci-surface rounded-xl p-5">
       <div className="flex items-center justify-between mb-3">
         <div>
-          <h3 className="text-sm font-semibold text-slate-100">{title}</h3>
-          <p className="text-xs text-slate-400 font-mono tabular-nums">
+          <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+            {title}
+          </h3>
+          <p className="text-xs font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
             Variable: {variableName} · Sliding Window FIFO ({data.length}/30 pts)
           </p>
         </div>
@@ -291,9 +307,9 @@ export const FifoLineChart: React.FC<FifoLineChartProps> = ({
       </div>
       <canvas
         ref={canvasRef}
-        width={560}
+        width={620}
         height={210}
-        className="w-full h-48 block rounded-lg bg-slate-950/60 border border-slate-800/60"
+        className="w-full h-48 block rounded-lg lci-input"
       />
     </div>
   );
