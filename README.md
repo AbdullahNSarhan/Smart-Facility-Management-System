@@ -44,12 +44,11 @@ Requirements: Node.js 22.5+ / 24 LTS (uses built-in `node:sqlite` and `crypto.sc
 ```bash
 git clone https://github.com/AbdullahNSarhan/Smart-Facility-Management-System.git
 cd Smart-Facility-Management-System
-cp .env.example .env
-npm install
+npm install --no-package-lock
 npm run dev
 ```
 
-`npm run dev` starts the unified Node.js Express + WebSocket + SQLite backend on port **3000** (`0.0.0.0`) with Vite middleware mounted for same-origin frontend operation.
+`npm run dev` starts the unified Node.js Express + WebSocket + SQLite backend on port **3000** (`0.0.0.0`) with Vite middleware mounted for same-origin frontend operation. For a fresh development setup, do not copy the production `.env.example` first; its production secret checks intentionally require real credentials. Development mode has a local-only bootstrap credential configured by the code. Never use development credentials in production.
 
 ### Validation, Testing & Database Operations
 
@@ -72,13 +71,24 @@ The `docker-compose.yml` orchestrates three hardened services on an internal bri
 # 1. Build static frontend assets into ./dist
 npm run build
 
-# 2. Configure .env and generate mosquitto/passwd (see mosquitto/README.md)
+# 2. Create the production environment file, then edit every placeholder/secret
 cp .env.example .env
+chmod 600 .env
+nano .env
 
-# 3. Launch stack
-docker compose up -d --build
+# 3. Generate mosquitto/passwd interactively (see mosquitto/README.md)
+# Do this before starting the broker. Set .env MQTT_PASSWORD to the same lci_backend password.
+
+# 4. Start the broker first, then the application
+docker compose config -q
+docker compose up -d mqtt-service
+docker compose logs --tail=100 mqtt-service
+docker compose up -d --build backend
+docker compose up -d --build frontend_dashboard
 docker compose ps
 ```
+
+For the complete server preparation, private-LAN binding, firewall, verification, backup/restore, and update process, follow [Deployment Guide](docs/DEPLOYMENT_GUIDE.md). The example bind IPs default to `127.0.0.1`; change them to the server's actual static private LAN IP only when LAN access is required and firewall rules are in place.
 
 ## Default endpoints
 
