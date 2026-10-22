@@ -392,8 +392,8 @@ Restore is a maintenance operation that replaces the current database. Confirm t
 ```bash
 docker compose stop backend
 docker cp backups/<BACKUP_FILE>.db lci_backend:/app/data/restore-source.db
-docker compose run --rm --no-deps backend \
-  node backend/src/db/backup.js restore /app/data/restore-source.db
+docker compose run --rm --no-deps --user root backend \
+  sh -lc 'node backend/src/db/backup.js restore /app/data/restore-source.db && chown -R node:node /app/data'
 docker compose up -d backend
 docker compose ps
 docker compose logs --tail=100 backend
