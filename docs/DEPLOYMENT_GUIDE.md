@@ -296,23 +296,29 @@ When ready:
 
 Do not route plain MQTT port 1883 directly to the public internet. Use a VPN/private network for remote maintenance.
 
-## 9. Start the stack
+## 9. Start Mosquitto first, then the application
 
-After environment setup, password provisioning, build, and network-policy review:
+After environment setup, password provisioning, build, and network-policy review, validate the Compose file and start the broker by itself first:
 
 ```bash
 docker compose config -q
-docker compose up -d --build
+docker compose up -d mqtt-service
+docker compose ps mqtt-service
+docker compose logs --tail=100 mqtt-service
+```
+
+Confirm Mosquitto stays running and loads its password/ACL files without errors. If it exits, fix the missing password file or permissions before continuing.
+
+Then build/start the backend, followed by the frontend:
+
+```bash
+docker compose up -d --build backend
+docker compose logs --tail=150 backend
+docker compose up -d --build frontend_dashboard
 docker compose ps
 ```
 
-Check each service's logs:
-
-```bash
-docker compose logs --tail=150 mqtt-service
-docker compose logs --tail=150 backend
-docker compose logs --tail=150 frontend_dashboard
-```
+The backend must become healthy before Nginx starts because Compose waits for the backend health check. Check each service's logs if any container exits:
 
 Follow live logs if debugging:
 
