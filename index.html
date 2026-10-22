@@ -3,28 +3,114 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Strict Air-Gapped Content Security Policy (Blocks all external scripts, fonts, frames, and CDNs) -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://192.168.43.225:1880 http://192.168.43.* http://192.168.* http://10.*; connect-src 'self' ws://192.168.43.225:1880 http://192.168.43.225:1880 ws://192.168.* http://192.168.*; font-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self';" />
   <title>LCI-SFM Command &amp; Control Dashboard</title>
   <meta name="description" content="Air-gapped Light Current Infrastructure for Smart Facility Management (LCI-SFM) Web GUI Dashboard with real-time WebSocket telemetry, 2-of-3 MFA tracker, environmental monitoring, and SQLite audit explorer." />
   <meta property="og:title" content="LCI-SFM Command &amp; Control Dashboard" />
   <meta property="og:description" content="Air-gapped Light Current Infrastructure for Smart Facility Management (LCI-SFM) Web GUI Dashboard with real-time WebSocket telemetry, 2-of-3 MFA tracker, environmental monitoring, and SQLite audit explorer." />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
-  <!-- Strictly Local Relative CSS Path (Air-Gapped, No External CDNs) -->
+  <!-- Strictly Local Relative CSS Path -->
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <!-- Custom Vanilla Toast Notification Container (Top-Right, Stacked, 3s Auto-Dismiss) -->
-  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+  <!-- Custom Vanilla Toast Notification Wrapper with "Clear All (X)" Control -->
+  <div id="toast-wrapper" class="toast-wrapper" aria-live="polite">
+    <div id="toast-toolbar" class="toast-toolbar hidden">
+      <span id="toast-count-label" class="toast-count-label">Notifications</span>
+      <button type="button" id="toast-clear-all-btn" class="toast-clear-btn" title="Dismiss all notifications">
+        <span>Clear All</span>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+    <div id="toast-container" class="toast-container"></div>
+  </div>
 
-  <!-- Dynamic IP Configuration Startup Modal -->
-  <div id="startup-modal" class="modal-backdrop hidden">
-    <div class="modal-panel glass-card">
-      <div class="modal-header">
-        <span class="kicker-text">Initial Hardware Provisioning</span>
-        <h2>LCI-SFM Node IP Configuration</h2>
-        <p>Configure local air-gapped IPv4 endpoints stored persistently in browser <code>localStorage</code>.</p>
+  <!-- Full-Screen Glassmorphism RBAC Login Overlay -->
+  <div id="login-overlay" class="login-backdrop">
+    <div class="login-panel glass-card">
+      <div class="login-brand">
+        <div class="brand-logo login-logo">LCI</div>
+        <div>
+          <span class="kicker-text">Air-Gapped Security Gateway</span>
+          <h2>LCI-SFM Authentication</h2>
+        </div>
       </div>
-      <form id="startup-ip-form">
+      <p class="login-subtitle">Select an operational clearance role and enter your 6-digit operator passkey to unlock the facility console.</p>
+
+      <form id="login-form" autocomplete="off" novalidate>
+        <div class="field-group">
+          <label>Operational Clearance Role (RBAC)</label>
+          <div class="role-selector" role="radiogroup" aria-label="Select Role">
+            <label class="role-option active" id="role-card-admin">
+              <input type="radio" name="rbac_role" value="Admin" checked />
+              <div class="role-option-head">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                </svg>
+                <strong>Admin</strong>
+              </div>
+              <span class="role-desc">Full read/write command &amp; provisioning</span>
+            </label>
+
+            <label class="role-option" id="role-card-viewer">
+              <input type="radio" name="rbac_role" value="Viewer" />
+              <div class="role-option-head">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                  <circle cx="12" cy="12" r="3"></circle>
+                </svg>
+                <strong>Viewer</strong>
+              </div>
+              <span class="role-desc">Read-only telemetry &amp; audit monitoring</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label for="login_operator">Operator Identifier</label>
+          <input type="text" id="login_operator" value="ENG-SARHAN-01" maxlength="32" placeholder="ENG-SARHAN-01" required />
+        </div>
+
+        <div class="field-group">
+          <label for="login_pin">6-Digit Security PIN</label>
+          <input type="password" id="login_pin" value="123456" maxlength="6" inputmode="numeric" placeholder="••••••" required />
+          <span class="input-hint"> Strict 6-digit integer required (Default pre-filled: <code>123456</code>)</span>
+        </div>
+
+        <button type="submit" class="btn-mint full-width login-submit-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+          <span>Authenticate &amp; Unlock Console</span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Dynamic IP Configuration Modal with Top-Right (X) and Cancel Button -->
+  <div id="startup-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="ip-modal-title">
+    <div class="modal-panel glass-card">
+      <div class="modal-top-bar">
+        <div>
+          <span class="kicker-text">Hardware Endpoint Configuration</span>
+          <h2 id="ip-modal-title">LCI-SFM Node IP Configuration</h2>
+        </div>
+        <button type="button" id="close-ip-modal-x" class="modal-close-x" title="Close modal (Esc)" aria-label="Close modal">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <p class="modal-desc">Configure local air-gapped IPv4 endpoints validated and stored in browser <code>localStorage</code>.</p>
+
+      <form id="startup-ip-form" novalidate>
         <div class="field-group">
           <label for="modal_ip_node1">Node 1 — Access Control Node (<code>ip_node1</code>)</label>
           <input type="text" id="modal_ip_node1" placeholder="192.168.43.11" required />
@@ -37,8 +123,9 @@
           <label for="modal_ip_node3">Node 3 — Biometric Face Recognition Node (<code>ip_node3</code>)</label>
           <input type="text" id="modal_ip_node3" placeholder="192.168.43.13" required />
         </div>
-        <div class="modal-actions">
-          <button type="submit" class="btn-mint full-width">Save &amp; Initialize System</button>
+        <div class="modal-actions-row">
+          <button type="button" id="cancel-ip-modal-btn" class="btn-outline">Cancel</button>
+          <button type="submit" id="save-ip-modal-btn" class="btn-mint">Save &amp; Apply Endpoints</button>
         </div>
       </form>
     </div>
@@ -47,9 +134,9 @@
   <div class="layout-wrapper">
     <!-- Fixed & Collapsible Left Sidebar -->
     <aside id="sidebar" class="sidebar">
-      <div class="brand-header">
+      <div class="brand-header" title="LCI-SFM Air-Gapped Facility Console">
         <div class="brand-row">
-          <div class="brand-logo" title="LCI-SFM Core">LCI</div>
+          <div class="brand-logo">LCI</div>
           <div class="brand-text">
             <span class="brand-tag">Smart Facility Management</span>
             <h1>LCI-SFM</h1>
@@ -58,50 +145,63 @@
       </div>
 
       <nav class="sidebar-nav" aria-label="Primary Facility Views">
-        <button class="nav-item active" data-view="view-1" title="01. Command Center">
+        <button type="button" class="nav-item active" data-view="view-1" title="01. Main Command Center (Executive Overview)">
           <span class="nav-icon" aria-hidden="true">01</span>
           <span class="nav-label">Command Center</span>
         </button>
-        <button class="nav-item" data-view="view-2" title="02. Smart Access &amp; MFA">
+        <button type="button" class="nav-item" data-view="view-2" title="02. Smart Access &amp; Biometric MFA">
           <span class="nav-icon" aria-hidden="true">02</span>
           <span class="nav-label">Smart Access &amp; MFA</span>
         </button>
-        <button class="nav-item" data-view="view-3" title="03. Environment">
+        <button type="button" class="nav-item" data-view="view-3" title="03. Environmental Monitoring &amp; Gauges">
           <span class="nav-icon" aria-hidden="true">03</span>
           <span class="nav-label">Environment</span>
         </button>
-        <button class="nav-item" data-view="view-4" title="04. Audit &amp; DB Explorer">
+        <button type="button" class="nav-item" data-view="view-4" title="04. Audit Logs &amp; SQLite Database Explorer">
           <span class="nav-icon" aria-hidden="true">04</span>
           <span class="nav-label">Audit &amp; DB Explorer</span>
         </button>
-        <button class="nav-item" data-view="view-5" title="05. Health &amp; Diagnostics">
+        <button type="button" class="nav-item" data-view="view-5" title="05. System Health &amp; Node Heartbeat Diagnostics">
           <span class="nav-icon" aria-hidden="true">05</span>
           <span class="nav-label">Health &amp; Diagnostics</span>
         </button>
-        <button class="nav-item" data-view="view-6" title="06. Provisioning">
+
+        <div class="nav-divider" role="separator" aria-hidden="true"></div>
+
+        <!-- Visually Separated System Management Nav Item -->
+        <button type="button" class="nav-item nav-item-management" data-view="view-6" title="06. System Management &amp; User Provisioning">
           <span class="nav-icon" aria-hidden="true">06</span>
-          <span class="nav-label">Provisioning</span>
+          <span class="nav-label">System Management</span>
         </button>
       </nav>
 
+      <!-- Sidebar Bottom Area: WebSocket Status + Lock System / Logout Button -->
       <div class="sidebar-footer">
-        <div class="ws-indicator">
+        <div class="ws-indicator" title="WebSocket Telemetry Stream Status (ws://192.168.43.225:1880/ws/telemetry)">
           <span id="ws-telemetry-dot" class="dot dot-red"></span>
-          <span class="ws-text">Telemetry Stream · <strong id="ws-telemetry-status">OFFLINE</strong></span>
+          <span class="ws-text">Telemetry · <strong id="ws-telemetry-status">OFFLINE</strong></span>
         </div>
-        <div class="ws-indicator">
+        <div class="ws-indicator" title="WebSocket Biometric MFA Status (ws://192.168.43.225:1880/ws/mfa)">
           <span id="ws-mfa-dot" class="dot dot-red"></span>
-          <span class="ws-text">Biometric MFA · <strong id="ws-mfa-status">OFFLINE</strong></span>
+          <span class="ws-text">MFA Stream · <strong id="ws-mfa-status">OFFLINE</strong></span>
         </div>
+
+        <button type="button" id="logout-btn" class="logout-sidebar-btn" title="Lock System / Logout and Clear Session">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+          <span class="logout-label">Lock System / Logout</span>
+        </button>
       </div>
     </aside>
 
     <!-- Main Content Shell -->
     <main id="main-shell" class="main-shell">
-      <!-- Top Header with Collapsible Sidebar Button & Light/Dark Theme Switch -->
+      <!-- Top Header with Collapsible Sidebar, Live Clock, RBAC Badge, Fullscreen & Theme Switch -->
       <header class="top-bar">
         <div class="top-bar-left">
-          <button id="sidebar-toggle-btn" class="icon-btn" title="Collapse or Expand Sidebar" aria-label="Toggle Sidebar">
+          <button type="button" id="sidebar-toggle-btn" class="icon-btn" title="Collapse or Expand Sidebar" aria-label="Toggle Sidebar">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
               <line x1="3" y1="6" x2="21" y2="6"></line>
               <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -109,17 +209,44 @@
             </svg>
           </button>
           <div>
-            <span class="sub-label">Node-RED Core · <code>192.168.43.225:1880</code></span>
+            <span class="sub-label">
+              Node-RED Core · <code>192.168.43.225:1880</code> · Role: <strong id="header-role-label" class="text-mint">ADMIN</strong>
+            </span>
             <h2 id="current-view-title">Main Command Center</h2>
           </div>
         </div>
 
         <div class="top-bar-actions">
-          <button id="theme-toggle-btn" class="theme-switch-btn" title="Switch Light / Dark Theme" aria-label="Toggle Theme">
-            <span id="theme-icon-sun" class="theme-icon hidden">☀ Light Mode</span>
-            <span id="theme-icon-moon" class="theme-icon">☾ Dark Mode</span>
+          <!-- Live Digital Clock (HH:MM:SS AM/PM + Date) -->
+          <div class="live-clock-box" title="Local Facility System Time">
+            <span id="live-clock-time" class="clock-time tabular-nums">--:--:-- --</span>
+            <span class="clock-sep" aria-hidden="true">·</span>
+            <span id="live-clock-date" class="clock-date tabular-nums">--- --, ----</span>
+          </div>
+
+          <!-- Toggle Fullscreen Button -->
+          <button type="button" id="fullscreen-toggle-btn" class="icon-btn" title="Toggle Fullscreen View" aria-label="Toggle Fullscreen">
+            <svg id="fs-icon-expand" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <polyline points="9 21 3 21 3 15"></polyline>
+              <line x1="21" y1="3" x2="14" y2="10"></line>
+              <line x1="3" y1="21" x2="10" y2="14"></line>
+            </svg>
+            <svg id="fs-icon-compress" class="hidden" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="4 14 10 14 10 20"></polyline>
+              <polyline points="20 10 14 10 14 4"></polyline>
+              <line x1="14" y1="10" x2="21" y2="3"></line>
+              <line x1="3" y1="21" x2="10" y2="14"></line>
+            </svg>
           </button>
-          <button id="open-ip-modal-btn" class="btn-outline">Node IPs</button>
+
+          <!-- Light/Dark Theme Toggle -->
+          <button type="button" id="theme-toggle-btn" class="theme-switch-btn" title="Switch Light / Dark Theme" aria-label="Toggle Theme">
+            <span id="theme-icon-sun" class="theme-icon hidden">☀ Light</span>
+            <span id="theme-icon-moon" class="theme-icon">☾ Dark</span>
+          </button>
+
+          <button type="button" id="open-ip-modal-btn" class="btn-outline" title="Configure Node IPv4 Addresses">Node IPs</button>
         </div>
       </header>
 
@@ -165,18 +292,21 @@
         </div>
 
         <div class="two-col-grid">
-          <!-- Quick Action Panel with 1.5s Anti-Spam Loading State -->
+          <!-- Quick Action Panel with 1.5s Anti-Spam Loading State & RBAC Lock -->
           <div class="glass-card">
-            <h3 class="section-heading">Quick Action Panel</h3>
+            <div class="flex-between">
+              <h3 class="section-heading">Quick Action Panel</h3>
+              <span id="rbac-action-notice" class="rbac-lock-tag hidden">Read-Only (Viewer)</span>
+            </div>
             <p class="helper-note">Direct HTTP POST commands to <code>192.168.43.225:1880</code>. Buttons lock for 1.5 seconds upon click to prevent relay chatter.</p>
             <div class="action-stack">
-              <button id="cmd-unlock-door" class="btn-rose action-btn">
+              <button type="button" id="cmd-unlock-door" class="btn-rose action-btn rbac-protected">
                 <span class="btn-label">Emergency Door Unlock</span>
               </button>
-              <button id="cmd-toggle-fan" class="btn-cyber action-btn">
+              <button type="button" id="cmd-toggle-fan" class="btn-cyber action-btn rbac-protected">
                 <span class="btn-label">Toggle HVAC Fan Relay</span>
               </button>
-              <button id="cmd-toggle-light" class="btn-mint action-btn">
+              <button type="button" id="cmd-toggle-light" class="btn-mint action-btn rbac-protected">
                 <span class="btn-label">Toggle Auxiliary Light</span>
               </button>
             </div>
@@ -186,9 +316,7 @@
           <div class="glass-card">
             <h3 class="section-heading">Live Activity Feed (Last 5 Events)</h3>
             <p class="helper-note">Real-time event log captured from telemetry, MFA checkpoints, and operator dispatches.</p>
-            <ul id="live-activity-list" class="activity-list">
-              <li class="activity-empty">Awaiting live telemetry or MFA events from Node-RED (<code>192.168.43.225:1880</code>)...</li>
-            </ul>
+            <ul id="live-activity-list" class="activity-list"></ul>
           </div>
         </div>
       </section>
@@ -215,7 +343,7 @@
               <span>Stage-2 Countdown · <strong id="mfa-timer-label" class="tabular-nums">10s</strong></span>
             </div>
             <div class="progress-track">
-              <div id="mfa-progress-fill" class="progress-fill" style="width: 0%"></div>
+              <div id="mfa-progress-fill" class="progress-fill"></div>
             </div>
 
             <div class="mfa-checkpoints">
@@ -237,17 +365,21 @@
           <div class="glass-card">
             <div class="flex-between">
               <h3 class="section-heading">Biometric Camera Snapshot (<code>ip_node3</code>)</h3>
-              <button id="refresh-cam-btn" class="btn-outline">Capture Frame</button>
+              <button type="button" id="refresh-cam-btn" class="btn-outline">Capture Frame</button>
             </div>
             <div class="camera-frame">
               <div class="camera-viewport">
                 <img id="biometric-camera-img" class="hidden" alt="Node 3 Biometric Snapshot" />
+                <!-- Minimalist Inline SVG Illustration for Offline / Standby Camera State -->
                 <div id="camera-fallback-overlay" class="camera-fallback">
-                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                    <circle cx="12" cy="13" r="4"></circle>
+                  <svg class="empty-state-svg" width="52" height="52" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="8" y="16" width="48" height="36" rx="6"></rect>
+                    <circle cx="32" cy="34" r="9"></circle>
+                    <path d="M22 16l4-6h12l4 6"></path>
+                    <line x1="12" y1="12" x2="52" y2="56"></line>
                   </svg>
-                  <span id="camera-fallback-text">Optical Feed Standby — Click "Capture Frame" to query Node 3</span>
+                  <strong id="camera-fallback-title" class="empty-state-title">Optical Feed Offline / Standby</strong>
+                  <span id="camera-fallback-text" class="empty-state-sub">Click "Capture Frame" to request a live JPEG snapshot from Node 3.</span>
                 </div>
               </div>
               <div class="camera-caption">
@@ -328,8 +460,8 @@
             <p class="helper-note">Switch between Automated Sensor Threshold Logic and Manual Relay Control on Node-RED.</p>
           </div>
           <div class="override-controls">
-            <button id="mode-auto-btn" class="btn-mint">Auto Sensor Logic</button>
-            <button id="mode-manual-btn" class="btn-outline">Manual Override</button>
+            <button type="button" id="mode-auto-btn" class="btn-mint rbac-protected">Auto Sensor Logic</button>
+            <button type="button" id="mode-manual-btn" class="btn-outline rbac-protected">Manual Override</button>
           </div>
         </div>
       </section>
@@ -339,13 +471,27 @@
         <div class="glass-card">
           <div class="explorer-toolbar">
             <div class="tab-group" role="tablist">
-              <button class="tab-btn active" data-table="access_logs">Access Logs (<code>access_logs</code>)</button>
-              <button class="tab-btn" data-table="camera_events">Camera Events (<code>camera_events</code>)</button>
-              <button class="tab-btn" data-table="environmental_telemetry">Environmental History (<code>environmental_telemetry</code>)</button>
+              <button type="button" class="tab-btn active" data-table="access_logs">Access Logs (<code>access_logs</code>)</button>
+              <button type="button" class="tab-btn" data-table="camera_events">Camera Events (<code>camera_events</code>)</button>
+              <button type="button" class="tab-btn" data-table="environmental_telemetry">Environmental History (<code>environmental_telemetry</code>)</button>
             </div>
+
+            <!-- Enhanced Search Bar with Inline Magnifying Glass SVG and Dynamic Clear (X) Button -->
             <div class="search-group">
-              <input type="text" id="db-search-input" placeholder="Filter records by user, event, or status..." />
-              <button id="db-refresh-btn" class="btn-cyber">Fetch SQLite GET</button>
+              <div class="search-input-wrap">
+                <svg class="search-icon-svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <input type="text" id="db-search-input" maxlength="64" placeholder="Filter records by user, event, or status..." aria-label="Search SQLite records" />
+                <button type="button" id="db-search-clear-btn" class="search-clear-btn hidden" title="Clear search filter" aria-label="Clear search">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                </button>
+              </div>
+              <button type="button" id="db-refresh-btn" class="btn-cyber">Fetch SQLite GET</button>
             </div>
           </div>
 
@@ -390,7 +536,7 @@
         <div class="glass-card mt-24">
           <div class="flex-between">
             <h3 class="section-heading">System Error Log (<code>system_errors</code>)</h3>
-            <button id="refresh-errors-btn" class="btn-outline">Refresh Errors</button>
+            <button type="button" id="refresh-errors-btn" class="btn-outline">Refresh Errors</button>
           </div>
           <div class="table-container">
             <table class="data-table">
@@ -413,42 +559,48 @@
       <section id="view-6" class="view-section">
         <div class="two-col-grid">
           <div class="glass-card">
-            <h3 class="section-heading">Access Credential Provisioning</h3>
-            <p class="helper-note">Register new facility personnel credentials directly into the Node-RED SQLite store.</p>
-            <form id="user-provision-form">
+            <div class="flex-between">
+              <h3 class="section-heading">Access Credential Provisioning</h3>
+              <span class="rbac-lock-tag hidden">Read-Only (Viewer)</span>
+            </div>
+            <p class="helper-note">Sanitized &amp; type-checked personnel credentials dispatched via HTTP POST to Node-RED SQLite store.</p>
+            <form id="user-provision-form" novalidate>
               <div class="field-group">
-                <label for="prov_name">Personnel Full Name</label>
-                <input type="text" id="prov_name" placeholder="Eng. Tariq Al-Mansoor" required />
+                <label for="prov_name">Personnel Full Name (Alphanumeric, 2–64 chars)</label>
+                <input type="text" id="prov_name" class="rbac-protected-input" maxlength="64" placeholder="Eng. Tariq Al-Mansoor" required />
               </div>
               <div class="field-group">
-                <label for="prov_rfid">RFID Card UID (Hex)</label>
-                <input type="text" id="prov_rfid" placeholder="A4:9F:21:0B" required />
+                <label for="prov_rfid">RFID Card UID (Hex Format <code>XX:XX:XX:XX</code>)</label>
+                <input type="text" id="prov_rfid" class="rbac-protected-input" maxlength="23" placeholder="A4:9F:21:0B" required />
               </div>
               <div class="field-group">
-                <label for="prov_pin">6-Digit Keypad PIN</label>
-                <input type="password" id="prov_pin" maxlength="6" placeholder="••••••" required />
+                <label for="prov_pin">6-Digit Keypad PIN (Strict Integer)</label>
+                <input type="password" id="prov_pin" class="rbac-protected-input" maxlength="6" inputmode="numeric" placeholder="••••••" required />
               </div>
-              <button type="submit" class="btn-mint full-width">Provision User Credential</button>
+              <button type="submit" id="prov-submit-btn" class="btn-mint full-width rbac-protected">Provision User Credential</button>
             </form>
           </div>
 
           <div class="glass-card">
-            <h3 class="section-heading">Dynamic Node IP Configuration (<code>localStorage</code>)</h3>
-            <p class="helper-note">Update local air-gapped IPv4 node addresses used for hardware polling and commands.</p>
-            <form id="settings-ip-form">
+            <div class="flex-between">
+              <h3 class="section-heading">Dynamic Node IP Configuration (<code>localStorage</code>)</h3>
+              <span class="rbac-lock-tag hidden">Read-Only (Viewer)</span>
+            </div>
+            <p class="helper-note">Validated IPv4 node addresses used for hardware polling and direct commands.</p>
+            <form id="settings-ip-form" novalidate>
               <div class="field-group">
                 <label for="set_ip_node1">Node 1 — Access Node (<code>ip_node1</code>)</label>
-                <input type="text" id="set_ip_node1" required />
+                <input type="text" id="set_ip_node1" class="rbac-protected-input" maxlength="15" required />
               </div>
               <div class="field-group">
                 <label for="set_ip_node2">Node 2 — Environment Node (<code>ip_node2</code>)</label>
-                <input type="text" id="set_ip_node2" required />
+                <input type="text" id="set_ip_node2" class="rbac-protected-input" maxlength="15" required />
               </div>
               <div class="field-group">
                 <label for="set_ip_node3">Node 3 — Face Recognition Node (<code>ip_node3</code>)</label>
-                <input type="text" id="set_ip_node3" required />
+                <input type="text" id="set_ip_node3" class="rbac-protected-input" maxlength="15" required />
               </div>
-              <button type="submit" class="btn-cyber full-width">Update Node Endpoints</button>
+              <button type="submit" id="settings-ip-submit-btn" class="btn-cyber full-width rbac-protected">Update Node Endpoints</button>
             </form>
           </div>
         </div>

@@ -2,7 +2,7 @@
  * LCI-SFM Air-Gapped Dashboard Application Logic (ES6 Standalone Module)
  * - Strictly 3-File Architecture (Chart Engine Embedded)
  * - Backend Server IP: 192.168.43.225:1880
- * - Strict Variable & Table Naming for Node-RED & SQLite Integration
+ * - Strict Input Sanitization, Data Type Enforcement, RBAC Session & Security
  */
 
 // ============================================================================
@@ -36,8 +36,14 @@ export class LocalFIFOChart {
     if (this.data.length >= this.maxPoints) {
       this.data.shift();
     }
-    this.labels.push(timestampLabel);
+    this.labels.push(String(timestampLabel));
     this.data.push(Number(numericValue));
+    this.render();
+  }
+
+  reset() {
+    this.labels = [];
+    this.data = [];
     this.render();
   }
 
@@ -100,7 +106,7 @@ export class LocalFIFOChart {
 
     if (this.data.length === 0) {
       ctx.fillStyle = isLight ? '#64748b' : '#94a3b8';
-      ctx.fillText('Awaiting live stream (ws://192.168.43.225:1880/ws/telemetry)...', padLeft + 14, padTop + plotH / 2);
+      ctx.fillText('Offline / Awaiting stream (ws://192.168.43.225:1880/ws/telemetry)...', padLeft + 14, padTop + plotH / 2);
       return;
     }
 
@@ -149,7 +155,63 @@ export class LocalFIFOChart {
 }
 
 // ============================================================================
-// 1. STRICT GLOBAL VARIABLES (Matching Node-RED Backend Keys)
+// 1. SECURITY, INPUT SANITIZATION & STRICT DATA TYPE VALIDATION
+// ============================================================================
+
+const IPV4_REGEX = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+const RFID_HEX_REGEX = /^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){3,7}$/;
+const PIN_SIX_DIGIT_REGEX = /^\d{6}$/;
+const SAFE_NAME_REGEX = /^[A-Za-z0-9 .,'-]{2,64}$/;
+const ALLOWED_COMMANDS = new Set([
+  'EMERGENCY_DOOR_UNLOCK',
+  'TOGGLE_HVAC_FAN',
+  'TOGGLE_AUX_LIGHT',
+  'SET_CONTROL_MODE'
+]);
+const ALLOWED_COMMAND_STATES = new Set(['OPEN', 'CLOSED', 'ON', 'OFF', 'AUTO', 'MANUAL']);
+
+/**
+ * Strips HTML tags, script blocks, SQL injection metacharacters, and control chars.
+ */
+export function sanitizeInput(rawValue) {
+  if (typeof rawValue !== 'string') return '';
+  return rawValue
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<[^>]*>?/gm, '')
+    .replace(/['";`\\]|--|\/\*|\*\//g, '')
+    .replace(/\b(DROP|UNION|SELECT|INSERT|DELETE|UPDATE|ALTER|EXEC|CAST)\b/gi, '')
+    .trim();
+}
+
+/**
+ * Escapes any dynamic string for safe HTML rendering to prevent DOM XSS.
+ */
+export function escapeHTML(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export function isValidIPv4(ip) {
+  return IPV4_REGEX.test(String(ip).trim());
+}
+
+export function isValidHexRFID(rfid) {
+  return RFID_HEX_REGEX.test(String(rfid).trim());
+}
+
+export function isValidSixDigitPin(pinStr) {
+  const cleaned = String(pinStr).trim();
+  if (!PIN_SIX_DIGIT_REGEX.test(cleaned)) return false;
+  const num = Number(cleaned);
+  return Number.isInteger(num) && num >= 0 && num <= 999999;
+}
+
+// ============================================================================
+// 2. STRICT GLOBAL VARIABLES (Matching Node-RED Backend Keys)
 // ============================================================================
 
 // Environment Telemetry
@@ -173,9 +235,9 @@ export let camera_events = [];
 export let system_errors = [];
 
 // Dynamic Node IPs
-export let ip_node1 = localStorage.getItem('ip_node1') || '';
-export let ip_node2 = localStorage.getItem('ip_node2') || '';
-export let ip_node3 = localStorage.getItem('ip_node3') || '';
+export let ip_node1 = sanitizeInput(localStorage.getItem('ip_node1') || '');
+export let ip_node2 = sanitizeInput(localStorage.getItem('ip_node2') || '');
+export let ip_node3 = sanitizeInput(localStorage.getItem('ip_node3') || '');
 
 // Expose variables globally on window for direct Node-RED / browser inspection
 window.LCI_STATE = {
@@ -198,7 +260,7 @@ window.LCI_STATE = {
   get ip_node3() { return ip_node3; }
 };
 
-// Updated Node-RED Server IP: 192.168.43.225
+// Node-RED Server IP: 192.168.43.225
 const NODE_RED_HTTP = 'http://192.168.43.225:1880';
 const WS_TELEMETRY_URL = 'ws://192.168.43.225:1880/ws/telemetry';
 const WS_MFA_URL = 'ws://192.168.43.225:1880/ws/mfa';
@@ -212,39 +274,417 @@ let lastWsHeartbeat = 0;
 let tempChart = null;
 let humChart = null;
 
+// Authenticated Session & Listener Lifecycle Controller
+let authSessionAbortController = null;
+let wsTelemetryInstance = null;
+let wsMfaInstance = null;
+
 // ============================================================================
-// 2. VANILLA TOAST NOTIFICATION SYSTEM (Stacked, 3-Second Auto-Dismiss)
+// 3. VANILLA TOAST NOTIFICATION SYSTEM WITH "CLEAR ALL (X)"
 // ============================================================================
+
+function updateToastToolbar() {
+  const container = document.getElementById('toast-container');
+  const toolbar = document.getElementById('toast-toolbar');
+  const countLabel = document.getElementById('toast-count-label');
+  if (!container || !toolbar) return;
+
+  const count = container.children.length;
+  if (count > 0) {
+    toolbar.classList.remove('hidden');
+    if (countLabel) countLabel.textContent = `${count} Active Notification${count > 1 ? 's' : ''}`;
+  } else {
+    toolbar.classList.add('hidden');
+  }
+}
+
+export function clearAllToasts() {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  container.innerHTML = '';
+  updateToastToolbar();
+}
 
 export function showToast(title, message, type = 'info') {
   const container = document.getElementById('toast-container');
   if (!container) return;
 
   const toast = document.createElement('div');
-  toast.className = `toast-item toast-${type}`;
-  toast.innerHTML = `
-    <div class="toast-title">${title}</div>
-    <div class="toast-msg">${message}</div>
-  `;
+  toast.className = `toast-item toast-${escapeHTML(type)}`;
 
+  const titleEl = document.createElement('div');
+  titleEl.className = 'toast-title';
+  titleEl.textContent = sanitizeInput(String(title));
+
+  const msgEl = document.createElement('div');
+  msgEl.className = 'toast-msg';
+  msgEl.textContent = sanitizeInput(String(message));
+
+  toast.appendChild(titleEl);
+  toast.appendChild(msgEl);
   container.appendChild(toast);
+  updateToastToolbar();
 
   setTimeout(() => {
     toast.classList.add('toast-Out');
     setTimeout(() => {
       if (toast.parentNode) {
         toast.parentNode.removeChild(toast);
+        updateToastToolbar();
       }
     }, 240);
   }, 3000);
 }
 
 // ============================================================================
-// 3. LIGHT / DARK THEME TOGGLE & COLLAPSIBLE SIDEBAR
+// 4. RBAC SESSION MANAGEMENT & LOGIN / LOGOUT SECURITY
 // ============================================================================
 
+function getActiveRole() {
+  return sessionStorage.getItem('lci_rbac_role') || null;
+}
+
+function isAuthenticated() {
+  return Boolean(sessionStorage.getItem('lci_session_token') && getActiveRole());
+}
+
+function applyRBACPermissions() {
+  const role = getActiveRole() || 'Viewer';
+  const isAdmin = role === 'Admin';
+
+  const roleHeaderLabel = document.getElementById('header-role-label');
+  if (roleHeaderLabel) {
+    roleHeaderLabel.textContent = role.toUpperCase();
+    roleHeaderLabel.className = isAdmin ? 'text-mint' : 'text-cyber';
+  }
+
+  document.querySelectorAll('.rbac-protected').forEach(btn => {
+    btn.disabled = !isAdmin;
+    btn.title = isAdmin ? '' : 'Locked — Viewer role has read-only permissions';
+  });
+
+  document.querySelectorAll('.rbac-protected-input').forEach(input => {
+    input.disabled = !isAdmin;
+  });
+
+  document.querySelectorAll('.rbac-lock-tag').forEach(tag => {
+    tag.classList.toggle('hidden', isAdmin);
+  });
+}
+
+function lockAndLogoutSystem() {
+  // 1. Explicitly clear sessionStorage
+  sessionStorage.removeItem('lci_session_token');
+  sessionStorage.removeItem('lci_rbac_role');
+  sessionStorage.removeItem('lci_operator_id');
+  sessionStorage.clear();
+
+  // 2. Forcibly unmount authenticated view listeners
+  if (authSessionAbortController) {
+    authSessionAbortController.abort();
+    authSessionAbortController = null;
+  }
+
+  // 3. Close live WebSockets and reset runtime state variables
+  if (wsTelemetryInstance) {
+    try { wsTelemetryInstance.close(); } catch {}
+    wsTelemetryInstance = null;
+  }
+  if (wsMfaInstance) {
+    try { wsMfaInstance.close(); } catch {}
+    wsMfaInstance = null;
+  }
+
+  stopMfaCountdown();
+  temperature = 0.0;
+  humidity = 0.0;
+  smoke_gas_level = 0;
+  light_state = "OFF";
+  door_state = "CLOSED";
+  fan_relay = "OFF";
+  isFacePassed = false;
+  isCardPassed = false;
+  isPinPassed = false;
+  mfa_status = "IDLE";
+  access_logs = [];
+  environmental_telemetry = [];
+  camera_events = [];
+  system_errors = [];
+  activityFeed = [];
+  lastWsHeartbeat = 0;
+
+  if (tempChart) tempChart.reset();
+  if (humChart) humChart.reset();
+
+  renderActivityFeed();
+  renderMFAUI();
+  renderDatabaseTable();
+  renderSystemErrors();
+
+  // 4. Show Login Overlay
+  const loginOverlay = document.getElementById('login-overlay');
+  if (loginOverlay) loginOverlay.classList.remove('hidden');
+
+  showToast('System Locked', 'Session cleared and authenticated listeners unmounted.', 'info');
+}
+
+function mountAuthenticatedViewListeners() {
+  if (authSessionAbortController) {
+    authSessionAbortController.abort();
+  }
+  authSessionAbortController = new AbortController();
+  const { signal } = authSessionAbortController;
+
+  // Sidebar View Navigation
+  const viewTitles = {
+    'view-1': 'Main Command Center (Executive Overview)',
+    'view-2': 'Smart Access & Biometrics',
+    'view-3': 'Environmental Monitoring',
+    'view-4': 'Audit Logs & Database Explorer',
+    'view-5': 'System Health & Diagnostics',
+    'view-6': 'System Management & Provisioning'
+  };
+
+  document.querySelectorAll('.nav-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.view-section').forEach(s => s.classList.remove('active'));
+      btn.classList.add('active');
+      const viewId = btn.getAttribute('data-view');
+      document.getElementById(viewId).classList.add('active');
+      document.getElementById('current-view-title').textContent = viewTitles[viewId] || 'LCI-SFM';
+      if (viewId === 'view-3') {
+        requestAnimationFrame(() => {
+          if (tempChart) tempChart.draw();
+          if (humChart) humChart.draw();
+        });
+      }
+    }, { signal });
+  });
+
+  // Quick Action Buttons with RBAC check + 1.5s Anti-Spam Spinner
+  const btnUnlockDoor = document.getElementById('cmd-unlock-door');
+  btnUnlockDoor.addEventListener('click', () => {
+    if (getActiveRole() !== 'Admin') {
+      showToast('Access Denied', 'Viewer role cannot dispatch hardware commands.', 'error');
+      return;
+    }
+    withButtonLoading(btnUnlockDoor, () => {
+      const next = door_state === 'OPEN' ? 'CLOSED' : 'OPEN';
+      sendCommand('EMERGENCY_DOOR_UNLOCK', next);
+    });
+  }, { signal });
+
+  const btnToggleFan = document.getElementById('cmd-toggle-fan');
+  btnToggleFan.addEventListener('click', () => {
+    if (getActiveRole() !== 'Admin') {
+      showToast('Access Denied', 'Viewer role cannot dispatch hardware commands.', 'error');
+      return;
+    }
+    withButtonLoading(btnToggleFan, () => {
+      const next = fan_relay === 'ON' ? 'OFF' : 'ON';
+      sendCommand('TOGGLE_HVAC_FAN', next);
+    });
+  }, { signal });
+
+  const btnToggleLight = document.getElementById('cmd-toggle-light');
+  btnToggleLight.addEventListener('click', () => {
+    if (getActiveRole() !== 'Admin') {
+      showToast('Access Denied', 'Viewer role cannot dispatch hardware commands.', 'error');
+      return;
+    }
+    withButtonLoading(btnToggleLight, () => {
+      const next = light_state === 'ON' ? 'OFF' : 'ON';
+      sendCommand('TOGGLE_AUX_LIGHT', next);
+    });
+  }, { signal });
+
+  // Camera Refresh
+  document.getElementById('refresh-cam-btn').addEventListener('click', () => {
+    refreshCameraSnapshot();
+    showToast('Camera Frame Requested', `Pulling snapshot from http://${ip_node3}/capture.jpg`, 'info');
+  }, { signal });
+
+  // View 3 Override Mode Buttons
+  const autoBtn = document.getElementById('mode-auto-btn');
+  const manualBtn = document.getElementById('mode-manual-btn');
+  autoBtn.addEventListener('click', () => {
+    if (getActiveRole() !== 'Admin') return;
+    autoBtn.className = 'btn-mint rbac-protected';
+    manualBtn.className = 'btn-outline rbac-protected';
+    sendCommand('SET_CONTROL_MODE', 'AUTO');
+  }, { signal });
+
+  manualBtn.addEventListener('click', () => {
+    if (getActiveRole() !== 'Admin') return;
+    manualBtn.className = 'btn-cyber rbac-protected';
+    autoBtn.className = 'btn-outline rbac-protected';
+    sendCommand('SET_CONTROL_MODE', 'MANUAL');
+  }, { signal });
+
+  // View 4 Database Tabs & Search with Dynamic Clear (X) Button
+  document.querySelectorAll('.tab-btn').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      activeDbTable = tab.getAttribute('data-table');
+      fetchSQLiteLogs(activeDbTable);
+    }, { signal });
+  });
+
+  const searchInput = document.getElementById('db-search-input');
+  const searchClearBtn = document.getElementById('db-search-clear-btn');
+
+  searchInput.addEventListener('input', () => {
+    const cleaned = sanitizeInput(searchInput.value);
+    if (searchInput.value !== cleaned) {
+      searchInput.value = cleaned;
+    }
+    searchClearBtn.classList.toggle('hidden', searchInput.value.length === 0);
+    renderDatabaseTable();
+  }, { signal });
+
+  searchClearBtn.addEventListener('click', () => {
+    searchInput.value = '';
+    searchClearBtn.classList.add('hidden');
+    renderDatabaseTable();
+    searchInput.focus();
+  }, { signal });
+
+  document.getElementById('db-refresh-btn').addEventListener('click', () => {
+    fetchSQLiteLogs(activeDbTable);
+  }, { signal });
+
+  document.getElementById('refresh-errors-btn').addEventListener('click', () => {
+    fetchSQLiteLogs('system_errors');
+  }, { signal });
+
+  // View 6 IP Settings Form (Strict IPv4 Validation)
+  document.getElementById('settings-ip-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (getActiveRole() !== 'Admin') {
+      showToast('Access Denied', 'Only Admin role can modify Node IP endpoints.', 'error');
+      return;
+    }
+    saveNodeIPs(
+      document.getElementById('set_ip_node1').value,
+      document.getElementById('set_ip_node2').value,
+      document.getElementById('set_ip_node3').value
+    );
+  }, { signal });
+
+  // View 6 User Provisioning Form (Strict Sanitization & Type Enforcement)
+  document.getElementById('user-provision-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (getActiveRole() !== 'Admin') {
+      showToast('Access Denied', 'Viewer role cannot provision credentials.', 'error');
+      return;
+    }
+
+    const rawName = document.getElementById('prov_name').value;
+    const rawRfid = document.getElementById('prov_rfid').value;
+    const rawPin = document.getElementById('prov_pin').value;
+
+    const cleanName = sanitizeInput(rawName);
+    const cleanRfid = sanitizeInput(rawRfid).toUpperCase();
+    const cleanPinStr = sanitizeInput(rawPin);
+
+    if (!SAFE_NAME_REGEX.test(cleanName)) {
+      showToast('Validation Error', 'Personnel Name must be 2–64 alphanumeric characters without HTML/SQL symbols.', 'error');
+      return;
+    }
+    if (!isValidHexRFID(cleanRfid)) {
+      showToast('Validation Error', 'RFID UID must match hex format XX:XX:XX:XX (e.g. A4:9F:21:0B).', 'error');
+      return;
+    }
+    if (!isValidSixDigitPin(cleanPinStr)) {
+      showToast('Validation Error', 'Keypad PIN must be an exact 6-digit integer (000000–999999).', 'error');
+      return;
+    }
+
+    const strictPayload = {
+      name: String(cleanName),
+      rfid: String(cleanRfid),
+      pin: Number.parseInt(cleanPinStr, 10)
+    };
+
+    try {
+      const res = await fetch(`${NODE_RED_HTTP}/api/provision/user`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(strictPayload)
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      pushActivityEvent(`Provisioned User: ${cleanName} (RFID: ${cleanRfid})`);
+      showToast('User Provisioned', `${cleanName} registered in SQLite access control.`, 'success');
+      e.target.reset();
+    } catch {
+      showToast('Provisioning Failed', `Unable to reach Node-RED (${NODE_RED_HTTP}) provisioning endpoint.`, 'error');
+    }
+  }, { signal });
+}
+
+// ============================================================================
+// 5. HEADER UTILITIES: LIVE DIGITAL CLOCK, FULLSCREEN, THEME & SIDEBAR
+// ============================================================================
+
+function startLiveDigitalClock() {
+  const timeEl = document.getElementById('live-clock-time');
+  const dateEl = document.getElementById('live-clock-date');
+  const tick = () => {
+    const now = new Date();
+    if (timeEl) {
+      timeEl.textContent = now.toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true
+      });
+    }
+    if (dateEl) {
+      dateEl.textContent = now.toLocaleDateString('en-US', {
+        month: 'short',
+        day: '2-digit',
+        year: 'numeric'
+      });
+    }
+  };
+  tick();
+  setInterval(tick, 1000);
+}
+
+function initFullscreenToggle() {
+  const fsBtn = document.getElementById('fullscreen-toggle-btn');
+  const expandIcon = document.getElementById('fs-icon-expand');
+  const compressIcon = document.getElementById('fs-icon-compress');
+  if (!fsBtn) return;
+
+  const syncFsIcons = () => {
+    const isFs = Boolean(document.fullscreenElement);
+    if (expandIcon && compressIcon) {
+      expandIcon.classList.toggle('hidden', isFs);
+      compressIcon.classList.toggle('hidden', !isFs);
+    }
+  };
+
+  fsBtn.addEventListener('click', async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+      syncFsIcons();
+    } catch {
+      showToast('Fullscreen Unavailable', 'Fullscreen mode is restricted by the current browser container.', 'info');
+    }
+  });
+
+  document.addEventListener('fullscreenchange', syncFsIcons);
+}
+
 function initThemeAndSidebar() {
-  const savedTheme = localStorage.getItem('lci_theme') || 'dark';
+  const savedTheme = localStorage.getItem('lci_theme') === 'light' ? 'light' : 'dark';
   applyTheme(savedTheme);
 
   const themeBtn = document.getElementById('theme-toggle-btn');
@@ -305,7 +745,7 @@ function applyTheme(theme) {
 }
 
 // ============================================================================
-// 4. BUTTON LOADING STATES (1.5-Second Anti-Spam Lock + Pure CSS Spinner)
+// 6. BUTTON LOADING STATES (1.5-Second Anti-Spam Lock + Pure CSS Spinner)
 // ============================================================================
 
 function withButtonLoading(buttonEl, actionCallback) {
@@ -319,37 +759,60 @@ function withButtonLoading(buttonEl, actionCallback) {
     actionCallback();
   } finally {
     setTimeout(() => {
-      buttonEl.disabled = false;
+      const isAdmin = getActiveRole() === 'Admin';
+      buttonEl.disabled = !isAdmin;
       buttonEl.innerHTML = originalHtml;
     }, 1500);
   }
 }
 
 // ============================================================================
-// 5. DYNAMIC IP CONFIGURATION MODAL & LOCALSTORAGE
+// 7. DYNAMIC IP CONFIGURATION MODAL & STRICT IPV4 ENFORCEMENT
 // ============================================================================
 
-function checkNodeIPsOnStartup() {
+function openIpModal() {
   const modal = document.getElementById('startup-modal');
-  if (!ip_node1 || !ip_node2 || !ip_node3) {
-    modal.classList.remove('hidden');
-    document.getElementById('modal_ip_node1').value = ip_node1 || '192.168.43.11';
-    document.getElementById('modal_ip_node2').value = ip_node2 || '192.168.43.12';
-    document.getElementById('modal_ip_node3').value = ip_node3 || '192.168.43.13';
+  document.getElementById('modal_ip_node1').value = ip_node1 || '192.168.43.11';
+  document.getElementById('modal_ip_node2').value = ip_node2 || '192.168.43.12';
+  document.getElementById('modal_ip_node3').value = ip_node3 || '192.168.43.13';
+  modal.classList.remove('hidden');
+}
+
+function closeIpModal() {
+  document.getElementById('startup-modal').classList.add('hidden');
+}
+
+function checkNodeIPsOnStartup() {
+  if (!isValidIPv4(ip_node1) || !isValidIPv4(ip_node2) || !isValidIPv4(ip_node3)) {
+    ip_node1 = '192.168.43.11';
+    ip_node2 = '192.168.43.12';
+    ip_node3 = '192.168.43.13';
+    syncIPInputs();
+    openIpModal();
   } else {
     syncIPInputs();
   }
 }
 
-function saveNodeIPs(n1, n2, n3) {
-  ip_node1 = n1.trim();
-  ip_node2 = n2.trim();
-  ip_node3 = n3.trim();
+function saveNodeIPs(rawN1, rawN2, rawN3) {
+  const n1 = sanitizeInput(rawN1);
+  const n2 = sanitizeInput(rawN2);
+  const n3 = sanitizeInput(rawN3);
+
+  if (!isValidIPv4(n1) || !isValidIPv4(n2) || !isValidIPv4(n3)) {
+    showToast('Invalid IPv4 Format', 'All 3 Node IPs must be valid IPv4 addresses (e.g. 192.168.43.11).', 'error');
+    return false;
+  }
+
+  ip_node1 = n1;
+  ip_node2 = n2;
+  ip_node3 = n3;
   localStorage.setItem('ip_node1', ip_node1);
   localStorage.setItem('ip_node2', ip_node2);
   localStorage.setItem('ip_node3', ip_node3);
   syncIPInputs();
-  showToast('Endpoints Saved', `Configured Nodes: ${ip_node1}, ${ip_node2}, ${ip_node3}`, 'success');
+  showToast('Endpoints Saved', `Validated Nodes: ${ip_node1}, ${ip_node2}, ${ip_node3}`, 'success');
+  return true;
 }
 
 function syncIPInputs() {
@@ -365,8 +828,9 @@ function syncIPInputs() {
 function refreshCameraSnapshot() {
   const img = document.getElementById('biometric-camera-img');
   const fallback = document.getElementById('camera-fallback-overlay');
+  const fallbackTitle = document.getElementById('camera-fallback-title');
   const fallbackText = document.getElementById('camera-fallback-text');
-  if (!img || !ip_node3) return;
+  if (!img || !isValidIPv4(ip_node3)) return;
 
   img.onload = () => {
     img.classList.remove('hidden');
@@ -376,8 +840,9 @@ function refreshCameraSnapshot() {
   img.onerror = () => {
     img.classList.add('hidden');
     if (fallback) fallback.classList.remove('hidden');
+    if (fallbackTitle) fallbackTitle.textContent = 'Node 3 Optical Stream Unreachable';
     if (fallbackText) {
-      fallbackText.textContent = `Node 3 (${ip_node3}) camera stream offline or unreachable.`;
+      fallbackText.textContent = `Could not retrieve capture.jpg from http://${ip_node3}/capture.jpg.`;
     }
   };
 
@@ -385,29 +850,35 @@ function refreshCameraSnapshot() {
 }
 
 // ============================================================================
-// 6. TELEMETRY & MFA PARSING LOGIC (Strict Variable Names)
+// 8. TELEMETRY & MFA PARSING LOGIC (Strict Variable Names)
 // ============================================================================
 
 function updateCircularGauge(arcId, value, maxVal) {
   const arc = document.getElementById(arcId);
   if (!arc) return;
-  const circumference = 314.16; // 2 * Math.PI * 50
-  const clamped = Math.max(0, Math.min(maxVal, value));
+  const circumference = 314.16;
+  const clamped = Math.max(0, Math.min(maxVal, Number(value) || 0));
   const offset = circumference - (clamped / maxVal) * circumference;
   arc.style.strokeDashoffset = offset.toFixed(2);
 }
 
 export function handleTelemetryPayload(payload) {
+  if (!payload || typeof payload !== 'object') return;
   lastWsHeartbeat = Date.now();
 
-  if (typeof payload.temperature === 'number') temperature = payload.temperature;
-  if (typeof payload.humidity === 'number') humidity = payload.humidity;
-  if (typeof payload.smoke_gas_level === 'number') smoke_gas_level = payload.smoke_gas_level;
+  if (typeof payload.temperature === 'number' && Number.isFinite(payload.temperature)) {
+    temperature = payload.temperature;
+  }
+  if (typeof payload.humidity === 'number' && Number.isFinite(payload.humidity)) {
+    humidity = payload.humidity;
+  }
+  if (typeof payload.smoke_gas_level === 'number' && Number.isFinite(payload.smoke_gas_level)) {
+    smoke_gas_level = payload.smoke_gas_level;
+  }
   if (payload.light_state === 'ON' || payload.light_state === 'OFF') light_state = payload.light_state;
   if (payload.door_state === 'OPEN' || payload.door_state === 'CLOSED') door_state = payload.door_state;
   if (payload.fan_relay === 'ON' || payload.fan_relay === 'OFF') fan_relay = payload.fan_relay;
 
-  // Update View 1 Snapshot
   const snapDoor = document.getElementById('snap-door');
   snapDoor.textContent = door_state;
   snapDoor.className = `card-value tabular-nums ${door_state === 'CLOSED' ? 'text-mint' : 'text-rose'}`;
@@ -424,7 +895,6 @@ export function handleTelemetryPayload(payload) {
   document.getElementById('snap-hum').textContent = `${humidity.toFixed(1)} %`;
   document.getElementById('banner-smoke-val').textContent = `${smoke_gas_level} PPM`;
 
-  // Global Status Banner
   const banner = document.getElementById('global-status-banner');
   const bannerTitle = document.getElementById('global-status-title');
   const isEmergency = smoke_gas_level >= 400;
@@ -436,7 +906,6 @@ export function handleTelemetryPayload(payload) {
     bannerTitle.textContent = 'Normal Operations — All Thresholds Nominal';
   }
 
-  // Update View 2 Hardware States
   const reedEl = document.getElementById('access-reed-state');
   reedEl.textContent = door_state === 'CLOSED' ? 'CLOSED (ENGAGED)' : 'OPEN (SEPARATED)';
   reedEl.className = `hw-state ${door_state === 'CLOSED' ? 'text-mint' : 'text-rose'}`;
@@ -445,7 +914,6 @@ export function handleTelemetryPayload(payload) {
   solenoidEl.textContent = door_state === 'CLOSED' ? 'ENERGIZED (LOCKED)' : 'DE-ENERGIZED (UNLOCKED)';
   solenoidEl.className = `hw-state ${door_state === 'CLOSED' ? 'text-mint' : 'text-rose'}`;
 
-  // Update View 3 Circular Gauges & Charts
   document.getElementById('env-temp-val').textContent = `${temperature.toFixed(1)} °C`;
   document.getElementById('env-hum-val').textContent = `${humidity.toFixed(1)} %`;
 
@@ -468,12 +936,19 @@ export function handleTelemetryPayload(payload) {
 }
 
 export function handleMFAPayload(payload) {
+  if (!payload || typeof payload !== 'object') return;
   lastWsHeartbeat = Date.now();
 
   if (typeof payload.isFacePassed === 'boolean') isFacePassed = payload.isFacePassed;
   if (typeof payload.isCardPassed === 'boolean') isCardPassed = payload.isCardPassed;
   if (typeof payload.isPinPassed === 'boolean') isPinPassed = payload.isPinPassed;
-  if (payload.mfa_status) mfa_status = payload.mfa_status;
+  if (
+    payload.mfa_status === 'IDLE' ||
+    payload.mfa_status === 'AWAITING_STAGE2' ||
+    payload.mfa_status === 'UNLOCKED'
+  ) {
+    mfa_status = payload.mfa_status;
+  }
 
   const passedCount = [isFacePassed, isCardPassed, isPinPassed].filter(Boolean).length;
   if (!payload.mfa_status) {
@@ -501,23 +976,32 @@ export function handleMFAPayload(payload) {
 function renderMFAUI() {
   const passedCount = [isFacePassed, isCardPassed, isPinPassed].filter(Boolean).length;
   const pct = Math.min(100, (passedCount / 2) * 100);
-  document.getElementById('mfa-progress-fill').style.width = `${pct}%`;
+  const fillEl = document.getElementById('mfa-progress-fill');
+  if (fillEl) fillEl.style.width = `${pct}%`;
 
   const statusLabel = document.getElementById('mfa-status-label');
-  statusLabel.textContent = mfa_status;
-  statusLabel.className = mfa_status === 'UNLOCKED' ? 'text-mint' : 'text-cyber';
+  if (statusLabel) {
+    statusLabel.textContent = mfa_status;
+    statusLabel.className = mfa_status === 'UNLOCKED' ? 'text-mint' : 'text-cyber';
+  }
 
   const cpFace = document.getElementById('cp-face');
-  cpFace.className = `checkpoint ${isFacePassed ? 'passed' : ''}`;
-  cpFace.querySelector('.cp-var').textContent = `isFacePassed: ${isFacePassed}`;
+  if (cpFace) {
+    cpFace.className = `checkpoint ${isFacePassed ? 'passed' : ''}`;
+    cpFace.querySelector('.cp-var').textContent = `isFacePassed: ${isFacePassed}`;
+  }
 
   const cpCard = document.getElementById('cp-card');
-  cpCard.className = `checkpoint ${isCardPassed ? 'passed' : ''}`;
-  cpCard.querySelector('.cp-var').textContent = `isCardPassed: ${isCardPassed}`;
+  if (cpCard) {
+    cpCard.className = `checkpoint ${isCardPassed ? 'passed' : ''}`;
+    cpCard.querySelector('.cp-var').textContent = `isCardPassed: ${isCardPassed}`;
+  }
 
   const cpPin = document.getElementById('cp-pin');
-  cpPin.className = `checkpoint ${isPinPassed ? 'passed' : ''}`;
-  cpPin.querySelector('.cp-var').textContent = `isPinPassed: ${isPinPassed}`;
+  if (cpPin) {
+    cpPin.className = `checkpoint ${isPinPassed ? 'passed' : ''}`;
+    cpPin.querySelector('.cp-var').textContent = `isPinPassed: ${isPinPassed}`;
+  }
 }
 
 function startMfaCountdown() {
@@ -546,34 +1030,53 @@ function stopMfaCountdown() {
     clearInterval(mfaCountdownInterval);
     mfaCountdownInterval = null;
   }
-  document.getElementById('mfa-timer-label').textContent = '10s';
+  const timerEl = document.getElementById('mfa-timer-label');
+  if (timerEl) timerEl.textContent = '10s';
 }
 
 function pushActivityEvent(text) {
+  const cleanText = sanitizeInput(String(text));
   const time = new Date().toLocaleTimeString();
-  activityFeed.unshift({ time, text });
+  activityFeed.unshift({ time, text: cleanText });
   activityFeed = activityFeed.slice(0, 5);
+  renderActivityFeed();
+}
 
+function renderActivityFeed() {
   const ul = document.getElementById('live-activity-list');
   if (!ul) return;
+
+  if (activityFeed.length === 0) {
+    ul.innerHTML = `
+      <li class="empty-state-box">
+        <svg class="empty-state-svg" width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+        </svg>
+        <strong class="empty-state-title">No Live Activity Recorded Yet</strong>
+        <span class="empty-state-sub">Awaiting real-time telemetry or MFA frames from 192.168.43.225:1880.</span>
+      </li>
+    `;
+    return;
+  }
+
   ul.innerHTML = activityFeed
-    .map(item => `<li><span>${item.text}</span><code class="text-cyber">${item.time}</code></li>`)
+    .map(item => `<li><span>${escapeHTML(item.text)}</span><code class="text-cyber">${escapeHTML(item.time)}</code></li>`)
     .join('');
 }
 
 // ============================================================================
-// 7. WEBSOCKET CLIENTS & SQLITE REST FETCH (192.168.43.225:1880)
+// 9. WEBSOCKET CLIENTS & SQLITE REST FETCH (192.168.43.225:1880)
 // ============================================================================
 
 function connectWebSockets() {
   try {
-    const wsTel = new WebSocket(WS_TELEMETRY_URL);
-    wsTel.onopen = () => {
+    wsTelemetryInstance = new WebSocket(WS_TELEMETRY_URL);
+    wsTelemetryInstance.onopen = () => {
       document.getElementById('ws-telemetry-dot').className = 'dot dot-green';
       document.getElementById('ws-telemetry-status').textContent = 'ONLINE';
       showToast('Telemetry Stream Connected', WS_TELEMETRY_URL, 'success');
     };
-    wsTel.onmessage = (event) => {
+    wsTelemetryInstance.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         handleTelemetryPayload(data);
@@ -581,11 +1084,11 @@ function connectWebSockets() {
         showToast('Telemetry Parse Error', 'Malformed JSON frame received.', 'error');
       }
     };
-    wsTel.onerror = () => {
+    wsTelemetryInstance.onerror = () => {
       document.getElementById('ws-telemetry-dot').className = 'dot dot-red';
       document.getElementById('ws-telemetry-status').textContent = 'OFFLINE';
     };
-    wsTel.onclose = () => {
+    wsTelemetryInstance.onclose = () => {
       document.getElementById('ws-telemetry-dot').className = 'dot dot-red';
       document.getElementById('ws-telemetry-status').textContent = 'OFFLINE';
     };
@@ -594,12 +1097,12 @@ function connectWebSockets() {
   }
 
   try {
-    const wsMfa = new WebSocket(WS_MFA_URL);
-    wsMfa.onopen = () => {
+    wsMfaInstance = new WebSocket(WS_MFA_URL);
+    wsMfaInstance.onopen = () => {
       document.getElementById('ws-mfa-dot').className = 'dot dot-green';
       document.getElementById('ws-mfa-status').textContent = 'ONLINE';
     };
-    wsMfa.onmessage = (event) => {
+    wsMfaInstance.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         handleMFAPayload(data);
@@ -607,11 +1110,11 @@ function connectWebSockets() {
         showToast('MFA Stream Error', 'Malformed MFA JSON payload.', 'error');
       }
     };
-    wsMfa.onerror = () => {
+    wsMfaInstance.onerror = () => {
       document.getElementById('ws-mfa-dot').className = 'dot dot-red';
       document.getElementById('ws-mfa-status').textContent = 'OFFLINE';
     };
-    wsMfa.onclose = () => {
+    wsMfaInstance.onclose = () => {
       document.getElementById('ws-mfa-dot').className = 'dot dot-red';
       document.getElementById('ws-mfa-status').textContent = 'OFFLINE';
     };
@@ -621,6 +1124,9 @@ function connectWebSockets() {
 }
 
 async function fetchSQLiteLogs(tableName) {
+  const allowedTables = new Set(['access_logs', 'camera_events', 'environmental_telemetry', 'system_errors']);
+  if (!allowedTables.has(tableName)) return;
+
   try {
     const res = await fetch(`${NODE_RED_HTTP}/api/logs/${tableName}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -637,10 +1143,26 @@ async function fetchSQLiteLogs(tableName) {
   renderSystemErrors();
 }
 
+function getEmptyTableIllustrationHTML(title, subtitle) {
+  return `
+    <div class="empty-state-box">
+      <svg class="empty-state-svg" width="44" height="44" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <ellipse cx="32" cy="16" rx="20" ry="8"></ellipse>
+        <path d="M12 16v16c0 4.4 9 8 20 8s20-3.6 20-8V16"></path>
+        <path d="M12 32v16c0 4.4 9 8 20 8s20-3.6 20-8V32"></path>
+      </svg>
+      <strong class="empty-state-title">${escapeHTML(title)}</strong>
+      <span class="empty-state-sub">${escapeHTML(subtitle)}</span>
+    </div>
+  `;
+}
+
 function renderDatabaseTable() {
   const thead = document.getElementById('db-table-head');
   const tbody = document.getElementById('db-table-body');
-  const query = (document.getElementById('db-search-input')?.value || '').toLowerCase();
+  if (!thead || !tbody) return;
+
+  const query = sanitizeInput(document.getElementById('db-search-input')?.value || '').toLowerCase();
 
   let dataset = access_logs;
   if (activeDbTable === 'camera_events') dataset = camera_events;
@@ -651,15 +1173,18 @@ function renderDatabaseTable() {
   );
 
   if (filtered.length === 0) {
-    thead.innerHTML = '<tr><th>Status</th></tr>';
-    tbody.innerHTML = `<tr><td>No records available in <code>${activeDbTable}</code>. Connect to Node-RED SQLite endpoint (<code>${NODE_RED_HTTP}</code>) to populate.</td></tr>`;
+    thead.innerHTML = '<tr><th>SQLite Table Status</th></tr>';
+    tbody.innerHTML = `<tr><td>${getEmptyTableIllustrationHTML(
+      `No Records Found in "${activeDbTable}"`,
+      `Connect to the Node-RED SQLite backend (${NODE_RED_HTTP}) or clear active search filters.`
+    )}</td></tr>`;
     return;
   }
 
   const columns = Object.keys(filtered[0]);
-  thead.innerHTML = `<tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr>`;
+  thead.innerHTML = `<tr>${columns.map(c => `<th>${escapeHTML(c)}</th>`).join('')}</tr>`;
   tbody.innerHTML = filtered
-    .map(row => `<tr>${columns.map(c => `<td>${row[c]}</td>`).join('')}</tr>`)
+    .map(row => `<tr>${columns.map(c => `<td>${escapeHTML(row[c])}</td>`).join('')}</tr>`)
     .join('');
 }
 
@@ -667,44 +1192,73 @@ function renderSystemErrors() {
   const tbody = document.getElementById('system-errors-body');
   if (!tbody) return;
   if (system_errors.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5">No system errors logged or database offline.</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="5">${getEmptyTableIllustrationHTML(
+      'No System Errors Logged',
+      `Table "system_errors" is clean or awaiting connection to ${NODE_RED_HTTP}.`
+    )}</td></tr>`;
     return;
   }
   tbody.innerHTML = system_errors
     .map(err => `
       <tr>
-        <td>#${err.id}</td>
-        <td>${err.timestamp}</td>
-        <td><code>${err.node}</code></td>
-        <td><span class="text-rose">${err.severity}</span></td>
-        <td>${err.message}</td>
+        <td>#${escapeHTML(err.id)}</td>
+        <td>${escapeHTML(err.timestamp)}</td>
+        <td><code>${escapeHTML(err.node)}</code></td>
+        <td><span class="text-rose">${escapeHTML(err.severity)}</span></td>
+        <td>${escapeHTML(err.message)}</td>
       </tr>
     `)
     .join('');
 }
 
 async function sendCommand(command, targetState) {
-  pushActivityEvent(`Command Sent: ${command} -> ${targetState}`);
+  if (getActiveRole() !== 'Admin') {
+    showToast('Permission Denied', 'Viewer role is restricted from dispatching commands.', 'error');
+    return;
+  }
+
+  const cleanCmd = String(command).trim();
+  const cleanState = String(targetState).trim();
+
+  if (!ALLOWED_COMMANDS.has(cleanCmd) || !ALLOWED_COMMAND_STATES.has(cleanState)) {
+    showToast('Security Block', 'Blocked untyped or unrecognized command payload.', 'error');
+    return;
+  }
+
+  if (!isValidIPv4(ip_node1) || !isValidIPv4(ip_node2) || !isValidIPv4(ip_node3)) {
+    showToast('Invalid Node IP', 'Verify Node IPv4 addresses before dispatching hardware commands.', 'error');
+    return;
+  }
+
+  const strictBody = {
+    command: cleanCmd,
+    state: cleanState,
+    ip_node1: String(ip_node1),
+    ip_node2: String(ip_node2),
+    ip_node3: String(ip_node3)
+  };
+
+  pushActivityEvent(`Command Sent: ${cleanCmd} -> ${cleanState}`);
   try {
     const response = await fetch(`${NODE_RED_HTTP}/api/command`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command, state: targetState, ip_node1, ip_node2, ip_node3 })
+      body: JSON.stringify(strictBody)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    showToast('Command Executed', `${command} set to ${targetState}`, 'success');
+    showToast('Command Executed', `${cleanCmd} set to ${cleanState}`, 'success');
   } catch {
-    showToast('Command Failed', `Node-RED (${NODE_RED_HTTP}) unreachable for ${command}`, 'error');
+    showToast('Command Failed', `Node-RED (${NODE_RED_HTTP}) unreachable for ${cleanCmd}`, 'error');
   }
 }
 
 // ============================================================================
-// 8. 5-SECOND HEARTBEAT WATCHDOG
+// 10. 5-SECOND HEARTBEAT WATCHDOG
 // ============================================================================
 
 function startHeartbeatMonitor() {
   setInterval(() => {
-    const isOnline = (Date.now() - lastWsHeartbeat) <= 5000;
+    const isOnline = lastWsHeartbeat > 0 && (Date.now() - lastWsHeartbeat) <= 5000;
     const ids = ['hb-server', 'hb-node1', 'hb-node2', 'hb-node3'];
     ids.forEach(id => {
       const el = document.getElementById(id);
@@ -716,8 +1270,23 @@ function startHeartbeatMonitor() {
 }
 
 // ============================================================================
-// 9. INITIALIZATION & UI EVENT LISTENERS
+// 11. INITIALIZATION & GLOBAL SECURITY / MODAL BINDINGS
 // ============================================================================
+
+function bootAuthenticatedSession() {
+  const loginOverlay = document.getElementById('login-overlay');
+  if (loginOverlay) loginOverlay.classList.add('hidden');
+
+  applyRBACPermissions();
+  mountAuthenticatedViewListeners();
+  checkNodeIPsOnStartup();
+  renderActivityFeed();
+  renderMFAUI();
+
+  connectWebSockets();
+  fetchSQLiteLogs('access_logs');
+  fetchSQLiteLogs('system_errors');
+}
 
 window.addEventListener('DOMContentLoaded', () => {
   const tempCanvas = document.getElementById('temp-chart-canvas');
@@ -725,151 +1294,99 @@ window.addEventListener('DOMContentLoaded', () => {
   if (tempCanvas) tempChart = new LocalFIFOChart(tempCanvas, { color: '#60a5fa', min: 0, max: 50, unit: '°C' });
   if (humCanvas) humChart = new LocalFIFOChart(humCanvas, { color: '#34d399', min: 0, max: 100, unit: '%' });
 
+  startLiveDigitalClock();
+  initFullscreenToggle();
   initThemeAndSidebar();
-  checkNodeIPsOnStartup();
-  renderMFAUI();
+  startHeartbeatMonitor();
+  renderActivityFeed();
+  renderDatabaseTable();
+  renderSystemErrors();
 
-  // Sidebar View Navigation
-  const viewTitles = {
-    'view-1': 'Main Command Center (Executive Overview)',
-    'view-2': 'Smart Access & Biometrics',
-    'view-3': 'Environmental Monitoring',
-    'view-4': 'Audit Logs & Database Explorer',
-    'view-5': 'System Health & Diagnostics',
-    'view-6': 'System Management & Provisioning'
-  };
+  // Toast Clear All (X) Button
+  const clearToastsBtn = document.getElementById('toast-clear-all-btn');
+  if (clearToastsBtn) {
+    clearToastsBtn.addEventListener('click', clearAllToasts);
+  }
 
-  document.querySelectorAll('.nav-item').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.view-section').forEach(s => s.classList.remove('active'));
-      btn.classList.add('active');
-      const viewId = btn.getAttribute('data-view');
-      document.getElementById(viewId).classList.add('active');
-      document.getElementById('current-view-title').textContent = viewTitles[viewId] || 'LCI-SFM';
-      if (viewId === 'view-3') {
-        requestAnimationFrame(() => {
-          if (tempChart) tempChart.draw();
-          if (humChart) humChart.draw();
-        });
-      }
+  // Role Selector Radio Cards on Login Overlay
+  const roleCardAdmin = document.getElementById('role-card-admin');
+  const roleCardViewer = document.getElementById('role-card-viewer');
+  document.querySelectorAll('input[name="rbac_role"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      roleCardAdmin.classList.toggle('active', radio.value === 'Admin' && radio.checked);
+      roleCardViewer.classList.toggle('active', radio.value === 'Viewer' && radio.checked);
     });
   });
 
-  // Startup Modal Form
+  // RBAC Login Form Submission
+  document.getElementById('login-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const selectedRole = document.querySelector('input[name="rbac_role"]:checked')?.value || 'Viewer';
+    const rawOperator = document.getElementById('login_operator').value;
+    const rawPin = document.getElementById('login_pin').value;
+
+    const cleanOperator = sanitizeInput(rawOperator);
+    const cleanPin = sanitizeInput(rawPin);
+
+    if (!SAFE_NAME_REGEX.test(cleanOperator)) {
+      showToast('Invalid Operator ID', 'Operator Identifier must be 2–32 alphanumeric characters.', 'error');
+      return;
+    }
+    if (!isValidSixDigitPin(cleanPin)) {
+      showToast('Invalid Passkey', 'Security PIN must be an exact 6-digit integer.', 'error');
+      return;
+    }
+
+    const token = `LCI-SESS-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    sessionStorage.setItem('lci_session_token', token);
+    sessionStorage.setItem('lci_rbac_role', selectedRole === 'Admin' ? 'Admin' : 'Viewer');
+    sessionStorage.setItem('lci_operator_id', cleanOperator);
+
+    bootAuthenticatedSession();
+    pushActivityEvent(`Session Unlocked by ${cleanOperator} (${selectedRole})`);
+    showToast('Console Unlocked', `Authenticated as ${cleanOperator} [${selectedRole}]`, 'success');
+  });
+
+  // Lock System / Logout Button
+  document.getElementById('logout-btn').addEventListener('click', () => {
+    lockAndLogoutSystem();
+  });
+
+  // Startup / Node IP Modal Controls ((X), Cancel, Save)
+  document.getElementById('open-ip-modal-btn').addEventListener('click', () => {
+    openIpModal();
+  });
+
+  document.getElementById('close-ip-modal-x').addEventListener('click', () => {
+    closeIpModal();
+  });
+
+  document.getElementById('cancel-ip-modal-btn').addEventListener('click', () => {
+    closeIpModal();
+  });
+
   document.getElementById('startup-ip-form').addEventListener('submit', (e) => {
     e.preventDefault();
-    saveNodeIPs(
+    if (getActiveRole() !== 'Admin') {
+      showToast('Read-Only Mode', 'Viewer role cannot overwrite Node IP configuration.', 'error');
+      return;
+    }
+    const ok = saveNodeIPs(
       document.getElementById('modal_ip_node1').value,
       document.getElementById('modal_ip_node2').value,
       document.getElementById('modal_ip_node3').value
     );
-    document.getElementById('startup-modal').classList.add('hidden');
+    if (ok) closeIpModal();
   });
 
-  document.getElementById('open-ip-modal-btn').addEventListener('click', () => {
-    document.getElementById('startup-modal').classList.remove('hidden');
-  });
-
-  // View 6 IP Settings Form
-  document.getElementById('settings-ip-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    saveNodeIPs(
-      document.getElementById('set_ip_node1').value,
-      document.getElementById('set_ip_node2').value,
-      document.getElementById('set_ip_node3').value
-    );
-  });
-
-  // View 6 User Provisioning Form
-  document.getElementById('user-provision-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const name = document.getElementById('prov_name').value.trim();
-    const rfid = document.getElementById('prov_rfid').value.trim();
-    const pin = document.getElementById('prov_pin').value.trim();
-
-    try {
-      const res = await fetch(`${NODE_RED_HTTP}/api/provision/user`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, rfid, pin })
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      pushActivityEvent(`Provisioned User: ${name} (RFID: ${rfid})`);
-      showToast('User Provisioned', `${name} registered in SQLite access control.`, 'success');
-      e.target.reset();
-    } catch {
-      showToast('Provisioning Failed', `Unable to reach Node-RED (${NODE_RED_HTTP}) provisioning endpoint.`, 'error');
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeIpModal();
     }
   });
 
-  // Quick Action Buttons with 1.5s Anti-Spam Spinner
-  const btnUnlockDoor = document.getElementById('cmd-unlock-door');
-  btnUnlockDoor.addEventListener('click', () => {
-    withButtonLoading(btnUnlockDoor, () => {
-      const next = door_state === 'OPEN' ? 'CLOSED' : 'OPEN';
-      sendCommand('EMERGENCY_DOOR_UNLOCK', next);
-    });
-  });
-
-  const btnToggleFan = document.getElementById('cmd-toggle-fan');
-  btnToggleFan.addEventListener('click', () => {
-    withButtonLoading(btnToggleFan, () => {
-      const next = fan_relay === 'ON' ? 'OFF' : 'ON';
-      sendCommand('TOGGLE_HVAC_FAN', next);
-    });
-  });
-
-  const btnToggleLight = document.getElementById('cmd-toggle-light');
-  btnToggleLight.addEventListener('click', () => {
-    withButtonLoading(btnToggleLight, () => {
-      const next = light_state === 'ON' ? 'OFF' : 'ON';
-      sendCommand('TOGGLE_AUX_LIGHT', next);
-    });
-  });
-
-  // Camera Refresh
-  document.getElementById('refresh-cam-btn').addEventListener('click', () => {
-    refreshCameraSnapshot();
-    showToast('Camera Frame Requested', `Pulling snapshot from http://${ip_node3}/capture.jpg`, 'info');
-  });
-
-  // View 3 Override Mode Buttons
-  const autoBtn = document.getElementById('mode-auto-btn');
-  const manualBtn = document.getElementById('mode-manual-btn');
-  autoBtn.addEventListener('click', () => {
-    autoBtn.className = 'btn-mint';
-    manualBtn.className = 'btn-outline';
-    sendCommand('SET_CONTROL_MODE', 'AUTO');
-  });
-  manualBtn.addEventListener('click', () => {
-    manualBtn.className = 'btn-cyber';
-    autoBtn.className = 'btn-outline';
-    sendCommand('SET_CONTROL_MODE', 'MANUAL');
-  });
-
-  // View 4 Database Tabs & Search
-  document.querySelectorAll('.tab-btn').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab-btn').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      activeDbTable = tab.getAttribute('data-table');
-      fetchSQLiteLogs(activeDbTable);
-    });
-  });
-
-  document.getElementById('db-search-input').addEventListener('input', renderDatabaseTable);
-  document.getElementById('db-refresh-btn').addEventListener('click', () => {
-    fetchSQLiteLogs(activeDbTable);
-  });
-
-  document.getElementById('refresh-errors-btn').addEventListener('click', () => {
-    fetchSQLiteLogs('system_errors');
-  });
-
-  // Connect strictly to live WebSockets and SQLite REST endpoints at 192.168.43.225:1880
-  connectWebSockets();
-  fetchSQLiteLogs('access_logs');
-  fetchSQLiteLogs('system_errors');
-  startHeartbeatMonitor();
+  // Auto-restore session if already authenticated in current tab sessionStorage
+  if (isAuthenticated()) {
+    bootAuthenticatedSession();
+  }
 });
