@@ -283,7 +283,7 @@ The following table documents the interface the frontend expects. The route name
 | `POST` | `/api/command` | Body includes `command`, `state`, `ip_node1`, `ip_node2`, `ip_node3` |
 | `POST` | `/api/provision/user` | Provisions an operator. The current UI sends `username`, `password`, `role`, `rfid`, `pin`, and `face_linked`; validate and transform this input securely on the server. |
 | `POST` | `/api/auth/admin-profile` | Updates administrator identity/credential data |
-| `POST` | `/api/users/role` | Body: `{ "id": <userId>, "role": "Admin" | "Viewer" }` |
+| `POST` | `/api/users/role` | Body: `{ "id": <userId>, "role": "Admin or Viewer" }` |
 | `POST` | `/api/users/delete` | Body: `{ "id": <userId> }` |
 
 Authenticated requests send the browser-held session value as `Authorization: Bearer <token>`. The backend must validate the token and independently authorize each protected operation. Frontend checks are not an authorization boundary.
@@ -294,10 +294,10 @@ The frontend allowlist contains the following command names:
 
 | Command | States used by the current UI |
 |---|---|
-| `EMERGENCY_DOOR_UNLOCK` | `OPEN`, `CLOSED` |
-| `TOGGLE_HVAC_FAN` | `ON`, `OFF` |
+| `EMERGENCY_DOOR_UNLOCK` | `OPEN` or `CLOSED` |
+| `TOGGLE_HVAC_FAN` | `ON` or `OFF` |
 | `TOGGLE_AUX_LIGHT` | `ON`, `OFF` |
-| `SET_CONTROL_MODE` | `AUTO`, `MANUAL` |
+| `SET_CONTROL_MODE` | `AUTO` or `MANUAL` |
 
 The command dialog displays the target controller, endpoint, and intended payload for consequential actions. An HTTP 2xx response is treated as a backend acknowledgement; it is not proof that the physical relay or lock reached the intended state. The backend should return a clear structured result and, where possible, the UI should verify the resulting state via telemetry or an explicit controller response.
 
