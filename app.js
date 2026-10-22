@@ -1,13 +1,13 @@
 /**
- * LCI-SFM Air-Gapped Dashboard Application Logic (ES6 Standalone Module)
- * - Strictly 3-File Architecture (Chart Engine Embedded)
- * - Backend Server IP: 192.168.43.225:1880 (Node-RED + SQLite3 /home/Bedo/lci_sfm.db)
- * - Real SQLite Authentication (POST /api/auth/login), Dynamic system_users Table (GET /api/logs/system_users),
- *   and Secure User Provisioning (POST /api/provision/user)
+ * LCI-SFM Enterprise BMS / HMI Operations Console Application Logic (ES6 Module)
+ * - Air-Gapped 3-File Architecture (index.html, styles.css, app.js)
+ * - Default Central Appliance Endpoint: 192.168.43.225:1880 (Node-RED + SQLite3 /home/Bedo/lci_sfm.db)
+ * - Verified Server Authentication (POST /api/auth/login), Dynamic SQLite Explorer (GET /api/logs/:table),
+ *   Hardware Command Dispatch (POST /api/command), and User Provisioning (POST /api/provision/user)
  */
 
 // ============================================================================
-// 0. EMBEDDED AIR-GAPPED 30-POINT FIFO SLIDING WINDOW CHART ENGINE
+// 0. EMBEDDED AIR-GAPPED TELEMETRY CHART ENGINE (30-SAMPLE FIFO + SQLITE SERIES)
 // ============================================================================
 
 export class LocalFIFOChart {
@@ -17,12 +17,25 @@ export class LocalFIFOChart {
     this.maxPoints = config.maxPoints || 30;
     this.label = config.label || 'Telemetry';
     this.unit = config.unit || '';
-    this.color = config.color || '#60a5fa';
+    this.color = config.color || '#38bdf8';
     this.dangerThreshold = config.dangerThreshold ?? null;
+    this.warningThreshold = config.warningThreshold ?? null;
+    this.thresholdLabel = config.thresholdLabel || '';
     this.minY = config.minY ?? config.min ?? 0;
     this.maxY = config.maxY ?? config.max ?? 100;
+    this.statsElId = config.statsElId || null;
     this.labels = [];
     this.data = [];
+    this.hoverIndex = null;
+    this.modeLabel = 'Live 30-Sample FIFO';
+
+    if (this.canvas) {
+      this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
+      this.canvas.addEventListener('mouseleave', () => {
+        this.hoverIndex = null;
+        this.render();
+      });
+    }
     this.render();
   }
 
@@ -31,6 +44,8 @@ export class LocalFIFOChart {
   }
 
   pushDataPoint(timestampLabel, numericValue) {
+    const num = Number(numericValue);
+    if (!Number.isFinite(num)) return;
     if (this.labels.length >= this.maxPoints) {
       this.labels.shift();
     }
@@ -38,14 +53,71 @@ export class LocalFIFOChart {
       this.data.shift();
     }
     this.labels.push(String(timestampLabel));
-    this.data.push(Number(numericValue));
+    this.data.push(num);
+    this.updateStatsSummary();
+    this.render();
+  }
+
+  setSeries(labelsArray, dataArray, modeLabel = 'Live 30-Sample FIFO') {
+    this.labels = Array.isArray(labelsArray) ? labelsArray.slice(-this.maxPoints).map(String) : [];
+    this.data = Array.isArray(dataArray)
+      ? dataArray.slice(-this.maxPoints).map(Number).filter(Number.isFinite)
+      : [];
+    this.modeLabel = modeLabel;
+    this.hoverIndex = null;
+    this.updateStatsSummary();
     this.render();
   }
 
   reset() {
     this.labels = [];
     this.data = [];
+    this.hoverIndex = null;
+    this.updateStatsSummary();
     this.render();
+  }
+
+  updateStatsSummary() {
+    if (!this.statsElId) return;
+    const el = document.getElementById(this.statsElId);
+    if (!el) return;
+    if (this.data.length === 0) {
+      el.textContent = `Samples: 0 / ${this.maxPoints} · Min: — · Max: — · Latest: —`;
+      return;
+    }
+    const minVal = Math.min(...this.data).toFixed(1);
+    const maxVal = Math.max(...this.data).toFixed(1);
+    const latest = this.data[this.data.length - 1].toFixed(1);
+    el.textContent = `Samples: ${this.data.length} / ${this.maxPoints} · Min: ${minVal}${this.unit} · Max: ${maxVal}${this.unit} · Latest: ${latest}${this.unit}`;
+  }
+
+  handleMouseMove(e) {
+    if (!this.canvas || this.data.length === 0) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const padLeft = 52;
+    const padRight = 20;
+    const plotW = Math.max(80, rect.width - padLeft - padRight);
+
+    let closestIdx = 0;
+    let minDist = Infinity;
+    for (let idx = 0; idx < this.data.length; idx++) {
+      const px = padLeft + (idx / Math.max(1, this.maxPoints - 1)) * plotW;
+      const dist = Math.abs(mouseX - px);
+      if (dist < minDist) {
+        minDist = dist;
+        closestIdx = idx;
+      }
+    }
+    if (minDist <= 28) {
+      if (this.hoverIndex !== closestIdx) {
+        this.hoverIndex = closestIdx;
+        this.render();
+      }
+    } else if (this.hoverIndex !== null) {
+      this.hoverIndex = null;
+      this.render();
+    }
   }
 
   draw() {
@@ -62,19 +134,19 @@ export class LocalFIFOChart {
     }
 
     const width = this.canvas.width || 540;
-    const height = this.canvas.height || 230;
+    const height = this.canvas.height || 220;
     const ctx = this.ctx;
     ctx.clearRect(0, 0, width, height);
 
     const isLight = document.documentElement.getAttribute('data-theme') === 'light';
-    const padLeft = 50;
-    const padRight = 18;
+    const padLeft = 52;
+    const padRight = 20;
     const padTop = 18;
-    const padBottom = 28;
+    const padBottom = 30;
     const plotW = Math.max(80, width - padLeft - padRight);
     const plotH = Math.max(60, height - padTop - padBottom);
 
-    ctx.strokeStyle = isLight ? 'rgba(100, 116, 139, 0.15)' : 'rgba(148, 163, 184, 0.12)';
+    ctx.strokeStyle = isLight ? 'rgba(100, 116, 139, 0.18)' : 'rgba(148, 163, 184, 0.12)';
     ctx.lineWidth = 1;
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.fillStyle = isLight ? '#475569' : '#94a3b8';
@@ -90,24 +162,29 @@ export class LocalFIFOChart {
       ctx.fillText(`${val}${this.unit}`, 6, y + 4);
     }
 
-    if (this.dangerThreshold !== null) {
-      const dRatio = Math.min(1, Math.max(0, (this.dangerThreshold - this.minY) / (this.maxY - this.minY)));
+    const refThreshold = this.dangerThreshold ?? this.warningThreshold;
+    if (refThreshold !== null && refThreshold !== undefined) {
+      const dRatio = Math.min(1, Math.max(0, (refThreshold - this.minY) / (this.maxY - this.minY)));
       const dy = padTop + plotH - dRatio * plotH;
       ctx.save();
-      ctx.strokeStyle = 'rgba(251, 113, 133, 0.75)';
-      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = this.dangerThreshold !== null ? 'rgba(244, 63, 94, 0.75)' : 'rgba(245, 158, 11, 0.75)';
+      ctx.setLineDash([4, 4]);
       ctx.beginPath();
       ctx.moveTo(padLeft, dy);
       ctx.lineTo(width - padRight, dy);
       ctx.stroke();
-      ctx.fillStyle = isLight ? '#e11d48' : '#fb7185';
-      ctx.fillText(`ALARM ≥ ${this.dangerThreshold}${this.unit}`, width - 140, dy - 6);
+      ctx.fillStyle = this.dangerThreshold !== null
+        ? (isLight ? '#e11d48' : '#f43f5e')
+        : (isLight ? '#d97706' : '#f59e0b');
+      const labelText = this.thresholdLabel || `Threshold ≥ ${refThreshold}${this.unit}`;
+      ctx.fillText(labelText, Math.max(padLeft + 6, width - padRight - ctx.measureText(labelText).width - 4), Math.max(padTop + 11, dy - 5));
       ctx.restore();
     }
 
     if (this.data.length === 0) {
-      ctx.fillStyle = isLight ? '#64748b' : '#94a3b8';
-      ctx.fillText('Offline / Awaiting stream (ws://192.168.43.225:1880/ws/telemetry)...', padLeft + 14, padTop + plotH / 2);
+      ctx.fillStyle = isLight ? '#475569' : '#94a3b8';
+      const wsStatus = wsTelemetryState === 'ONLINE' ? 'Connected — awaiting first telemetry packet' : `Stream Offline (${getWsTelemetryUrl()})`;
+      ctx.fillText(`No verified samples in buffer · ${wsStatus}`, padLeft + 12, padTop + plotH / 2);
       return;
     }
 
@@ -120,7 +197,7 @@ export class LocalFIFOChart {
 
     if (points.length >= 2) {
       const grad = ctx.createLinearGradient(0, padTop, 0, padTop + plotH);
-      grad.addColorStop(0, `${this.color}38`);
+      grad.addColorStop(0, `${this.color}30`);
       grad.addColorStop(1, `${this.color}02`);
       ctx.fillStyle = grad;
       ctx.beginPath();
@@ -131,7 +208,7 @@ export class LocalFIFOChart {
       ctx.fill();
 
       ctx.strokeStyle = this.color;
-      ctx.lineWidth = 2.2;
+      ctx.lineWidth = 2;
       ctx.beginPath();
       points.forEach((p, idx) => {
         if (idx === 0) ctx.moveTo(p.x, p.y);
@@ -141,17 +218,33 @@ export class LocalFIFOChart {
     }
 
     points.forEach((p, idx) => {
-      const isDanger = this.dangerThreshold !== null && p.val >= this.dangerThreshold;
-      ctx.fillStyle = isDanger ? '#fb7185' : this.color;
+      const isAlert = refThreshold !== null && refThreshold !== undefined && p.val >= refThreshold;
+      ctx.fillStyle = isAlert ? '#f59e0b' : this.color;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, idx === points.length - 1 ? 4 : 2.2, 0, Math.PI * 2);
+      const radius = idx === this.hoverIndex ? 5 : (idx === points.length - 1 ? 3.8 : 2.2);
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
       ctx.fill();
 
       if (idx === 0 || idx === Math.floor(points.length / 2) || idx === points.length - 1) {
-        ctx.fillStyle = '#64748b';
-        ctx.fillText(p.label, Math.max(padLeft, p.x - 22), height - 8);
+        ctx.fillStyle = isLight ? '#64748b' : '#64748b';
+        ctx.fillText(p.label, Math.max(padLeft, Math.min(width - padRight - 52, p.x - 22)), height - 8);
       }
     });
+
+    if (this.hoverIndex !== null && points[this.hoverIndex]) {
+      const hp = points[this.hoverIndex];
+      const tipText = `${hp.val.toFixed(1)}${this.unit} @ ${hp.label || `Sample #${this.hoverIndex + 1}`}`;
+      const textW = ctx.measureText(tipText).width + 14;
+      const boxX = Math.min(width - padRight - textW, Math.max(padLeft, hp.x - textW / 2));
+      const boxY = Math.max(padTop + 2, hp.y - 28);
+
+      ctx.fillStyle = isLight ? '#0f172a' : '#1e293b';
+      ctx.fillRect(boxX, boxY, textW, 20);
+      ctx.strokeStyle = this.color;
+      ctx.strokeRect(boxX, boxY, textW, 20);
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillText(tipText, boxX + 7, boxY + 14);
+    }
   }
 }
 
@@ -160,6 +253,7 @@ export class LocalFIFOChart {
 // ============================================================================
 
 const IPV4_REGEX = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+const HOST_PORT_REGEX = /^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}|localhost)(:\d{1,5})?$/;
 const RFID_HEX_REGEX = /^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){3,7}$/;
 const PIN_SIX_DIGIT_REGEX = /^\d{6}$/;
 const SAFE_NAME_REGEX = /^[A-Za-z0-9 ._,'-]{2,64}$/;
@@ -194,6 +288,10 @@ export function isValidIPv4(ip) {
   return IPV4_REGEX.test(String(ip).trim());
 }
 
+export function isValidHostPort(hostStr) {
+  return HOST_PORT_REGEX.test(String(hostStr).trim());
+}
+
 export function isValidHexRFID(rfid) {
   return RFID_HEX_REGEX.test(String(rfid).trim());
 }
@@ -205,9 +303,6 @@ export function isValidSixDigitPin(pinStr) {
   return Number.isInteger(num) && num >= 0 && num <= 999999;
 }
 
-/**
- * Helper for fetch with timeout so unreachable air-gapped endpoints don't hang UI
- */
 async function fetchWithTimeout(url, options = {}, timeoutMs = 2500) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -219,7 +314,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 2500) {
 }
 
 // ============================================================================
-// 2. STRICT GLOBAL VARIABLES (Matching Node-RED Backend & SQLite Keys)
+// 2. STRICT GLOBAL VARIABLES & CENTRALIZED NETWORK CONFIGURATION
 // ============================================================================
 
 // Environment Telemetry
@@ -241,40 +336,28 @@ export let access_logs = [];
 export let environmental_telemetry = [];
 export let camera_events = [];
 export let system_errors = [];
+export let system_users = [];
 
-const DEFAULT_SYSTEM_USERS = [
-  { id: 1, username: 'admin', role: 'Admin', rfid: 'A1:00:FF:01', pin: 123456, face_linked: 1 },
-  { id: 2, username: 'Eng. Tariq Al-Mansoor', role: 'Viewer', rfid: 'A4:9F:21:0B', pin: 654321, face_linked: 1 }
-];
+// Dynamic Endpoints (Central Server + Edge Nodes 1, 2, 3)
+export let server_host = sanitizeInput(localStorage.getItem('lci_server_host') || '192.168.43.225:1880');
+if (!isValidHostPort(server_host)) {
+  server_host = '192.168.43.225:1880';
+}
+export let ip_node1 = sanitizeInput(localStorage.getItem('ip_node1') || '192.168.43.11');
+export let ip_node2 = sanitizeInput(localStorage.getItem('ip_node2') || '192.168.43.12');
+export let ip_node3 = sanitizeInput(localStorage.getItem('ip_node3') || '192.168.43.13');
 
-export let system_users = loadLocalSystemUsers();
-
-function loadLocalSystemUsers() {
-  try {
-    const saved = localStorage.getItem('lci_system_users_cache');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch {}
-  return [...DEFAULT_SYSTEM_USERS];
+function getNodeRedHttp() {
+  return `http://${server_host}`;
 }
 
-function saveLocalSystemUsers() {
-  localStorage.setItem('lci_system_users_cache', JSON.stringify(system_users));
+function getWsTelemetryUrl() {
+  return `ws://${server_host}/ws/telemetry`;
 }
 
-function getLocalAdminCredentials() {
-  return {
-    username: localStorage.getItem('lci_admin_user') || 'admin',
-    password: localStorage.getItem('lci_admin_pass') || 'admin'
-  };
+function getWsMfaUrl() {
+  return `ws://${server_host}/ws/mfa`;
 }
-
-// Dynamic Node IPs
-export let ip_node1 = sanitizeInput(localStorage.getItem('ip_node1') || '');
-export let ip_node2 = sanitizeInput(localStorage.getItem('ip_node2') || '');
-export let ip_node3 = sanitizeInput(localStorage.getItem('ip_node3') || '');
 
 // Expose variables globally on window for direct Node-RED / browser inspection
 window.LCI_STATE = {
@@ -293,30 +376,51 @@ window.LCI_STATE = {
   get camera_events() { return camera_events; },
   get system_errors() { return system_errors; },
   get system_users() { return system_users; },
+  get server_host() { return server_host; },
   get ip_node1() { return ip_node1; },
   get ip_node2() { return ip_node2; },
   get ip_node3() { return ip_node3; }
 };
 
-// Node-RED Server IP: 192.168.43.225
-const NODE_RED_HTTP = 'http://192.168.43.225:1880';
-const WS_TELEMETRY_URL = 'ws://192.168.43.225:1880/ws/telemetry';
-const WS_MFA_URL = 'ws://192.168.43.225:1880/ws/mfa';
+// Independent Evidence & Freshness Tracking per Subsystem
+let hasReceivedTelemetry = false;
+let lastTelemetryTimestamp = 0;
+let lastNode2FrameTimestamp = 0;
+let lastNode1EvidenceTimestamp = 0;
+let lastNode3CaptureTimestamp = 0;
+let node3ProbeStatus = 'STANDBY'; // 'STANDBY' | 'LOADING' | 'ONLINE' | 'UNREACHABLE'
+let lastHttpApiSuccessTimestamp = 0;
+let httpApiReachable = false;
+
+let wsTelemetryState = 'OFFLINE'; // 'ONLINE' | 'OFFLINE'
+let wsMfaState = 'OFFLINE'; // 'ONLINE' | 'OFFLINE'
 
 let activeDbTable = 'access_logs';
+let dbTableProvenance = {}; // { tableName: { status: 'LIVE' | 'UNREACHABLE', timestamp: number } }
+let dbSortColumn = null;
+let dbSortAsc = false;
+let dbCurrentPage = 1;
+let dbPageSize = 25;
+let currentFilteredRows = [];
+
 let activityFeed = [];
 let mfaCountdownInterval = null;
 let mfaRemainingSeconds = 10;
-let lastWsHeartbeat = 0;
 
 let tempChart = null;
 let humChart = null;
+let liveTempSamples = [];
+let liveHumSamples = [];
+let activeChartMode = 'live'; // 'live' | 'sqlite' | 'agg'
 
 // Environmental Control Mode ("AUTO" | "MANUAL")
 let currentControlMode = 'AUTO';
 
 // Provisioning Face Capture State
 let capturedFaceUrlForProvision = '';
+
+// Pending Confirmation Action Callback
+let pendingConfirmCallback = null;
 
 // Authenticated Session & Listener Lifecycle Controller
 let authSessionAbortController = null;
@@ -336,7 +440,7 @@ function updateToastToolbar() {
   const count = container.children.length;
   if (count > 0) {
     toolbar.classList.remove('hidden');
-    if (countLabel) countLabel.textContent = `${count} Active Notification${count > 1 ? 's' : ''}`;
+    if (countLabel) countLabel.textContent = `${count} Notification${count > 1 ? 's' : ''}`;
   } else {
     toolbar.classList.add('hidden');
   }
@@ -376,16 +480,20 @@ export function showToast(title, message, type = 'info') {
         toast.parentNode.removeChild(toast);
         updateToastToolbar();
       }
-    }, 240);
-  }, 3000);
+    }, 220);
+  }, 3400);
 }
 
 // ============================================================================
-// 4. RBAC SESSION MANAGEMENT, VIEW 6 VISIBILITY & LOGIN / LOGOUT SECURITY
+// 4. RBAC SESSION MANAGEMENT & SERVER-VERIFIED SECURITY GATING
 // ============================================================================
 
 function getActiveRole() {
   return sessionStorage.getItem('lci_rbac_role') || null;
+}
+
+function isServerAuthVerified() {
+  return sessionStorage.getItem('lci_auth_verified') === 'true';
 }
 
 function getAuthHeaders() {
@@ -400,9 +508,18 @@ function isAuthenticated() {
   return Boolean(sessionStorage.getItem('lci_session_token') && getActiveRole());
 }
 
+function isPrivilegedAdmin() {
+  return isServerAuthVerified() && getActiveRole() === 'Admin';
+}
+
 function applyRBACPermissions() {
   const role = getActiveRole() || 'Viewer';
-  const isAdmin = role === 'Admin';
+  const verified = isServerAuthVerified();
+  const isAdmin = role === 'Admin' && verified;
+  const operatorName = sessionStorage.getItem('lci_operator_id') || 'Viewer';
+
+  const opNameEl = document.getElementById('header-operator-name');
+  if (opNameEl) opNameEl.textContent = operatorName;
 
   const roleHeaderLabel = document.getElementById('header-role-label');
   if (roleHeaderLabel) {
@@ -410,10 +527,33 @@ function applyRBACPermissions() {
     roleHeaderLabel.className = isAdmin ? 'text-mint' : 'text-cyber';
   }
 
-  // Disable all .action-btn, #open-ip-modal-btn, and .rbac-protected for Viewers
+  const authModeTag = document.getElementById('header-auth-mode-tag');
+  if (authModeTag) {
+    authModeTag.textContent = verified ? '· SQLite Verified' : '· Unverified Offline Mode';
+    authModeTag.className = `auth-verification-text ${verified ? 'text-mint' : 'text-amber'}`;
+  }
+
+  const unverifiedBanner = document.getElementById('unverified-session-banner');
+  if (unverifiedBanner) {
+    unverifiedBanner.classList.toggle('hidden', verified);
+  }
+
+  const dispatchAuthStatus = document.getElementById('dispatch-auth-status');
+  if (dispatchAuthStatus) {
+    dispatchAuthStatus.textContent = isAdmin
+      ? 'Verified Admin (Authorized)'
+      : (verified ? 'Read-Only Viewer' : 'Locked (Unverified Offline Session)');
+    dispatchAuthStatus.className = isAdmin ? 'text-mint' : 'text-amber';
+  }
+
+  // Disable all .action-btn, #open-ip-modal-btn, and .rbac-protected unless verified Admin
   document.querySelectorAll('.action-btn, #open-ip-modal-btn, .rbac-protected').forEach(btn => {
     btn.disabled = !isAdmin;
-    btn.title = isAdmin ? '' : 'Locked — Viewer role has read-only permissions';
+    btn.title = isAdmin
+      ? ''
+      : (verified
+          ? 'Locked — Viewer role has read-only permissions'
+          : 'Locked — Authenticate against the Node-RED SQLite server to enable hardware control');
   });
 
   document.querySelectorAll('.rbac-protected-input').forEach(input => {
@@ -422,9 +562,10 @@ function applyRBACPermissions() {
 
   document.querySelectorAll('.rbac-lock-tag').forEach(tag => {
     tag.classList.toggle('hidden', isAdmin);
+    tag.textContent = verified ? 'Read-Only (Viewer)' : 'Locked (Offline Mode)';
   });
 
-  // Completely hide #view-6 and its sidebar navigation item for Viewers
+  // Hide Administration (#view-6) for non-Admins
   const navView6 = document.getElementById('nav-item-view-6');
   const navDivider6 = document.getElementById('nav-divider-view-6');
   const sectionView6 = document.getElementById('view-6');
@@ -440,7 +581,8 @@ function applyRBACPermissions() {
     if (view1 && !document.querySelector('.view-section.active')) {
       view1.classList.add('active');
       if (nav1) nav1.classList.add('active');
-      document.getElementById('current-view-title').textContent = 'Main Command Center (Executive Overview)';
+      const titleEl = document.getElementById('current-view-title');
+      if (titleEl) titleEl.textContent = 'Overview & Command Center';
     }
   } else if (isAdmin && sectionView6) {
     sectionView6.classList.remove('hidden');
@@ -451,26 +593,34 @@ function applyRBACPermissions() {
 
 function syncManualControlsPanel() {
   const manualPanel = document.getElementById('manual-controls-panel');
+  const modeBadge = document.getElementById('env-active-mode-badge');
+  const fanModeSnap = document.getElementById('snap-fan-mode');
+
+  if (modeBadge) {
+    modeBadge.textContent = `ACTIVE MODE: ${currentControlMode}`;
+    modeBadge.className = `status-tag ${currentControlMode === 'AUTO' ? 'status-nominal' : 'status-warning'}`;
+  }
+  if (fanModeSnap) {
+    fanModeSnap.textContent = `Mode: ${currentControlMode}`;
+  }
+
   if (!manualPanel) return;
-  const isAdmin = getActiveRole() === 'Admin';
-  const showManual = isAdmin && currentControlMode === 'MANUAL';
+  const showManual = isPrivilegedAdmin() && currentControlMode === 'MANUAL';
   manualPanel.classList.toggle('hidden', !showManual);
 }
 
 function lockAndLogoutSystem() {
-  // 1. Explicitly clear sessionStorage
   sessionStorage.removeItem('lci_session_token');
   sessionStorage.removeItem('lci_rbac_role');
   sessionStorage.removeItem('lci_operator_id');
+  sessionStorage.removeItem('lci_auth_verified');
   sessionStorage.clear();
 
-  // 2. Forcibly unmount authenticated view listeners
   if (authSessionAbortController) {
     authSessionAbortController.abort();
     authSessionAbortController = null;
   }
 
-  // 3. Close live WebSockets and reset runtime state variables
   if (wsTelemetryInstance) {
     try { wsTelemetryInstance.close(); } catch {}
     wsTelemetryInstance = null;
@@ -495,8 +645,17 @@ function lockAndLogoutSystem() {
   environmental_telemetry = [];
   camera_events = [];
   system_errors = [];
+  system_users = [];
   activityFeed = [];
-  lastWsHeartbeat = 0;
+  liveTempSamples = [];
+  liveHumSamples = [];
+
+  hasReceivedTelemetry = false;
+  lastTelemetryTimestamp = 0;
+  lastNode2FrameTimestamp = 0;
+  lastNode1EvidenceTimestamp = 0;
+  wsTelemetryState = 'OFFLINE';
+  wsMfaState = 'OFFLINE';
   currentControlMode = 'AUTO';
 
   if (tempChart) tempChart.reset();
@@ -507,6 +666,7 @@ function lockAndLogoutSystem() {
   document.querySelector('.nav-item[data-view="view-1"]')?.classList.add('active');
   document.getElementById('view-1')?.classList.add('active');
 
+  updateFacilityStatusAndFreshness();
   renderActivityFeed();
   renderMFAUI();
   renderDatabaseTable();
@@ -514,32 +674,79 @@ function lockAndLogoutSystem() {
   renderUserManagementTable();
   syncManualControlsPanel();
 
-  // 4. Show Login Overlay
   const loginOverlay = document.getElementById('login-overlay');
   if (loginOverlay) loginOverlay.classList.remove('hidden');
 
-  showToast('System Locked', 'Session cleared and authenticated listeners unmounted.', 'info');
+  const passInput = document.getElementById('login_password');
+  if (passInput) passInput.value = '';
+
+  showToast('Session Terminated', 'Console locked and authenticated listeners unmounted.', 'info');
 }
 
 // ============================================================================
-// 5. VIEW 6: DYNAMIC SQLITE USER MANAGEMENT TABLE (/api/logs/system_users)
+// 5. CONFIRMATION MODAL FOR CRITICAL / DESTRUCTIVE OPERATIONS
+// ============================================================================
+
+function openConfirmModal({ kicker, title, description, endpoint, payload, targetNode, confirmLabel, onConfirm }) {
+  const modal = document.getElementById('confirm-action-modal');
+  if (!modal) {
+    if (typeof onConfirm === 'function') onConfirm();
+    return;
+  }
+  const kickerEl = document.getElementById('confirm-modal-kicker');
+  const titleEl = document.getElementById('confirm-modal-title');
+  const descEl = document.getElementById('confirm-modal-desc');
+  const epEl = document.getElementById('confirm-spec-endpoint');
+  const payEl = document.getElementById('confirm-spec-payload');
+  const nodeEl = document.getElementById('confirm-spec-node');
+  const execBtn = document.getElementById('execute-confirm-modal-btn');
+
+  if (kickerEl) kickerEl.textContent = kicker || 'Hardware Override Confirmation';
+  if (titleEl) titleEl.textContent = title || 'Confirm Operation';
+  if (descEl) descEl.textContent = description || '';
+  if (epEl) epEl.textContent = endpoint || `POST ${getNodeRedHttp()}/api/command`;
+  if (payEl) payEl.textContent = payload || '';
+  if (nodeEl) nodeEl.textContent = targetNode || '';
+  if (execBtn) execBtn.textContent = confirmLabel || 'Confirm & Dispatch';
+
+  pendingConfirmCallback = onConfirm;
+  modal.classList.remove('hidden');
+}
+
+function closeConfirmModal() {
+  const modal = document.getElementById('confirm-action-modal');
+  if (modal) modal.classList.add('hidden');
+  pendingConfirmCallback = null;
+}
+
+// ============================================================================
+// 6. VIEW 6: SQLITE USER DIRECTORY (/api/logs/system_users) — CREDENTIALS MASKED
 // ============================================================================
 
 async function fetchSystemUsers() {
-  if (getActiveRole() !== 'Admin') return;
+  if (!isPrivilegedAdmin()) return;
+  const syncBadge = document.getElementById('user-sync-badge');
   try {
-    const res = await fetchWithTimeout(`${NODE_RED_HTTP}/api/logs/system_users`, {
+    const res = await fetchWithTimeout(`${getNodeRedHttp()}/api/logs/system_users`, {
       method: 'GET',
       headers: getAuthHeaders()
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const rows = await res.json();
+    httpApiReachable = true;
+    lastHttpApiSuccessTimestamp = Date.now();
     if (Array.isArray(rows)) {
       system_users = rows;
-      saveLocalSystemUsers();
+    }
+    if (syncBadge) {
+      syncBadge.textContent = 'SQLite Synced';
+      syncBadge.className = 'status-tag status-nominal';
     }
   } catch {
-    system_users = loadLocalSystemUsers();
+    if (syncBadge) {
+      syncBadge.textContent = 'Backend Unreachable';
+      syncBadge.className = 'status-tag status-offline';
+    }
   }
   renderUserManagementTable();
 }
@@ -555,8 +762,8 @@ function renderUserManagementTable() {
 
   if (system_users.length === 0) {
     tbody.innerHTML = `<tr><td colspan="7">${getEmptyTableIllustrationHTML(
-      'No Records in SQLite "system_users"',
-      `Ensure the Node-RED SQLite Setup Flow has been initialized on ${NODE_RED_HTTP} or provision a new user.`
+      'No User Records Loaded from SQLite "system_users"',
+      `Verify connection to ${getNodeRedHttp()}/api/logs/system_users or provision a new operator credential.`
     )}</td></tr>`;
     return;
   }
@@ -566,7 +773,7 @@ function renderUserManagementTable() {
       const uid = u.id;
       const uname = u.username || u.name || '';
       const rfid = u.rfid || '—';
-      const pin = u.pin ?? '••••••';
+      const hasPin = Boolean(u.pin !== undefined && u.pin !== null && String(u.pin).length > 0);
       const faceLinked = Boolean(u.face_linked || u.faceLinked);
       const role = u.role === 'Admin' ? 'Admin' : 'Viewer';
 
@@ -575,22 +782,22 @@ function renderUserManagementTable() {
           <td class="tabular-nums">#${escapeHTML(uid)}</td>
           <td><strong>${escapeHTML(uname)}</strong></td>
           <td><code>${escapeHTML(rfid)}</code></td>
-          <td class="tabular-nums"><code>${escapeHTML(pin)}</code></td>
+          <td><span class="text-muted" title="PIN &amp; password hashes are never exposed in plaintext">•••••• ${hasPin ? '(Set)' : '(Hash)'}</span></td>
           <td>
-            <span class="${faceLinked ? 'text-mint' : 'text-cyber'}">
-              ${faceLinked ? 'Linked (Node 3)' : 'Unlinked'}
+            <span class="status-tag ${faceLinked ? 'status-nominal' : 'status-unknown'}">
+              ${faceLinked ? 'Linked (Node 3)' : 'Not Linked'}
             </span>
           </td>
           <td>
-            <strong class="${role === 'Admin' ? 'text-mint' : 'text-cyber'}">${escapeHTML(role)}</strong>
+            <span class="status-tag ${role === 'Admin' ? 'status-nominal' : 'status-info'}">${escapeHTML(role)}</span>
           </td>
           <td>
             <div class="table-actions-cell">
-              <button type="button" class="btn-cyber btn-sm" data-user-action="toggle-role" data-user-id="${escapeHTML(uid)}" data-current-role="${escapeHTML(role)}">
-                Toggle Role (Admin/Viewer)
+              <button type="button" class="btn-cyber btn-sm" data-user-action="toggle-role" data-user-id="${escapeHTML(uid)}" data-username="${escapeHTML(uname)}" data-current-role="${escapeHTML(role)}">
+                Set ${role === 'Admin' ? 'Viewer' : 'Admin'}
               </button>
               <button type="button" class="btn-rose btn-sm" data-user-action="delete-user" data-user-id="${escapeHTML(uid)}" data-username="${escapeHTML(uname)}">
-                Delete User
+                Delete
               </button>
             </div>
           </td>
@@ -600,6 +807,87 @@ function renderUserManagementTable() {
     .join('');
 }
 
+// ============================================================================
+// 7. AUTHENTICATED VIEW LISTENERS & INTERACTION HANDLERS
+// ============================================================================
+
+function switchActiveView(viewId) {
+  const viewTitles = {
+    'view-1': 'Overview & Command Center',
+    'view-2': 'Smart Access & Biometric MFA',
+    'view-3': 'Environment & Actuator Control',
+    'view-4': 'Events, Alarms & SQLite Audit Logs',
+    'view-5': 'System Health & Device Diagnostics',
+    'view-6': 'Administration & User Provisioning'
+  };
+
+  if (viewId === 'view-6' && !isPrivilegedAdmin()) {
+    showToast('Access Restricted', 'Administration requires a server-verified Admin session.', 'error');
+    return;
+  }
+
+  document.querySelectorAll('.nav-item').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-view') === viewId);
+  });
+  document.querySelectorAll('.view-section').forEach(s => {
+    s.classList.toggle('active', s.id === viewId);
+  });
+
+  const titleEl = document.getElementById('current-view-title');
+  if (titleEl) titleEl.textContent = viewTitles[viewId] || 'LCI-SFM Console';
+
+  // Close mobile sidebar drawer if open
+  const sidebar = document.getElementById('sidebar');
+  const backdrop = document.getElementById('sidebar-backdrop');
+  if (sidebar && sidebar.classList.contains('mobile-open')) {
+    sidebar.classList.remove('mobile-open');
+    if (backdrop) backdrop.classList.add('hidden');
+  }
+
+  if (viewId === 'view-3') {
+    requestAnimationFrame(() => {
+      if (tempChart) tempChart.draw();
+      if (humChart) humChart.draw();
+    });
+  }
+  if (viewId === 'view-4') {
+    fetchSQLiteLogs(activeDbTable);
+  }
+  if (viewId === 'view-6') {
+    fetchSystemUsers();
+  }
+}
+
+function requestDoorUnlockAction(triggerBtn) {
+  if (!isPrivilegedAdmin()) {
+    showToast('Authorization Required', 'Emergency Door Unlock requires a verified Admin session.', 'error');
+    return;
+  }
+  const nextState = door_state === 'OPEN' ? 'CLOSED' : 'OPEN';
+  const requireConfirm = document.getElementById('require-door-confirm-toggle')?.checked ?? false;
+
+  const executeUnlock = () => {
+    withButtonLoading(triggerBtn, () => {
+      sendCommand('EMERGENCY_DOOR_UNLOCK', nextState);
+    });
+  };
+
+  if (requireConfirm) {
+    openConfirmModal({
+      kicker: 'Physical Security Override Confirmation',
+      title: `Confirm Door Solenoid ${nextState === 'OPEN' ? 'Unlock' : 'Lock'}`,
+      description: `This action dispatches an authenticated request to Node-RED to ${nextState === 'OPEN' ? 'de-energize (UNLOCK)' : 'energize (LOCK)'} the 12V magnetic lock on Node 1.`,
+      endpoint: `POST ${getNodeRedHttp()}/api/command`,
+      payload: `EMERGENCY_DOOR_UNLOCK -> ${nextState}`,
+      targetNode: `Node 1 (${ip_node1})`,
+      confirmLabel: nextState === 'OPEN' ? 'Confirm Emergency Unlock' : 'Confirm Lock Engagement',
+      onConfirm: executeUnlock
+    });
+  } else {
+    executeUnlock();
+  }
+}
+
 function mountAuthenticatedViewListeners() {
   if (authSessionAbortController) {
     authSessionAbortController.abort();
@@ -607,100 +895,130 @@ function mountAuthenticatedViewListeners() {
   authSessionAbortController = new AbortController();
   const { signal } = authSessionAbortController;
 
-  const viewTitles = {
-    'view-1': 'Main Command Center (Executive Overview)',
-    'view-2': 'Smart Access & Biometrics',
-    'view-3': 'Environmental Monitoring',
-    'view-4': 'Audit Logs & Database Explorer',
-    'view-5': 'System Health & Diagnostics',
-    'view-6': 'System Management & Provisioning'
-  };
-
+  // Primary Sidebar Navigation
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => {
       const viewId = btn.getAttribute('data-view');
-      if (viewId === 'view-6' && getActiveRole() !== 'Admin') {
-        showToast('Access Denied', 'System Management is restricted to Admin accounts.', 'error');
-        return;
-      }
-
-      document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.view-section').forEach(s => s.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById(viewId).classList.add('active');
-      document.getElementById('current-view-title').textContent = viewTitles[viewId] || 'LCI-SFM';
-      if (viewId === 'view-3') {
-        requestAnimationFrame(() => {
-          if (tempChart) tempChart.draw();
-          if (humChart) humChart.draw();
-        });
-      }
-      if (viewId === 'view-6') {
-        fetchSystemUsers();
-      }
+      if (viewId) switchActiveView(viewId);
     }, { signal });
   });
 
-  // View 1 Quick Action Buttons with RBAC check + 1.5s Anti-Spam Spinner
+  // Quick Jump Links (e.g., "Full Audit Log", "Open Full Diagnostics")
+  document.querySelectorAll('[data-nav-jump]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetView = btn.getAttribute('data-nav-jump');
+      if (targetView) switchActiveView(targetView);
+    }, { signal });
+  });
+
+  // View 1 & View 2 Quick Action Buttons
   const btnUnlockDoor = document.getElementById('cmd-unlock-door');
-  btnUnlockDoor.addEventListener('click', () => {
-    if (getActiveRole() !== 'Admin') return;
-    withButtonLoading(btnUnlockDoor, () => {
-      const next = door_state === 'OPEN' ? 'CLOSED' : 'OPEN';
-      sendCommand('EMERGENCY_DOOR_UNLOCK', next);
-    });
-  }, { signal });
+  if (btnUnlockDoor) {
+    btnUnlockDoor.addEventListener('click', () => requestDoorUnlockAction(btnUnlockDoor), { signal });
+  }
+
+  const accessViewUnlockBtn = document.getElementById('access-view-unlock-btn');
+  if (accessViewUnlockBtn) {
+    accessViewUnlockBtn.addEventListener('click', () => requestDoorUnlockAction(accessViewUnlockBtn), { signal });
+  }
 
   const btnToggleFan = document.getElementById('cmd-toggle-fan');
-  btnToggleFan.addEventListener('click', () => {
-    if (getActiveRole() !== 'Admin') return;
-    withButtonLoading(btnToggleFan, () => {
-      const next = fan_relay === 'ON' ? 'OFF' : 'ON';
-      sendCommand('TOGGLE_HVAC_FAN', next);
-    });
-  }, { signal });
+  if (btnToggleFan) {
+    btnToggleFan.addEventListener('click', () => {
+      if (!isPrivilegedAdmin()) return;
+      withButtonLoading(btnToggleFan, () => {
+        const next = fan_relay === 'ON' ? 'OFF' : 'ON';
+        sendCommand('TOGGLE_HVAC_FAN', next);
+      });
+    }, { signal });
+  }
 
   const btnToggleLight = document.getElementById('cmd-toggle-light');
-  btnToggleLight.addEventListener('click', () => {
-    if (getActiveRole() !== 'Admin') return;
-    withButtonLoading(btnToggleLight, () => {
-      const next = light_state === 'ON' ? 'OFF' : 'ON';
-      sendCommand('TOGGLE_AUX_LIGHT', next);
-    });
-  }, { signal });
+  if (btnToggleLight) {
+    btnToggleLight.addEventListener('click', () => {
+      if (!isPrivilegedAdmin()) return;
+      withButtonLoading(btnToggleLight, () => {
+        const next = light_state === 'ON' ? 'OFF' : 'ON';
+        sendCommand('TOGGLE_AUX_LIGHT', next);
+      });
+    }, { signal });
+  }
 
   // View 2 Camera Refresh
-  document.getElementById('refresh-cam-btn').addEventListener('click', () => {
-    refreshCameraSnapshot();
-    showToast('Camera Frame Requested', `Pulling snapshot from http://${ip_node3}/capture.jpg`, 'info');
-  }, { signal });
+  const refreshCamBtn = document.getElementById('refresh-cam-btn');
+  if (refreshCamBtn) {
+    refreshCamBtn.addEventListener('click', () => {
+      refreshCameraSnapshot(true);
+    }, { signal });
+  }
 
-  // View 3 Override Mode Buttons (AUTO hides Manual Controls Panel; MANUAL reveals it)
+  // View 3 Telemetry Chart Data Source Segmented Control
+  const chartLiveBtn = document.getElementById('chart-mode-live-btn');
+  const chartSqliteBtn = document.getElementById('chart-mode-sqlite-btn');
+  const chartAggBtn = document.getElementById('chart-mode-agg-btn');
+  const chartAggNotice = document.getElementById('chart-agg-notice');
+  const chartWindowDesc = document.getElementById('chart-window-desc');
+
+  const setChartMode = async (mode) => {
+    activeChartMode = mode;
+    [chartLiveBtn, chartSqliteBtn, chartAggBtn].forEach(b => b?.classList.remove('active'));
+    if (mode === 'live') chartLiveBtn?.classList.add('active');
+    if (mode === 'sqlite') chartSqliteBtn?.classList.add('active');
+    if (mode === 'agg') chartAggBtn?.classList.add('active');
+
+    if (chartAggNotice) chartAggNotice.classList.toggle('hidden', mode !== 'agg');
+
+    if (mode === 'live') {
+      if (chartWindowDesc) {
+        chartWindowDesc.innerHTML = `Displaying real-time 30-sample FIFO sliding window captured from <code>${escapeHTML(getWsTelemetryUrl())}</code> (Node 2 polls every 2,000 ms).`;
+      }
+      syncChartsWithActiveMode();
+    } else if (mode === 'sqlite') {
+      if (chartWindowDesc) {
+        chartWindowDesc.innerHTML = `Displaying up to 30 recent persisted records from SQLite <code>environmental_telemetry</code> via <code>GET /api/logs/environmental_telemetry</code>.`;
+      }
+      await fetchSQLiteLogs('environmental_telemetry');
+      syncChartsWithActiveMode();
+    } else if (mode === 'agg') {
+      if (chartWindowDesc) {
+        chartWindowDesc.textContent = 'Multi-hour / multi-day aggregation view selected — see backend capability note below.';
+      }
+    }
+  };
+
+  chartLiveBtn?.addEventListener('click', () => setChartMode('live'), { signal });
+  chartSqliteBtn?.addEventListener('click', () => setChartMode('sqlite'), { signal });
+  chartAggBtn?.addEventListener('click', () => setChartMode('agg'), { signal });
+
+  // View 3 Override Mode Buttons (AUTO / MANUAL)
   const autoBtn = document.getElementById('mode-auto-btn');
   const manualBtn = document.getElementById('mode-manual-btn');
 
-  autoBtn.addEventListener('click', () => {
-    if (getActiveRole() !== 'Admin') return;
-    currentControlMode = 'AUTO';
-    autoBtn.className = 'btn-mint rbac-protected';
-    manualBtn.className = 'btn-outline rbac-protected';
-    syncManualControlsPanel();
-    sendCommand('SET_CONTROL_MODE', 'AUTO');
+  autoBtn?.addEventListener('click', async () => {
+    if (!isPrivilegedAdmin()) return;
+    const ok = await sendCommand('SET_CONTROL_MODE', 'AUTO');
+    if (ok || !httpApiReachable) {
+      currentControlMode = 'AUTO';
+      autoBtn.className = 'btn-mint rbac-protected';
+      if (manualBtn) manualBtn.className = 'btn-outline rbac-protected';
+      syncManualControlsPanel();
+    }
   }, { signal });
 
-  manualBtn.addEventListener('click', () => {
-    if (getActiveRole() !== 'Admin') return;
-    currentControlMode = 'MANUAL';
-    manualBtn.className = 'btn-cyber rbac-protected';
-    autoBtn.className = 'btn-outline rbac-protected';
-    syncManualControlsPanel();
-    sendCommand('SET_CONTROL_MODE', 'MANUAL');
+  manualBtn?.addEventListener('click', async () => {
+    if (!isPrivilegedAdmin()) return;
+    const ok = await sendCommand('SET_CONTROL_MODE', 'MANUAL');
+    if (ok || !httpApiReachable) {
+      currentControlMode = 'MANUAL';
+      manualBtn.className = 'btn-cyber rbac-protected';
+      if (autoBtn) autoBtn.className = 'btn-outline rbac-protected';
+      syncManualControlsPanel();
+    }
   }, { signal });
 
-  // View 3 Manual Controls Panel Buttons ("Toggle HVAC Fan" & "Toggle Aux Light")
   const envManualFanBtn = document.getElementById('env-manual-toggle-fan');
-  envManualFanBtn.addEventListener('click', () => {
-    if (getActiveRole() !== 'Admin' || currentControlMode !== 'MANUAL') return;
+  envManualFanBtn?.addEventListener('click', () => {
+    if (!isPrivilegedAdmin() || currentControlMode !== 'MANUAL') return;
     withButtonLoading(envManualFanBtn, () => {
       const next = fan_relay === 'ON' ? 'OFF' : 'ON';
       sendCommand('TOGGLE_HVAC_FAN', next);
@@ -708,20 +1026,22 @@ function mountAuthenticatedViewListeners() {
   }, { signal });
 
   const envManualLightBtn = document.getElementById('env-manual-toggle-light');
-  envManualLightBtn.addEventListener('click', () => {
-    if (getActiveRole() !== 'Admin' || currentControlMode !== 'MANUAL') return;
+  envManualLightBtn?.addEventListener('click', () => {
+    if (!isPrivilegedAdmin() || currentControlMode !== 'MANUAL') return;
     withButtonLoading(envManualLightBtn, () => {
       const next = light_state === 'ON' ? 'OFF' : 'ON';
       sendCommand('TOGGLE_AUX_LIGHT', next);
     });
   }, { signal });
 
-  // View 4 Database Tabs & Search with Dynamic Clear (X) Button
+  // View 4 Database Explorer Tabs, Filters, Search, Sort, Pagination & CSV Export
   document.querySelectorAll('.tab-btn').forEach(tab => {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.tab-btn').forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
-      activeDbTable = tab.getAttribute('data-table');
+      activeDbTable = tab.getAttribute('data-table') || 'access_logs';
+      dbCurrentPage = 1;
+      dbSortColumn = null;
       fetchSQLiteLogs(activeDbTable);
     }, { signal });
   });
@@ -729,37 +1049,103 @@ function mountAuthenticatedViewListeners() {
   const searchInput = document.getElementById('db-search-input');
   const searchClearBtn = document.getElementById('db-search-clear-btn');
 
-  searchInput.addEventListener('input', () => {
+  searchInput?.addEventListener('input', () => {
     const cleaned = sanitizeInput(searchInput.value);
     if (searchInput.value !== cleaned) {
       searchInput.value = cleaned;
     }
-    searchClearBtn.classList.toggle('hidden', searchInput.value.length === 0);
+    searchClearBtn?.classList.toggle('hidden', searchInput.value.length === 0);
+    dbCurrentPage = 1;
     renderDatabaseTable();
   }, { signal });
 
-  searchClearBtn.addEventListener('click', () => {
-    searchInput.value = '';
+  searchClearBtn?.addEventListener('click', () => {
+    if (searchInput) searchInput.value = '';
     searchClearBtn.classList.add('hidden');
+    dbCurrentPage = 1;
     renderDatabaseTable();
-    searchInput.focus();
+    searchInput?.focus();
   }, { signal });
 
-  document.getElementById('db-refresh-btn').addEventListener('click', () => {
-    fetchSQLiteLogs(activeDbTable);
+  document.getElementById('db-time-filter')?.addEventListener('change', () => {
+    dbCurrentPage = 1;
+    renderDatabaseTable();
   }, { signal });
 
-  document.getElementById('refresh-errors-btn').addEventListener('click', () => {
-    fetchSQLiteLogs('system_errors');
+  document.getElementById('db-status-filter')?.addEventListener('change', () => {
+    dbCurrentPage = 1;
+    renderDatabaseTable();
+  }, { signal });
+
+  document.getElementById('db-page-size')?.addEventListener('change', (e) => {
+    dbPageSize = Number(e.target.value) || 25;
+    dbCurrentPage = 1;
+    renderDatabaseTable();
+  }, { signal });
+
+  document.getElementById('db-prev-page-btn')?.addEventListener('click', () => {
+    if (dbCurrentPage > 1) {
+      dbCurrentPage -= 1;
+      renderDatabaseTable();
+    }
+  }, { signal });
+
+  document.getElementById('db-next-page-btn')?.addEventListener('click', () => {
+    const totalPages = Math.max(1, Math.ceil(currentFilteredRows.length / dbPageSize));
+    if (dbCurrentPage < totalPages) {
+      dbCurrentPage += 1;
+      renderDatabaseTable();
+    }
+  }, { signal });
+
+  document.getElementById('db-refresh-btn')?.addEventListener('click', () => {
+    fetchSQLiteLogs(activeDbTable, true);
+  }, { signal });
+
+  document.getElementById('db-export-csv-btn')?.addEventListener('click', () => {
+    exportCurrentTableToCSV();
+  }, { signal });
+
+  // Column Sorting & Row Detail Inspector on View 4 Table
+  document.getElementById('db-table-head')?.addEventListener('click', (e) => {
+    const th = e.target.closest('th[data-sort-col]');
+    if (!th) return;
+    const col = th.getAttribute('data-sort-col');
+    if (dbSortColumn === col) {
+      dbSortAsc = !dbSortAsc;
+    } else {
+      dbSortColumn = col;
+      dbSortAsc = true;
+    }
+    renderDatabaseTable();
+  }, { signal });
+
+  document.getElementById('db-table-body')?.addEventListener('click', (e) => {
+    const tr = e.target.closest('tr[data-row-idx]');
+    if (!tr) return;
+    const idx = Number(tr.getAttribute('data-row-idx'));
+    const record = currentFilteredRows[idx];
+    if (record) {
+      openEventDetailModal(activeDbTable, record);
+    }
+  }, { signal });
+
+  // View 5 Diagnostics Probe & Refresh Errors
+  document.getElementById('refresh-errors-btn')?.addEventListener('click', () => {
+    fetchSQLiteLogs('system_errors', true);
+  }, { signal });
+
+  document.getElementById('probe-health-btn')?.addEventListener('click', async () => {
+    showToast('Probing Subsystems', `Checking REST endpoints on ${getNodeRedHttp()}...`, 'info');
+    await fetchSQLiteLogs('system_errors');
+    await fetchSQLiteLogs('access_logs');
+    updateHeartbeatDiagnosticsUI();
   }, { signal });
 
   // View 6: Refresh SQLite Users Button
-  const refreshUsersBtn = document.getElementById('refresh-users-btn');
-  if (refreshUsersBtn) {
-    refreshUsersBtn.addEventListener('click', () => {
-      fetchSystemUsers();
-    }, { signal });
-  }
+  document.getElementById('refresh-users-btn')?.addEventListener('click', () => {
+    fetchSystemUsers();
+  }, { signal });
 
   // View 6: Capture Face from Node 3 inside Provisioning Form
   const captureFaceBtn = document.getElementById('prov-capture-face-btn');
@@ -767,40 +1153,51 @@ function mountAuthenticatedViewListeners() {
   const facePlaceholder = document.getElementById('prov-face-placeholder');
   const faceStatusText = document.getElementById('prov-face-status-text');
 
-  captureFaceBtn.addEventListener('click', () => {
-    if (getActiveRole() !== 'Admin') return;
+  captureFaceBtn?.addEventListener('click', () => {
+    if (!isPrivilegedAdmin()) return;
     if (!isValidIPv4(ip_node3)) {
       showToast('Invalid Node 3 IP', 'Configure a valid IPv4 address for Node 3 first.', 'error');
       return;
     }
 
     const snapshotUrl = `http://${ip_node3}/capture.jpg?t=${Date.now()}`;
-    capturedFaceUrlForProvision = snapshotUrl;
+    if (faceStatusText) faceStatusText.textContent = 'Requesting Frame...';
 
     facePreviewImg.onload = () => {
+      capturedFaceUrlForProvision = snapshotUrl;
+      lastNode3CaptureTimestamp = Date.now();
+      node3ProbeStatus = 'ONLINE';
       facePreviewImg.classList.remove('hidden');
       if (facePlaceholder) facePlaceholder.classList.add('hidden');
-      showToast('Face Captured', `Linked biometric frame from ${ip_node3}`, 'success');
+      showToast('Face Frame Captured', `Verified JPEG frame from Node 3 (${ip_node3}).`, 'success');
+      updateHeartbeatDiagnosticsUI();
     };
 
     facePreviewImg.onerror = () => {
+      capturedFaceUrlForProvision = '';
+      node3ProbeStatus = 'UNREACHABLE';
       facePreviewImg.classList.add('hidden');
       if (facePlaceholder) facePlaceholder.classList.remove('hidden');
-      if (faceStatusText) faceStatusText.textContent = 'Node 3 Frame Linked';
-      showToast('Face Endpoint Linked', `Associated http://${ip_node3}/capture.jpg with new user profile.`, 'info');
+      if (faceStatusText) faceStatusText.textContent = 'Camera Unreachable';
+      showToast('Node 3 Unreachable', `Could not retrieve capture.jpg from http://${ip_node3}/capture.jpg.`, 'error');
+      updateHeartbeatDiagnosticsUI();
     };
 
     facePreviewImg.src = snapshotUrl;
   }, { signal });
 
   // View 6: User Provisioning Form Submission (POST /api/provision/user -> SQLite system_users)
-  document.getElementById('user-provision-form').addEventListener('submit', async (e) => {
+  document.getElementById('user-provision-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    if (getActiveRole() !== 'Admin') return;
+    if (!isPrivilegedAdmin()) {
+      showToast('Unauthorized', 'User provisioning requires a server-verified Admin session.', 'error');
+      return;
+    }
 
     const cleanUsername = sanitizeInput(document.getElementById('prov_name').value);
     const cleanRfid = sanitizeInput(document.getElementById('prov_rfid').value).toUpperCase();
     const cleanPinStr = sanitizeInput(document.getElementById('prov_pin').value);
+    const cleanRole = document.getElementById('prov_role')?.value === 'Admin' ? 'Admin' : 'Viewer';
 
     if (!SAFE_NAME_REGEX.test(cleanUsername)) {
       showToast('Validation Error', 'Username must be 2–64 alphanumeric characters.', 'error');
@@ -818,82 +1215,70 @@ function mountAuthenticatedViewListeners() {
     const strictPayload = {
       username: String(cleanUsername),
       password: String(cleanPinStr),
-      role: 'Viewer',
+      role: cleanRole,
       rfid: String(cleanRfid),
       pin: Number.parseInt(cleanPinStr, 10),
       face_linked: Boolean(capturedFaceUrlForProvision)
     };
 
-    // Update local cache immediately and sync with SQLite backend
-    const nextId = system_users.length > 0 ? Math.max(...system_users.map(u => Number(u.id) || 0)) + 1 : 1;
-    system_users.push({
-      id: nextId,
-      username: strictPayload.username,
-      role: strictPayload.role,
-      rfid: strictPayload.rfid,
-      pin: strictPayload.pin,
-      face_linked: strictPayload.face_linked ? 1 : 0
-    });
-    saveLocalSystemUsers();
-    renderUserManagementTable();
-
-    // Reset Face preview state
-    capturedFaceUrlForProvision = '';
-    facePreviewImg.classList.add('hidden');
-    if (facePlaceholder) facePlaceholder.classList.remove('hidden');
-    if (faceStatusText) faceStatusText.textContent = 'No Face Linked';
-    e.target.reset();
-
-    pushActivityEvent(`Provisioned User: ${cleanUsername} (RFID: ${cleanRfid})`);
+    const submitBtn = document.getElementById('prov-submit-btn');
+    if (submitBtn) submitBtn.disabled = true;
 
     try {
-      const res = await fetchWithTimeout(`${NODE_RED_HTTP}/api/provision/user`, {
+      const res = await fetchWithTimeout(`${getNodeRedHttp()}/api/provision/user`, {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify(strictPayload)
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      showToast('User Provisioned', `${cleanUsername} hashed & saved to SQLite system_users.`, 'success');
+
+      httpApiReachable = true;
+      lastHttpApiSuccessTimestamp = Date.now();
+      capturedFaceUrlForProvision = '';
+      facePreviewImg?.classList.add('hidden');
+      facePlaceholder?.classList.remove('hidden');
+      if (faceStatusText) faceStatusText.textContent = 'No Face Linked';
+      e.target.reset();
+
+      pushActivityEvent('ADMIN', `Provisioned User in SQLite: ${cleanUsername} (${cleanRole})`);
+      showToast('User Provisioned', `${cleanUsername} saved to SQLite system_users.`, 'success');
       await fetchSystemUsers();
     } catch {
-      showToast('User Provisioned (Offline Cache)', `${cleanUsername} saved locally; will sync when Node-RED is online.`, 'info');
+      showToast('Provisioning Failed', `Could not reach ${getNodeRedHttp()}/api/provision/user. Database was not modified.`, 'error');
+    } finally {
+      if (submitBtn) submitBtn.disabled = !isPrivilegedAdmin();
     }
   }, { signal });
 
-  // View 6: Admin Profile Form (Update Admin Username & Password in SQLite & Local Cache)
-  document.getElementById('admin-profile-form').addEventListener('submit', async (e) => {
+  // View 6: Admin Profile Form (Update Admin Username & Password in SQLite)
+  document.getElementById('admin-profile-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    if (getActiveRole() !== 'Admin') return;
+    if (!isPrivilegedAdmin()) return;
 
     const newUsername = sanitizeInput(document.getElementById('admin_new_username').value);
     const newPassword = sanitizeInput(document.getElementById('admin_new_password').value);
+    const confirmPassEl = document.getElementById('admin_confirm_password');
+    const confirmPassword = confirmPassEl ? sanitizeInput(confirmPassEl.value) : newPassword;
 
     if (!SAFE_NAME_REGEX.test(newUsername)) {
       showToast('Validation Error', 'Admin Username must be 2–32 alphanumeric characters.', 'error');
       return;
     }
-    if (newPassword.length < 4) {
-      showToast('Validation Error', 'Admin Password must be at least 4 characters.', 'error');
+    if (newPassword.length < 6) {
+      showToast('Validation Error', 'Admin Password must be at least 6 characters.', 'error');
+      return;
+    }
+    if (confirmPassEl && newPassword !== confirmPassword) {
+      showToast('Validation Error', 'Password confirmation does not match.', 'error');
       return;
     }
 
     const currentUsername = sessionStorage.getItem('lci_operator_id') || 'admin';
-    localStorage.setItem('lci_admin_user', newUsername);
-    localStorage.setItem('lci_admin_pass', newPassword);
-    sessionStorage.setItem('lci_operator_id', newUsername);
-
-    const adminEntry = system_users.find(u => u.role === 'Admin' || u.id === 1);
-    if (adminEntry) {
-      adminEntry.username = newUsername;
-      saveLocalSystemUsers();
-      renderUserManagementTable();
-    }
-
-    document.getElementById('admin_new_password').value = '';
-    pushActivityEvent(`Admin Profile Updated: ${newUsername}`);
+    const submitBtn = document.getElementById('admin-profile-submit-btn');
+    if (submitBtn) submitBtn.disabled = true;
 
     try {
-      const res = await fetchWithTimeout(`${NODE_RED_HTTP}/api/auth/admin-profile`, {
+      const res = await fetchWithTimeout(`${getNodeRedHttp()}/api/auth/admin-profile`, {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({
@@ -903,83 +1288,104 @@ function mountAuthenticatedViewListeners() {
         })
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      showToast('Admin Profile Updated', `Admin credentials updated in SQLite for "${newUsername}".`, 'success');
+
+      sessionStorage.setItem('lci_operator_id', newUsername);
+      document.getElementById('admin_new_password').value = '';
+      if (confirmPassEl) confirmPassEl.value = '';
+      applyRBACPermissions();
+      pushActivityEvent('SECURITY', `Admin Profile Updated in SQLite: ${newUsername}`);
+      showToast('Credentials Updated', `Administrator profile updated in SQLite for "${newUsername}".`, 'success');
       await fetchSystemUsers();
     } catch {
-      showToast('Admin Credentials Updated', `Updated to "${newUsername}" in local air-gapped store.`, 'success');
+      showToast('Update Failed', `Could not reach ${getNodeRedHttp()}/api/auth/admin-profile. Credentials unchanged.`, 'error');
+    } finally {
+      if (submitBtn) submitBtn.disabled = !isPrivilegedAdmin();
     }
   }, { signal });
 
   // View 6: IP Settings Form
-  document.getElementById('settings-ip-form').addEventListener('submit', (e) => {
+  document.getElementById('settings-ip-form')?.addEventListener('submit', (e) => {
     e.preventDefault();
-    if (getActiveRole() !== 'Admin') return;
+    if (!isPrivilegedAdmin()) return;
+    const rawHost = document.getElementById('set_server_host')?.value || server_host;
     saveNodeIPs(
       document.getElementById('set_ip_node1').value,
       document.getElementById('set_ip_node2').value,
-      document.getElementById('set_ip_node3').value
+      document.getElementById('set_ip_node3').value,
+      rawHost
     );
   }, { signal });
 
-  // View 6: User Management Table Row Actions (Toggle Role & Delete User in SQLite + Local Cache)
-  document.getElementById('user-management-table-body').addEventListener('click', async (e) => {
-    if (getActiveRole() !== 'Admin') return;
+  // View 6: User Management Table Row Actions (With Confirmation & Real Backend Verification)
+  document.getElementById('user-management-table-body')?.addEventListener('click', (e) => {
+    if (!isPrivilegedAdmin()) return;
     const btn = e.target.closest('button[data-user-action]');
     if (!btn) return;
 
     const action = btn.getAttribute('data-user-action');
     const userId = Number.parseInt(btn.getAttribute('data-user-id'), 10);
+    const uname = btn.getAttribute('data-username') || `User #${userId}`;
     if (!Number.isInteger(userId)) return;
 
     if (action === 'toggle-role') {
       const currentRole = btn.getAttribute('data-current-role') === 'Admin' ? 'Admin' : 'Viewer';
       const nextRole = currentRole === 'Admin' ? 'Viewer' : 'Admin';
 
-      const localTarget = system_users.find(u => Number(u.id) === userId);
-      if (localTarget) {
-        localTarget.role = nextRole;
-        saveLocalSystemUsers();
-        renderUserManagementTable();
-      }
-
-      pushActivityEvent(`User #${userId} Role -> ${nextRole}`);
-      try {
-        const res = await fetchWithTimeout(`${NODE_RED_HTTP}/api/users/role`, {
-          method: 'POST',
-          headers: getAuthHeaders(),
-          body: JSON.stringify({ id: userId, role: nextRole })
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        showToast('Role Updated', `User #${userId} role changed to ${nextRole} in SQLite.`, 'info');
-        await fetchSystemUsers();
-      } catch {
-        showToast('Role Updated', `User #${userId} role set to ${nextRole}.`, 'info');
-      }
+      openConfirmModal({
+        kicker: 'Role Clearance Modification',
+        title: `Change Clearance for ${uname}`,
+        description: `Modify operator role from ${currentRole} to ${nextRole} in SQLite system_users.`,
+        endpoint: `POST ${getNodeRedHttp()}/api/users/role`,
+        payload: `id: ${userId}, role: "${nextRole}"`,
+        targetNode: 'SQLite Database (system_users)',
+        confirmLabel: `Set Role to ${nextRole}`,
+        onConfirm: async () => {
+          try {
+            const res = await fetchWithTimeout(`${getNodeRedHttp()}/api/users/role`, {
+              method: 'POST',
+              headers: getAuthHeaders(),
+              body: JSON.stringify({ id: userId, role: nextRole })
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            pushActivityEvent('ADMIN', `Updated Role for ${uname} -> ${nextRole}`);
+            showToast('Role Updated', `${uname} clearance updated to ${nextRole} in SQLite.`, 'success');
+            await fetchSystemUsers();
+          } catch {
+            showToast('Role Update Failed', `Node-RED SQLite backend unreachable; role was not modified.`, 'error');
+          }
+        }
+      });
     } else if (action === 'delete-user') {
-      const uname = btn.getAttribute('data-username') || `#${userId}`;
-      system_users = system_users.filter(u => Number(u.id) !== userId);
-      saveLocalSystemUsers();
-      renderUserManagementTable();
-      pushActivityEvent(`Deleted User: ${uname}`);
-
-      try {
-        const res = await fetchWithTimeout(`${NODE_RED_HTTP}/api/users/delete`, {
-          method: 'POST',
-          headers: getAuthHeaders(),
-          body: JSON.stringify({ id: userId })
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        showToast('User Deleted', `Removed ${uname} from SQLite system_users.`, 'error');
-        await fetchSystemUsers();
-      } catch {
-        showToast('User Deleted', `Removed ${uname} from directory.`, 'error');
-      }
+      openConfirmModal({
+        kicker: 'Destructive Credential Revocation',
+        title: `Delete Operator "${uname}"`,
+        description: `Permanently revoke RFID, PIN, and console access for ${uname} (#${userId}) from SQLite system_users.`,
+        endpoint: `POST ${getNodeRedHttp()}/api/users/delete`,
+        payload: `id: ${userId}`,
+        targetNode: 'SQLite Database (system_users)',
+        confirmLabel: 'Confirm Delete User',
+        onConfirm: async () => {
+          try {
+            const res = await fetchWithTimeout(`${getNodeRedHttp()}/api/users/delete`, {
+              method: 'POST',
+              headers: getAuthHeaders(),
+              body: JSON.stringify({ id: userId })
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            pushActivityEvent('ADMIN', `Revoked & Deleted User: ${uname}`);
+            showToast('User Deleted', `Removed ${uname} from SQLite system_users.`, 'info');
+            await fetchSystemUsers();
+          } catch {
+            showToast('Deletion Failed', `Node-RED SQLite backend unreachable; user was not deleted.`, 'error');
+          }
+        }
+      });
     }
   }, { signal });
 }
 
 // ============================================================================
-// 6. HEADER UTILITIES: LIVE DIGITAL CLOCK, FULLSCREEN, THEME & SIDEBAR
+// 8. HEADER UTILITIES: LIVE DIGITAL CLOCK, FULLSCREEN, THEME & RESPONSIVE SIDEBAR
 // ============================================================================
 
 function startLiveDigitalClock() {
@@ -1030,7 +1436,7 @@ function initFullscreenToggle() {
       }
       syncFsIcons();
     } catch {
-      showToast('Fullscreen Unavailable', 'Fullscreen mode is restricted by the current browser container.', 'info');
+      showToast('Fullscreen Unavailable', 'Fullscreen mode is restricted by the current browser environment.', 'info');
     }
   });
 
@@ -1048,34 +1454,47 @@ function initThemeAndSidebar() {
       const next = current === 'dark' ? 'light' : 'dark';
       applyTheme(next);
       localStorage.setItem('lci_theme', next);
-      showToast('Theme Updated', `Switched to ${next.toUpperCase()} UI mode`, 'info');
     });
   }
 
   const sidebar = document.getElementById('sidebar');
   const mainShell = document.getElementById('main-shell');
   const toggleBtn = document.getElementById('sidebar-toggle-btn');
+  const backdrop = document.getElementById('sidebar-backdrop');
   const isCollapsed = localStorage.getItem('lci_sidebar_collapsed') === 'true';
 
-  if (isCollapsed && sidebar && mainShell) {
+  if (isCollapsed && sidebar && mainShell && window.innerWidth > 960) {
     sidebar.classList.add('collapsed');
     mainShell.classList.add('expanded');
   }
 
   if (toggleBtn && sidebar && mainShell) {
     toggleBtn.addEventListener('click', () => {
-      const collapsed = sidebar.classList.toggle('collapsed');
-      mainShell.classList.toggle('expanded', collapsed);
-      localStorage.setItem('lci_sidebar_collapsed', String(collapsed));
-
-      setTimeout(() => {
-        if (tempChart) tempChart.draw();
-        if (humChart) humChart.draw();
-      }, 280);
+      if (window.innerWidth <= 960) {
+        const isOpen = sidebar.classList.toggle('mobile-open');
+        backdrop?.classList.toggle('hidden', !isOpen);
+      } else {
+        const collapsed = sidebar.classList.toggle('collapsed');
+        mainShell.classList.toggle('expanded', collapsed);
+        localStorage.setItem('lci_sidebar_collapsed', String(collapsed));
+        setTimeout(() => {
+          if (tempChart) tempChart.draw();
+          if (humChart) humChart.draw();
+        }, 220);
+      }
     });
   }
 
+  backdrop?.addEventListener('click', () => {
+    sidebar?.classList.remove('mobile-open');
+    backdrop.classList.add('hidden');
+  });
+
   window.addEventListener('resize', () => {
+    if (window.innerWidth > 960) {
+      sidebar?.classList.remove('mobile-open');
+      backdrop?.classList.add('hidden');
+    }
     if (tempChart) tempChart.draw();
     if (humChart) humChart.draw();
   });
@@ -1099,7 +1518,7 @@ function applyTheme(theme) {
 }
 
 // ============================================================================
-// 7. BUTTON LOADING STATES (1.5-Second Anti-Spam Lock + Pure CSS Spinner)
+// 9. BUTTON LOADING STATES (1.5-Second Anti-Spam Lock + Pure CSS Spinner)
 // ============================================================================
 
 function withButtonLoading(buttonEl, actionCallback) {
@@ -1107,110 +1526,171 @@ function withButtonLoading(buttonEl, actionCallback) {
 
   const originalHtml = buttonEl.innerHTML;
   buttonEl.disabled = true;
-  buttonEl.innerHTML = `<span class="css-spinner" aria-hidden="true"></span><span>Processing...</span>`;
+  buttonEl.innerHTML = `<span class="css-spinner" aria-hidden="true"></span><span>Dispatching...</span>`;
 
   try {
     actionCallback();
   } finally {
     setTimeout(() => {
-      const isAdmin = getActiveRole() === 'Admin';
-      buttonEl.disabled = !isAdmin;
+      buttonEl.disabled = !isPrivilegedAdmin();
       buttonEl.innerHTML = originalHtml;
     }, 1500);
   }
 }
 
 // ============================================================================
-// 8. DYNAMIC IP CONFIGURATION MODAL & STRICT IPV4 ENFORCEMENT
+// 10. DYNAMIC IP & SERVER HOST CONFIGURATION
 // ============================================================================
 
 function openIpModal() {
-  if (getActiveRole() !== 'Admin') {
-    showToast('Read-Only Access', 'Viewer role cannot modify Node IP endpoints.', 'error');
+  if (!isPrivilegedAdmin()) {
+    showToast('Authorization Required', 'Endpoint configuration requires a verified Admin session.', 'error');
     return;
   }
   const modal = document.getElementById('startup-modal');
+  const srvInput = document.getElementById('modal_server_host');
+  if (srvInput) srvInput.value = server_host || '192.168.43.225:1880';
   document.getElementById('modal_ip_node1').value = ip_node1 || '192.168.43.11';
   document.getElementById('modal_ip_node2').value = ip_node2 || '192.168.43.12';
   document.getElementById('modal_ip_node3').value = ip_node3 || '192.168.43.13';
-  modal.classList.remove('hidden');
+  modal?.classList.remove('hidden');
 }
 
 function closeIpModal() {
-  document.getElementById('startup-modal').classList.add('hidden');
+  document.getElementById('startup-modal')?.classList.add('hidden');
 }
 
 function checkNodeIPsOnStartup() {
-  if (!isValidIPv4(ip_node1) || !isValidIPv4(ip_node2) || !isValidIPv4(ip_node3)) {
-    ip_node1 = '192.168.43.11';
-    ip_node2 = '192.168.43.12';
-    ip_node3 = '192.168.43.13';
-    syncIPInputs();
-    if (getActiveRole() === 'Admin') {
-      openIpModal();
-    }
-  } else {
-    syncIPInputs();
-  }
+  if (!isValidIPv4(ip_node1)) ip_node1 = '192.168.43.11';
+  if (!isValidIPv4(ip_node2)) ip_node2 = '192.168.43.12';
+  if (!isValidIPv4(ip_node3)) ip_node3 = '192.168.43.13';
+  if (!isValidHostPort(server_host)) server_host = '192.168.43.225:1880';
+  syncIPInputs();
 }
 
-function saveNodeIPs(rawN1, rawN2, rawN3) {
+function saveNodeIPs(rawN1, rawN2, rawN3, rawServerHost = server_host) {
   const n1 = sanitizeInput(rawN1);
   const n2 = sanitizeInput(rawN2);
   const n3 = sanitizeInput(rawN3);
+  const srv = sanitizeInput(rawServerHost || server_host);
 
   if (!isValidIPv4(n1) || !isValidIPv4(n2) || !isValidIPv4(n3)) {
-    showToast('Invalid IPv4 Format', 'All 3 Node IPs must be valid IPv4 addresses (e.g. 192.168.43.11).', 'error');
+    showToast('Invalid IPv4 Address', 'Nodes 1, 2, and 3 must be valid IPv4 addresses (e.g. 192.168.43.11).', 'error');
+    return false;
+  }
+  if (!isValidHostPort(srv)) {
+    showToast('Invalid Server Host', 'Server host must be a valid IPv4:Port (e.g. 192.168.43.225:1880).', 'error');
     return false;
   }
 
+  const hostChanged = srv !== server_host;
   ip_node1 = n1;
   ip_node2 = n2;
   ip_node3 = n3;
+  server_host = srv;
+
   localStorage.setItem('ip_node1', ip_node1);
   localStorage.setItem('ip_node2', ip_node2);
   localStorage.setItem('ip_node3', ip_node3);
+  localStorage.setItem('lci_server_host', server_host);
+
   syncIPInputs();
-  showToast('Endpoints Saved', `Validated Nodes: ${ip_node1}, ${ip_node2}, ${ip_node3}`, 'success');
+  showToast('Endpoints Updated', `Server: ${server_host} · Nodes: ${ip_node1}, ${ip_node2}, ${ip_node3}`, 'success');
+
+  if (hostChanged && isAuthenticated()) {
+    connectWebSockets();
+  }
   return true;
 }
 
 function syncIPInputs() {
-  document.getElementById('set_ip_node1').value = ip_node1;
-  document.getElementById('set_ip_node2').value = ip_node2;
-  document.getElementById('set_ip_node3').value = ip_node3;
-  document.getElementById('hb-ip-node1').textContent = ip_node1;
-  document.getElementById('hb-ip-node2').textContent = ip_node2;
-  document.getElementById('hb-ip-node3').textContent = ip_node3;
-  document.getElementById('cam-endpoint-label').textContent = `http://${ip_node3}/capture.jpg`;
+  const setSrv = document.getElementById('set_server_host');
+  if (setSrv) setSrv.value = server_host;
+  const setN1 = document.getElementById('set_ip_node1');
+  if (setN1) setN1.value = ip_node1;
+  const setN2 = document.getElementById('set_ip_node2');
+  if (setN2) setN2.value = ip_node2;
+  const setN3 = document.getElementById('set_ip_node3');
+  if (setN3) setN3.value = ip_node3;
+
+  const setText = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+
+  setText('header-server-host', server_host);
+  setText('offline-banner-host', server_host);
+  setText('login-endpoint-display', `${getNodeRedHttp()}/api/auth/login`);
+  setText('login-summary-host', server_host);
+  setText('hb-ip-server', server_host);
+  setText('hb-ip-node1', ip_node1);
+  setText('hb-ip-node2', ip_node2);
+  setText('hb-ip-node3', ip_node3);
+  setText('topo-ip-server', server_host);
+  setText('topo-ip-node1', ip_node1);
+  setText('topo-ip-node2', ip_node2);
+  setText('topo-ip-node3', ip_node3);
+  setText('access-node1-ip', ip_node1);
+  setText('cam-endpoint-label', `http://${ip_node3}/capture.jpg`);
 }
 
-function refreshCameraSnapshot() {
+function refreshCameraSnapshot(userInitiated = false) {
   const img = document.getElementById('biometric-camera-img');
   const fallback = document.getElementById('camera-fallback-overlay');
   const fallbackTitle = document.getElementById('camera-fallback-title');
   const fallbackText = document.getElementById('camera-fallback-text');
+  const camBadge = document.getElementById('cam-status-badge');
+  const lastAttemptEl = document.getElementById('cam-last-attempt');
+
   if (!img || !isValidIPv4(ip_node3)) return;
 
+  node3ProbeStatus = 'LOADING';
+  if (camBadge) {
+    camBadge.textContent = 'REQUESTING...';
+    camBadge.className = 'status-tag status-warning';
+  }
+  if (lastAttemptEl) {
+    lastAttemptEl.textContent = `Last request: ${new Date().toLocaleTimeString()}`;
+  }
+
   img.onload = () => {
+    node3ProbeStatus = 'ONLINE';
+    lastNode3CaptureTimestamp = Date.now();
     img.classList.remove('hidden');
-    if (fallback) fallback.classList.add('hidden');
+    fallback?.classList.add('hidden');
+    if (camBadge) {
+      camBadge.textContent = 'FRAME CAPTURED';
+      camBadge.className = 'status-tag status-nominal';
+    }
+    if (userInitiated) {
+      showToast('Frame Captured', `Received JPEG snapshot from Node 3 (${ip_node3}).`, 'success');
+    }
+    updateHeartbeatDiagnosticsUI();
   };
 
   img.onerror = () => {
+    node3ProbeStatus = 'UNREACHABLE';
     img.classList.add('hidden');
-    if (fallback) fallback.classList.remove('hidden');
-    if (fallbackTitle) fallbackTitle.textContent = 'Node 3 Optical Stream Unreachable';
+    fallback?.classList.remove('hidden');
+    if (fallbackTitle) fallbackTitle.textContent = 'Node 3 Optical Endpoint Unreachable / Asleep';
     if (fallbackText) {
-      fallbackText.textContent = `Could not retrieve capture.jpg from http://${ip_node3}/capture.jpg.`;
+      fallbackText.textContent = `Could not retrieve http://${ip_node3}/capture.jpg. Node 3 stays in low-power sleep until PIR motion wakes the OV2640 sensor, or the node is offline.`;
     }
+    if (camBadge) {
+      camBadge.textContent = 'UNREACHABLE / SLEEP';
+      camBadge.className = 'status-tag status-offline';
+    }
+    if (userInitiated) {
+      showToast('Camera Unreachable', `No response from http://${ip_node3}/capture.jpg.`, 'error');
+    }
+    updateHeartbeatDiagnosticsUI();
   };
 
   img.src = `http://${ip_node3}/capture.jpg?t=${Date.now()}`;
 }
 
 // ============================================================================
-// 9. TELEMETRY & MFA PARSING LOGIC (Strict Variable Names)
+// 11. TELEMETRY, SPARKLINES, MFA & OPERATIONAL OVERVIEW LOGIC
 // ============================================================================
 
 function updateCircularGauge(arcId, value, maxVal) {
@@ -1222,68 +1702,143 @@ function updateCircularGauge(arcId, value, maxVal) {
   arc.style.strokeDashoffset = offset.toFixed(2);
 }
 
+function renderMiniSparkline(svgId, values, minVal, maxVal, strokeColor) {
+  const svg = document.getElementById(svgId);
+  if (!svg) return;
+  if (!Array.isArray(values) || values.length < 2) {
+    svg.innerHTML = '';
+    return;
+  }
+  const w = 80;
+  const h = 24;
+  const recent = values.slice(-15);
+  const pts = recent.map((v, idx) => {
+    const x = (idx / Math.max(1, recent.length - 1)) * w;
+    const clamped = Math.max(minVal, Math.min(maxVal, v));
+    const y = h - 2 - ((clamped - minVal) / Math.max(1, maxVal - minVal)) * (h - 4);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+
+  svg.innerHTML = `<polyline fill="none" stroke="${strokeColor}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" points="${pts}"></polyline>`;
+}
+
 export function handleTelemetryPayload(payload) {
   if (!payload || typeof payload !== 'object') return;
-  lastWsHeartbeat = Date.now();
+  const now = Date.now();
+  hasReceivedTelemetry = true;
+  lastTelemetryTimestamp = now;
+  lastNode2FrameTimestamp = now;
+
+  if (payload.door_state !== undefined || payload.node === 'access_01') {
+    lastNode1EvidenceTimestamp = now;
+  }
 
   if (typeof payload.temperature === 'number' && Number.isFinite(payload.temperature)) {
     temperature = payload.temperature;
+  } else if (typeof payload.temp === 'number' && Number.isFinite(payload.temp)) {
+    temperature = payload.temp;
   }
+
   if (typeof payload.humidity === 'number' && Number.isFinite(payload.humidity)) {
     humidity = payload.humidity;
   }
+
   if (typeof payload.smoke_gas_level === 'number' && Number.isFinite(payload.smoke_gas_level)) {
     smoke_gas_level = payload.smoke_gas_level;
   }
+
   if (payload.light_state === 'ON' || payload.light_state === 'OFF') light_state = payload.light_state;
   if (payload.door_state === 'OPEN' || payload.door_state === 'CLOSED') door_state = payload.door_state;
   if (payload.fan_relay === 'ON' || payload.fan_relay === 'OFF') fan_relay = payload.fan_relay;
 
   const snapDoor = document.getElementById('snap-door');
-  snapDoor.textContent = door_state;
-  snapDoor.className = `card-value tabular-nums ${door_state === 'CLOSED' ? 'text-mint' : 'text-rose'}`;
-
-  const snapLight = document.getElementById('snap-light');
-  snapLight.textContent = light_state;
-  snapLight.className = `card-value tabular-nums ${light_state === 'ON' ? 'text-mint' : 'text-rose'}`;
-
-  const snapFan = document.getElementById('snap-fan');
-  snapFan.textContent = fan_relay;
-  snapFan.className = `card-value tabular-nums ${fan_relay === 'ON' ? 'text-mint' : 'text-cyber'}`;
-
-  document.getElementById('snap-temp').textContent = `${temperature.toFixed(1)} °C`;
-  document.getElementById('snap-hum').textContent = `${humidity.toFixed(1)} %`;
-  document.getElementById('banner-smoke-val').textContent = `${smoke_gas_level} PPM`;
-
-  const banner = document.getElementById('global-status-banner');
-  const bannerTitle = document.getElementById('global-status-title');
-  const isEmergency = smoke_gas_level >= 400;
-  if (isEmergency) {
-    banner.className = 'status-banner emergency';
-    bannerTitle.textContent = `Emergency Alert — High Smoke/Gas Detected (${smoke_gas_level} PPM)`;
-  } else {
-    banner.className = 'status-banner normal';
-    bannerTitle.textContent = 'Normal Operations — All Thresholds Nominal';
+  if (snapDoor) {
+    snapDoor.textContent = door_state;
+    snapDoor.className = `card-value tabular-nums ${door_state === 'CLOSED' ? 'text-mint' : 'text-rose'}`;
   }
 
+  const snapLight = document.getElementById('snap-light');
+  if (snapLight) {
+    snapLight.textContent = light_state;
+    snapLight.className = `card-value tabular-nums ${light_state === 'ON' ? 'text-mint' : 'text-cyber'}`;
+  }
+
+  const snapFan = document.getElementById('snap-fan');
+  if (snapFan) {
+    snapFan.textContent = fan_relay;
+    snapFan.className = `card-value tabular-nums ${fan_relay === 'ON' ? 'text-mint' : 'text-cyber'}`;
+  }
+
+  const manualFanLabel = document.getElementById('manual-fan-state-label');
+  if (manualFanLabel) manualFanLabel.textContent = fan_relay;
+  const manualLightLabel = document.getElementById('manual-light-state-label');
+  if (manualLightLabel) manualLightLabel.textContent = light_state;
+
+  const snapTemp = document.getElementById('snap-temp');
+  if (snapTemp) {
+    snapTemp.textContent = `${temperature.toFixed(1)} °C`;
+    snapTemp.className = `card-value tabular-nums ${temperature > 30 ? 'text-amber' : 'text-cyber'}`;
+  }
+
+  const snapHum = document.getElementById('snap-hum');
+  if (snapHum) {
+    snapHum.textContent = `${humidity.toFixed(1)} %`;
+    snapHum.className = 'card-value tabular-nums text-cyber';
+  }
+
+  const isEmergency = smoke_gas_level >= 400;
+  const snapSmoke = document.getElementById('snap-smoke');
+  if (snapSmoke) {
+    snapSmoke.textContent = `${smoke_gas_level} PPM`;
+    snapSmoke.className = `card-value tabular-nums ${isEmergency ? 'text-rose' : (smoke_gas_level >= 250 ? 'text-amber' : 'text-mint')}`;
+  }
+
+  const bannerSmoke = document.getElementById('banner-smoke-val');
+  if (bannerSmoke) bannerSmoke.textContent = `${smoke_gas_level} PPM`;
+
   const reedEl = document.getElementById('access-reed-state');
-  reedEl.textContent = door_state === 'CLOSED' ? 'CLOSED (ENGAGED)' : 'OPEN (SEPARATED)';
-  reedEl.className = `hw-state ${door_state === 'CLOSED' ? 'text-mint' : 'text-rose'}`;
+  if (reedEl) {
+    reedEl.textContent = door_state === 'CLOSED' ? 'CLOSED (ENGAGED)' : 'OPEN (SEPARATED)';
+    reedEl.className = `hw-state ${door_state === 'CLOSED' ? 'text-mint' : 'text-rose'}`;
+  }
 
   const solenoidEl = document.getElementById('access-solenoid-state');
-  solenoidEl.textContent = door_state === 'CLOSED' ? 'ENERGIZED (LOCKED)' : 'DE-ENERGIZED (UNLOCKED)';
-  solenoidEl.className = `hw-state ${door_state === 'CLOSED' ? 'text-mint' : 'text-rose'}`;
+  if (solenoidEl) {
+    solenoidEl.textContent = door_state === 'CLOSED' ? 'ENERGIZED (LOCKED)' : 'DE-ENERGIZED (UNLOCKED)';
+    solenoidEl.className = `hw-state ${door_state === 'CLOSED' ? 'text-mint' : 'text-rose'}`;
+  }
 
-  document.getElementById('env-temp-val').textContent = `${temperature.toFixed(1)} °C`;
-  document.getElementById('env-hum-val').textContent = `${humidity.toFixed(1)} %`;
+  const envTempVal = document.getElementById('env-temp-val');
+  if (envTempVal) envTempVal.textContent = `${temperature.toFixed(1)} °C`;
+  const envHumVal = document.getElementById('env-hum-val');
+  if (envHumVal) envHumVal.textContent = `${humidity.toFixed(1)} %`;
 
   const smokeValEl = document.getElementById('env-smoke-val');
-  smokeValEl.textContent = `${smoke_gas_level} PPM`;
-  smokeValEl.className = `gauge-num tabular-nums ${isEmergency ? 'text-rose' : 'text-mint'}`;
+  if (smokeValEl) {
+    smokeValEl.textContent = `${smoke_gas_level} PPM`;
+    smokeValEl.className = `gauge-num tabular-nums ${isEmergency ? 'text-rose' : 'text-mint'}`;
+  }
 
   const smokeArc = document.getElementById('gauge-arc-smoke');
   if (smokeArc) {
     smokeArc.setAttribute('class', `gauge-arc ${isEmergency ? 'stroke-rose' : 'stroke-mint'}`);
+  }
+
+  // Update View 3 Gauge Status Badges
+  const tempStatus = document.getElementById('env-temp-status');
+  if (tempStatus) {
+    tempStatus.textContent = temperature > 30 ? 'HIGH (>30°C AUTO-FAN)' : 'NOMINAL';
+    tempStatus.className = `status-tag ${temperature > 30 ? 'status-warning' : 'status-nominal'}`;
+  }
+  const humStatus = document.getElementById('env-hum-status');
+  if (humStatus) {
+    humStatus.textContent = 'NOMINAL';
+    humStatus.className = 'status-tag status-nominal';
+  }
+  const smokeStatus = document.getElementById('env-smoke-status');
+  if (smokeStatus) {
+    smokeStatus.textContent = isEmergency ? 'CRITICAL ALARM' : (smoke_gas_level >= 250 ? 'ELEVATED' : 'NOMINAL');
+    smokeStatus.className = `status-tag ${isEmergency ? 'status-critical' : (smoke_gas_level >= 250 ? 'status-warning' : 'status-nominal')}`;
   }
 
   updateCircularGauge('gauge-arc-temp', temperature, 50);
@@ -1291,13 +1846,42 @@ export function handleTelemetryPayload(payload) {
   updateCircularGauge('gauge-arc-smoke', smoke_gas_level, 800);
 
   const timeLabel = new Date().toLocaleTimeString();
-  if (tempChart) tempChart.pushValue(timeLabel, temperature);
-  if (humChart) humChart.pushValue(timeLabel, humidity);
+  liveTempSamples.push({ time: timeLabel, val: temperature });
+  liveHumSamples.push({ time: timeLabel, val: humidity });
+  if (liveTempSamples.length > 30) liveTempSamples.shift();
+  if (liveHumSamples.length > 30) liveHumSamples.shift();
+
+  renderMiniSparkline('spark-temp', liveTempSamples.map(s => s.val), 0, 50, '#38bdf8');
+  renderMiniSparkline('spark-hum', liveHumSamples.map(s => s.val), 0, 100, '#10b981');
+
+  if (activeChartMode === 'live') {
+    if (tempChart) tempChart.pushValue(timeLabel, temperature);
+    if (humChart) humChart.pushValue(timeLabel, humidity);
+  }
+
+  updateFacilityStatusAndFreshness();
+  updateHeartbeatDiagnosticsUI();
+}
+
+function syncChartsWithActiveMode() {
+  if (!tempChart || !humChart) return;
+  if (activeChartMode === 'live') {
+    tempChart.setSeries(liveTempSamples.map(s => s.time), liveTempSamples.map(s => s.val), 'Live 30-Sample FIFO');
+    humChart.setSeries(liveHumSamples.map(s => s.time), liveHumSamples.map(s => s.val), 'Live 30-Sample FIFO');
+  } else if (activeChartMode === 'sqlite') {
+    const recentRows = environmental_telemetry.slice(-30);
+    const labels = recentRows.map(r => String(r.timestamp || r.time || r.id || '').slice(-8));
+    const temps = recentRows.map(r => Number(r.temperature ?? r.temp ?? 0));
+    const hums = recentRows.map(r => Number(r.humidity ?? r.hum ?? 0));
+    tempChart.setSeries(labels, temps, 'SQLite History');
+    humChart.setSeries(labels, hums, 'SQLite History');
+  }
 }
 
 export function handleMFAPayload(payload) {
   if (!payload || typeof payload !== 'object') return;
-  lastWsHeartbeat = Date.now();
+  const now = Date.now();
+  lastNode1EvidenceTimestamp = now;
 
   if (typeof payload.isFacePassed === 'boolean') isFacePassed = payload.isFacePassed;
   if (typeof payload.isCardPassed === 'boolean') isCardPassed = payload.isCardPassed;
@@ -1320,17 +1904,19 @@ export function handleMFAPayload(payload) {
   if (mfa_status === 'UNLOCKED') {
     door_state = 'OPEN';
     stopMfaCountdown();
-    pushActivityEvent('MFA UNLOCKED (2-of-3 Verified) — Solenoid Released');
+    pushActivityEvent('ACCESS', 'MFA UNLOCKED (2-of-3 Verified) — Solenoid Released');
     showToast('Access Granted', '2-out-of-3 MFA completed. Solenoid unlocked.', 'success');
   } else if (mfa_status === 'AWAITING_STAGE2') {
     startMfaCountdown();
-    pushActivityEvent('MFA Stage 1 Passed — Awaiting Stage 2 (10s window)');
-    showToast('MFA Stage 1 Passed', 'Provide a second factor within 10 seconds.', 'info');
+    pushActivityEvent('MFA', 'MFA Stage 1 Passed — Awaiting Stage 2 (10s window)');
+    showToast('MFA Stage 1 Passed', 'Provide a second distinct factor within 10 seconds.', 'info');
   } else {
     stopMfaCountdown();
   }
 
   renderMFAUI();
+  updateFacilityStatusAndFreshness();
+  updateHeartbeatDiagnosticsUI();
 }
 
 function renderMFAUI() {
@@ -1342,36 +1928,46 @@ function renderMFAUI() {
   const statusLabel = document.getElementById('mfa-status-label');
   if (statusLabel) {
     statusLabel.textContent = mfa_status;
-    statusLabel.className = mfa_status === 'UNLOCKED' ? 'text-mint' : 'text-cyber';
+    statusLabel.className = mfa_status === 'UNLOCKED' ? 'text-mint' : (mfa_status === 'AWAITING_STAGE2' ? 'text-amber' : 'text-cyber');
   }
 
-  const cpFace = document.getElementById('cp-face');
-  if (cpFace) {
-    cpFace.className = `checkpoint ${isFacePassed ? 'passed' : ''}`;
-    cpFace.querySelector('.cp-var').textContent = `isFacePassed: ${isFacePassed}`;
+  const snapMfa = document.getElementById('snap-mfa');
+  if (snapMfa) {
+    snapMfa.textContent = mfa_status;
+    snapMfa.className = `card-value tabular-nums ${mfa_status === 'UNLOCKED' ? 'text-mint' : (mfa_status === 'AWAITING_STAGE2' ? 'text-amber' : 'text-cyber')}`;
+  }
+  const snapFactors = document.getElementById('snap-mfa-factors');
+  if (snapFactors) {
+    snapFactors.textContent = `${passedCount} / 2 Factors Passed`;
   }
 
-  const cpCard = document.getElementById('cp-card');
-  if (cpCard) {
-    cpCard.className = `checkpoint ${isCardPassed ? 'passed' : ''}`;
-    cpCard.querySelector('.cp-var').textContent = `isCardPassed: ${isCardPassed}`;
-  }
+  const updateCheckpoint = (id, badgeId, varName, passed) => {
+    const cp = document.getElementById(id);
+    const badge = document.getElementById(badgeId);
+    if (cp) {
+      cp.className = `checkpoint ${passed ? 'passed' : ''}`;
+      const codeEl = cp.querySelector('.cp-var');
+      if (codeEl) codeEl.textContent = `${varName}: ${passed}`;
+    }
+    if (badge) {
+      badge.textContent = passed ? 'VERIFIED' : 'PENDING';
+    }
+  };
 
-  const cpPin = document.getElementById('cp-pin');
-  if (cpPin) {
-    cpPin.className = `checkpoint ${isPinPassed ? 'passed' : ''}`;
-    cpPin.querySelector('.cp-var').textContent = `isPinPassed: ${isPinPassed}`;
-  }
+  updateCheckpoint('cp-face', 'cp-face-badge', 'isFacePassed', isFacePassed);
+  updateCheckpoint('cp-card', 'cp-card-badge', 'isCardPassed', isCardPassed);
+  updateCheckpoint('cp-pin', 'cp-pin-badge', 'isPinPassed', isPinPassed);
 }
 
 function startMfaCountdown() {
   stopMfaCountdown();
   mfaRemainingSeconds = 10;
-  document.getElementById('mfa-timer-label').textContent = `${mfaRemainingSeconds}s`;
+  const timerEl = document.getElementById('mfa-timer-label');
+  if (timerEl) timerEl.textContent = `${mfaRemainingSeconds}s`;
 
   mfaCountdownInterval = setInterval(() => {
     mfaRemainingSeconds -= 1;
-    document.getElementById('mfa-timer-label').textContent = `${mfaRemainingSeconds}s`;
+    if (timerEl) timerEl.textContent = `${mfaRemainingSeconds}s`;
     if (mfaRemainingSeconds <= 0) {
       stopMfaCountdown();
       isFacePassed = false;
@@ -1379,8 +1975,8 @@ function startMfaCountdown() {
       isPinPassed = false;
       mfa_status = 'IDLE';
       renderMFAUI();
-      pushActivityEvent('MFA Timeout — Stage 2 window expired');
-      showToast('MFA Window Expired', 'Stage-2 timeout reached. Checkpoints reset.', 'error');
+      pushActivityEvent('MFA', 'MFA Timeout — Stage 2 window expired (Flags reset)');
+      showToast('MFA Window Expired', '10-second Stage-2 timeout reached. Checkpoints reset.', 'error');
     }
   }, 1000);
 }
@@ -1394,11 +1990,13 @@ function stopMfaCountdown() {
   if (timerEl) timerEl.textContent = '10s';
 }
 
-function pushActivityEvent(text) {
-  const cleanText = sanitizeInput(String(text));
+function pushActivityEvent(categoryOrText, maybeText) {
+  const hasCat = maybeText !== undefined;
+  const category = hasCat ? sanitizeInput(String(categoryOrText)) : 'EVENT';
+  const cleanText = sanitizeInput(String(hasCat ? maybeText : categoryOrText));
   const time = new Date().toLocaleTimeString();
-  activityFeed.unshift({ time, text: cleanText });
-  activityFeed = activityFeed.slice(0, 5);
+  activityFeed.unshift({ time, category, text: cleanText });
+  activityFeed = activityFeed.slice(0, 6);
   renderActivityFeed();
 }
 
@@ -1409,81 +2007,140 @@ function renderActivityFeed() {
   if (activityFeed.length === 0) {
     ul.innerHTML = `
       <li class="empty-state-box">
-        <svg class="empty-state-svg" width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <svg class="empty-state-svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
         </svg>
         <strong class="empty-state-title">No Live Activity Recorded Yet</strong>
-        <span class="empty-state-sub">Awaiting real-time telemetry or MFA frames from 192.168.43.225:1880.</span>
+        <span class="empty-state-sub">Awaiting real-time telemetry, MFA transitions, or operator dispatches from ${escapeHTML(server_host)}.</span>
       </li>
     `;
     return;
   }
 
   ul.innerHTML = activityFeed
-    .map(item => `<li><span>${escapeHTML(item.text)}</span><code class="text-cyber">${escapeHTML(item.time)}</code></li>`)
+    .map(item => `
+      <li>
+        <div class="activity-item-left">
+          <span class="activity-cat-tag">${escapeHTML(item.category || 'EVENT')}</span>
+          <span>${escapeHTML(item.text)}</span>
+        </div>
+        <code class="text-cyber tabular-nums">${escapeHTML(item.time)}</code>
+      </li>
+    `)
     .join('');
 }
 
 // ============================================================================
-// 10. WEBSOCKET CLIENTS & SQLITE REST FETCH (192.168.43.225:1880)
+// 12. WEBSOCKET CLIENTS & SQLITE REST EXPLORER
 // ============================================================================
 
 function connectWebSockets() {
+  if (wsTelemetryInstance) {
+    try { wsTelemetryInstance.close(); } catch {}
+    wsTelemetryInstance = null;
+  }
+  if (wsMfaInstance) {
+    try { wsMfaInstance.close(); } catch {}
+    wsMfaInstance = null;
+  }
+
+  const telUrl = getWsTelemetryUrl();
+  const mfaUrl = getWsMfaUrl();
+
   try {
-    wsTelemetryInstance = new WebSocket(WS_TELEMETRY_URL);
+    wsTelemetryInstance = new WebSocket(telUrl);
     wsTelemetryInstance.onopen = () => {
-      document.getElementById('ws-telemetry-dot').className = 'dot dot-green';
-      document.getElementById('ws-telemetry-status').textContent = 'ONLINE';
-      showToast('Telemetry Stream Connected', WS_TELEMETRY_URL, 'success');
+      wsTelemetryState = 'ONLINE';
+      const dot = document.getElementById('ws-telemetry-dot');
+      const status = document.getElementById('ws-telemetry-status');
+      if (dot) dot.className = 'dot dot-green';
+      if (status) status.textContent = 'ONLINE';
+      updateFacilityStatusAndFreshness();
+      updateHeartbeatDiagnosticsUI();
     };
     wsTelemetryInstance.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         handleTelemetryPayload(data);
       } catch {
-        showToast('Telemetry Parse Error', 'Malformed JSON frame received.', 'error');
+        showToast('Telemetry Parse Error', 'Malformed JSON frame received on /ws/telemetry.', 'error');
       }
     };
     wsTelemetryInstance.onerror = () => {
-      document.getElementById('ws-telemetry-dot').className = 'dot dot-red';
-      document.getElementById('ws-telemetry-status').textContent = 'OFFLINE';
+      wsTelemetryState = 'OFFLINE';
+      const dot = document.getElementById('ws-telemetry-dot');
+      const status = document.getElementById('ws-telemetry-status');
+      if (dot) dot.className = 'dot dot-red';
+      if (status) status.textContent = 'OFFLINE';
+      updateFacilityStatusAndFreshness();
+      updateHeartbeatDiagnosticsUI();
     };
     wsTelemetryInstance.onclose = () => {
-      document.getElementById('ws-telemetry-dot').className = 'dot dot-red';
-      document.getElementById('ws-telemetry-status').textContent = 'OFFLINE';
+      wsTelemetryState = 'OFFLINE';
+      const dot = document.getElementById('ws-telemetry-dot');
+      const status = document.getElementById('ws-telemetry-status');
+      if (dot) dot.className = 'dot dot-red';
+      if (status) status.textContent = 'OFFLINE';
+      updateFacilityStatusAndFreshness();
+      updateHeartbeatDiagnosticsUI();
     };
   } catch {
-    document.getElementById('ws-telemetry-status').textContent = 'OFFLINE';
+    wsTelemetryState = 'OFFLINE';
   }
 
   try {
-    wsMfaInstance = new WebSocket(WS_MFA_URL);
+    wsMfaInstance = new WebSocket(mfaUrl);
     wsMfaInstance.onopen = () => {
-      document.getElementById('ws-mfa-dot').className = 'dot dot-green';
-      document.getElementById('ws-mfa-status').textContent = 'ONLINE';
+      wsMfaState = 'ONLINE';
+      const dot = document.getElementById('ws-mfa-dot');
+      const status = document.getElementById('ws-mfa-status');
+      if (dot) dot.className = 'dot dot-green';
+      if (status) status.textContent = 'ONLINE';
+      const accessBadge = document.getElementById('access-stream-badge');
+      if (accessBadge) {
+        accessBadge.textContent = 'MFA Stream Online';
+        accessBadge.className = 'status-tag status-nominal';
+      }
+      updateFacilityStatusAndFreshness();
+      updateHeartbeatDiagnosticsUI();
     };
     wsMfaInstance.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         handleMFAPayload(data);
       } catch {
-        showToast('MFA Stream Error', 'Malformed MFA JSON payload.', 'error');
+        showToast('MFA Stream Error', 'Malformed JSON payload on /ws/mfa.', 'error');
       }
     };
     wsMfaInstance.onerror = () => {
-      document.getElementById('ws-mfa-dot').className = 'dot dot-red';
-      document.getElementById('ws-mfa-status').textContent = 'OFFLINE';
+      wsMfaState = 'OFFLINE';
+      const dot = document.getElementById('ws-mfa-dot');
+      const status = document.getElementById('ws-mfa-status');
+      if (dot) dot.className = 'dot dot-red';
+      if (status) status.textContent = 'OFFLINE';
+      updateFacilityStatusAndFreshness();
+      updateHeartbeatDiagnosticsUI();
     };
     wsMfaInstance.onclose = () => {
-      document.getElementById('ws-mfa-dot').className = 'dot dot-red';
-      document.getElementById('ws-mfa-status').textContent = 'OFFLINE';
+      wsMfaState = 'OFFLINE';
+      const dot = document.getElementById('ws-mfa-dot');
+      const status = document.getElementById('ws-mfa-status');
+      if (dot) dot.className = 'dot dot-red';
+      if (status) status.textContent = 'OFFLINE';
+      const accessBadge = document.getElementById('access-stream-badge');
+      if (accessBadge) {
+        accessBadge.textContent = 'MFA Stream Offline';
+        accessBadge.className = 'status-tag status-offline';
+      }
+      updateFacilityStatusAndFreshness();
+      updateHeartbeatDiagnosticsUI();
     };
   } catch {
-    document.getElementById('ws-mfa-status').textContent = 'OFFLINE';
+    wsMfaState = 'OFFLINE';
   }
 }
 
-async function fetchSQLiteLogs(tableName) {
+async function fetchSQLiteLogs(tableName, notifyOnError = false) {
   const allowedTables = new Set([
     'access_logs',
     'camera_events',
@@ -1494,35 +2151,46 @@ async function fetchSQLiteLogs(tableName) {
   if (!allowedTables.has(tableName)) return;
 
   try {
-    const res = await fetchWithTimeout(`${NODE_RED_HTTP}/api/logs/${tableName}`, {
+    const res = await fetchWithTimeout(`${getNodeRedHttp()}/api/logs/${tableName}`, {
       method: 'GET',
       headers: getAuthHeaders()
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const rows = await res.json();
 
+    httpApiReachable = true;
+    lastHttpApiSuccessTimestamp = Date.now();
+    dbTableProvenance[tableName] = { status: 'LIVE', timestamp: Date.now() };
+
     if (tableName === 'access_logs') access_logs = Array.isArray(rows) ? rows : [];
     if (tableName === 'camera_events') camera_events = Array.isArray(rows) ? rows : [];
-    if (tableName === 'environmental_telemetry') environmental_telemetry = Array.isArray(rows) ? rows : [];
+    if (tableName === 'environmental_telemetry') {
+      environmental_telemetry = Array.isArray(rows) ? rows : [];
+      if (activeChartMode === 'sqlite') syncChartsWithActiveMode();
+    }
     if (tableName === 'system_errors') system_errors = Array.isArray(rows) ? rows : [];
     if (tableName === 'system_users' && Array.isArray(rows)) {
       system_users = rows;
-      saveLocalSystemUsers();
     }
   } catch {
-    if (tableName !== 'system_users') {
-      showToast('Database Unreachable', `Could not fetch /api/logs/${tableName} from ${NODE_RED_HTTP}.`, 'error');
+    dbTableProvenance[tableName] = { status: 'UNREACHABLE', timestamp: Date.now() };
+    if (notifyOnError) {
+      showToast('SQLite Endpoint Unreachable', `Could not fetch /api/logs/${tableName} from ${getNodeRedHttp()}.`, 'error');
     }
   }
+
   renderDatabaseTable();
+  renderRecentAccessLogsPreview();
   renderSystemErrors();
   renderUserManagementTable();
+  updateFacilityStatusAndFreshness();
+  updateHeartbeatDiagnosticsUI();
 }
 
 function getEmptyTableIllustrationHTML(title, subtitle) {
   return `
     <div class="empty-state-box">
-      <svg class="empty-state-svg" width="44" height="44" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <svg class="empty-state-svg" width="38" height="38" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <ellipse cx="32" cy="16" rx="20" ry="8"></ellipse>
         <path d="M12 16v16c0 4.4 9 8 20 8s20-3.6 20-8V16"></path>
         <path d="M12 32v16c0 4.4 9 8 20 8s20-3.6 20-8V32"></path>
@@ -1533,44 +2201,244 @@ function getEmptyTableIllustrationHTML(title, subtitle) {
   `;
 }
 
+function classifyRecordSeverity(row) {
+  const text = Object.values(row || {}).join(' ').toLowerCase();
+  if (text.includes('error') || text.includes('denied') || text.includes('fail') || text.includes('alarm') || text.includes('critical') || text.includes('breach')) {
+    return 'critical';
+  }
+  if (text.includes('warn') || text.includes('timeout') || text.includes('stale') || text.includes('manual') || text.includes('awaiting')) {
+    return 'warning';
+  }
+  return 'nominal';
+}
+
+function matchesTimeWindow(row, windowCode) {
+  if (!windowCode || windowCode === 'all') return true;
+  const rawTs = row.timestamp || row.created_at || row.time || row.date;
+  if (!rawTs) return true;
+  const parsed = Date.parse(rawTs);
+  if (Number.isNaN(parsed)) return true;
+  const ageMs = Date.now() - parsed;
+  if (windowCode === '1h') return ageMs <= 3600 * 1000;
+  if (windowCode === '24h') return ageMs <= 24 * 3600 * 1000;
+  if (windowCode === '7d') return ageMs <= 7 * 24 * 3600 * 1000;
+  return true;
+}
+
 function renderDatabaseTable() {
   const thead = document.getElementById('db-table-head');
   const tbody = document.getElementById('db-table-body');
+  const provBadge = document.getElementById('db-provenance-badge');
+  const syncLabel = document.getElementById('db-last-sync-label');
+  const pageInfo = document.getElementById('db-pagination-info');
+  const pageIndicator = document.getElementById('db-page-indicator');
+  const prevBtn = document.getElementById('db-prev-page-btn');
+  const nextBtn = document.getElementById('db-next-page-btn');
+  const exportBtn = document.getElementById('db-export-csv-btn');
+
   if (!thead || !tbody) return;
 
+  const prov = dbTableProvenance[activeDbTable];
+  if (provBadge) {
+    if (!prov) {
+      provBadge.textContent = 'Awaiting Fetch';
+      provBadge.className = 'text-muted';
+    } else if (prov.status === 'LIVE') {
+      provBadge.textContent = 'LIVE (SQLite Verified)';
+      provBadge.className = 'text-mint';
+    } else {
+      provBadge.textContent = 'BACKEND UNREACHABLE';
+      provBadge.className = 'text-rose';
+    }
+  }
+  if (syncLabel) {
+    syncLabel.textContent = prov?.timestamp ? new Date(prov.timestamp).toLocaleTimeString() : '—';
+  }
+
   const query = sanitizeInput(document.getElementById('db-search-input')?.value || '').toLowerCase();
+  const timeFilter = document.getElementById('db-time-filter')?.value || 'all';
+  const statusFilter = document.getElementById('db-status-filter')?.value || 'all';
 
   let dataset = access_logs;
   if (activeDbTable === 'camera_events') dataset = camera_events;
   if (activeDbTable === 'environmental_telemetry') dataset = environmental_telemetry;
+  if (activeDbTable === 'system_errors') dataset = system_errors;
 
-  const filtered = dataset.filter(row =>
-    Object.values(row).some(v => String(v).toLowerCase().includes(query))
-  );
+  currentFilteredRows = dataset.filter(row => {
+    const matchesQuery = !query || Object.values(row).some(v => String(v).toLowerCase().includes(query));
+    const matchesTime = matchesTimeWindow(row, timeFilter);
+    const matchesStatus = statusFilter === 'all' || classifyRecordSeverity(row) === statusFilter;
+    return matchesQuery && matchesTime && matchesStatus;
+  });
 
-  if (filtered.length === 0) {
+  if (dbSortColumn) {
+    currentFilteredRows.sort((a, b) => {
+      const va = a[dbSortColumn] ?? '';
+      const vb = b[dbSortColumn] ?? '';
+      const na = Number(va);
+      const nb = Number(vb);
+      if (Number.isFinite(na) && Number.isFinite(nb) && va !== '' && vb !== '') {
+        return dbSortAsc ? na - nb : nb - na;
+      }
+      return dbSortAsc
+        ? String(va).localeCompare(String(vb))
+        : String(vb).localeCompare(String(va));
+    });
+  }
+
+  if (exportBtn) {
+    exportBtn.disabled = currentFilteredRows.length === 0;
+  }
+
+  const totalRecords = currentFilteredRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / dbPageSize));
+  if (dbCurrentPage > totalPages) dbCurrentPage = totalPages;
+
+  const startIdx = (dbCurrentPage - 1) * dbPageSize;
+  const pageSlice = currentFilteredRows.slice(startIdx, startIdx + dbPageSize);
+
+  if (pageInfo) {
+    pageInfo.textContent = totalRecords === 0
+      ? 'Showing 0 of 0 records'
+      : `Showing ${startIdx + 1}–${startIdx + pageSlice.length} of ${totalRecords} records`;
+  }
+  if (pageIndicator) {
+    pageIndicator.textContent = `Page ${dbCurrentPage} / ${totalPages}`;
+  }
+  if (prevBtn) prevBtn.disabled = dbCurrentPage <= 1;
+  if (nextBtn) nextBtn.disabled = dbCurrentPage >= totalPages;
+
+  if (pageSlice.length === 0) {
     thead.innerHTML = '<tr><th>SQLite Table Status</th></tr>';
+    const reason = prov?.status === 'UNREACHABLE'
+      ? `Node-RED SQLite service at ${getNodeRedHttp()} is currently unreachable.`
+      : `Table "${activeDbTable}" returned 0 matching records for the current filter.`;
     tbody.innerHTML = `<tr><td>${getEmptyTableIllustrationHTML(
-      `No Records Found in "${activeDbTable}"`,
-      `Connect to the Node-RED SQLite backend (${NODE_RED_HTTP}) or clear active search filters.`
+      `No Records Displayed for "${activeDbTable}"`,
+      reason
     )}</td></tr>`;
     return;
   }
 
-  const columns = Object.keys(filtered[0]);
-  thead.innerHTML = `<tr>${columns.map(c => `<th>${escapeHTML(c)}</th>`).join('')}</tr>`;
-  tbody.innerHTML = filtered
-    .map(row => `<tr>${columns.map(c => `<td>${escapeHTML(row[c])}</td>`).join('')}</tr>`)
+  const columns = Object.keys(pageSlice[0]);
+  thead.innerHTML = `<tr>${columns.map(c => {
+    const arrow = dbSortColumn === c ? (dbSortAsc ? ' ▲' : ' ▼') : '';
+    return `<th class="sortable-th" data-sort-col="${escapeHTML(c)}">${escapeHTML(c)}${arrow}</th>`;
+  }).join('')}</tr>`;
+
+  tbody.innerHTML = pageSlice
+    .map((row, sliceIdx) => {
+      const globalIdx = startIdx + sliceIdx;
+      return `<tr class="clickable-row" data-row-idx="${globalIdx}" title="Click to inspect full SQLite record">${columns.map(c => `<td class="tabular-nums">${escapeHTML(row[c])}</td>`).join('')}</tr>`;
+    })
+    .join('');
+}
+
+function openEventDetailModal(tableName, record) {
+  const modal = document.getElementById('event-detail-modal');
+  const kicker = document.getElementById('event-detail-kicker');
+  const title = document.getElementById('event-detail-title');
+  const grid = document.getElementById('event-detail-grid');
+  const rawPre = document.getElementById('event-detail-json');
+  if (!modal || !grid || !rawPre) return;
+
+  if (kicker) kicker.textContent = `SQLite Table · ${tableName}`;
+  const recId = record.id ?? record.error_id ?? record.seq ?? 'Record';
+  if (title) title.textContent = `Record Inspection (#${recId})`;
+
+  grid.innerHTML = Object.entries(record)
+    .map(([k, v]) => `
+      <div class="detail-kv-item">
+        <span class="detail-kv-key">${escapeHTML(k)}</span>
+        <span class="detail-kv-val tabular-nums">${escapeHTML(v)}</span>
+      </div>
+    `)
+    .join('');
+
+  rawPre.textContent = JSON.stringify(record, null, 2);
+  modal.classList.remove('hidden');
+}
+
+function closeEventDetailModal() {
+  document.getElementById('event-detail-modal')?.classList.add('hidden');
+}
+
+function exportCurrentTableToCSV() {
+  if (!Array.isArray(currentFilteredRows) || currentFilteredRows.length === 0) {
+    showToast('Export Unavailable', 'No records available in the current view to export.', 'info');
+    return;
+  }
+  const columns = Object.keys(currentFilteredRows[0]);
+  const escapeCsvCell = (val) => {
+    const str = String(val ?? '').replace(/"/g, '""');
+    return `"${str}"`;
+  };
+  const headerLine = columns.map(escapeCsvCell).join(',');
+  const dataLines = currentFilteredRows.map(row =>
+    columns.map(col => escapeCsvCell(row[col])).join(',')
+  );
+  const csvContent = [headerLine, ...dataLines].join('\r\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `lci_sfm_${activeDbTable}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  showToast('CSV Exported', `Exported ${currentFilteredRows.length} rows from ${activeDbTable}.`, 'success');
+}
+
+function renderRecentAccessLogsPreview() {
+  const tbody = document.getElementById('access-recent-logs-body');
+  if (!tbody) return;
+
+  const combined = [...access_logs, ...camera_events].slice(0, 5);
+  if (combined.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" class="text-muted">No recent access records fetched from SQLite (${escapeHTML(server_host)}).</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = combined
+    .map(r => {
+      const ts = r.timestamp || r.time || r.created_at || '—';
+      const user = r.username || r.user_id || r.user || r.node || 'Node 1';
+      const modality = r.event || r.method || r.modality || r.action || 'Access Check';
+      const status = r.status || r.result || 'Logged';
+      const sev = classifyRecordSeverity(r);
+      const badgeClass = sev === 'critical' ? 'status-critical' : (sev === 'warning' ? 'status-warning' : 'status-nominal');
+      return `
+        <tr>
+          <td class="tabular-nums">${escapeHTML(ts)}</td>
+          <td><strong>${escapeHTML(user)}</strong></td>
+          <td>${escapeHTML(modality)}</td>
+          <td><span class="status-tag ${badgeClass}">${escapeHTML(status)}</span></td>
+        </tr>
+      `;
+    })
     .join('');
 }
 
 function renderSystemErrors() {
   const tbody = document.getElementById('system-errors-body');
+  const errCountEl = document.getElementById('banner-error-count');
+  if (errCountEl) {
+    errCountEl.textContent = String(system_errors.length);
+    errCountEl.className = `tabular-nums ${system_errors.length > 0 ? 'text-rose' : ''}`;
+  }
+
   if (!tbody) return;
   if (system_errors.length === 0) {
+    const prov = dbTableProvenance['system_errors'];
+    const msg = prov?.status === 'LIVE'
+      ? 'Zero active hardware or sequence faults recorded in SQLite system_errors.'
+      : `Awaiting connection to ${getNodeRedHttp()}/api/logs/system_errors.`;
     tbody.innerHTML = `<tr><td colspan="5">${getEmptyTableIllustrationHTML(
       'No System Errors Logged',
-      `Table "system_errors" is clean or awaiting connection to ${NODE_RED_HTTP}.`
+      msg
     )}</td></tr>`;
     return;
   }
@@ -1583,10 +2451,10 @@ function renderSystemErrors() {
       const desc = err.error_description ?? err.message ?? '';
       return `
         <tr>
-          <td>#${escapeHTML(id)}</td>
-          <td>${escapeHTML(ts)}</td>
+          <td class="tabular-nums">#${escapeHTML(id)}</td>
+          <td class="tabular-nums">${escapeHTML(ts)}</td>
           <td><code>${escapeHTML(node)}</code></td>
-          <td><span class="text-rose">${escapeHTML(code)}</span></td>
+          <td><span class="status-tag status-critical">${escapeHTML(code)}</span></td>
           <td>${escapeHTML(desc)}</td>
         </tr>
       `;
@@ -1594,23 +2462,27 @@ function renderSystemErrors() {
     .join('');
 }
 
+// ============================================================================
+// 13. HARDWARE COMMAND DISPATCH (STRICT VERIFICATION & HONEST FEEDBACK)
+// ============================================================================
+
 async function sendCommand(command, targetState) {
-  if (getActiveRole() !== 'Admin') {
-    showToast('Permission Denied', 'Viewer role is restricted from dispatching commands.', 'error');
-    return;
+  if (!isPrivilegedAdmin()) {
+    showToast('Permission Denied', 'Commands require a server-verified Admin session.', 'error');
+    return false;
   }
 
   const cleanCmd = String(command).trim();
   const cleanState = String(targetState).trim();
 
   if (!ALLOWED_COMMANDS.has(cleanCmd) || !ALLOWED_COMMAND_STATES.has(cleanState)) {
-    showToast('Security Block', 'Blocked untyped or unrecognized command payload.', 'error');
-    return;
+    showToast('Security Block', 'Blocked unrecognized command or state parameter.', 'error');
+    return false;
   }
 
   if (!isValidIPv4(ip_node1) || !isValidIPv4(ip_node2) || !isValidIPv4(ip_node3)) {
     showToast('Invalid Node IP', 'Verify Node IPv4 addresses before dispatching hardware commands.', 'error');
-    return;
+    return false;
   }
 
   const strictBody = {
@@ -1621,52 +2493,284 @@ async function sendCommand(command, targetState) {
     ip_node3: String(ip_node3)
   };
 
-  pushActivityEvent(`Command Sent: ${cleanCmd} -> ${cleanState}`);
+  const lastResultEl = document.getElementById('dispatch-last-result');
+  if (lastResultEl) {
+    lastResultEl.textContent = `Pending: ${cleanCmd} -> ${cleanState}...`;
+    lastResultEl.className = 'tabular-nums text-amber';
+  }
+
   try {
-    const response = await fetchWithTimeout(`${NODE_RED_HTTP}/api/command`, {
+    const response = await fetchWithTimeout(`${getNodeRedHttp()}/api/command`, {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify(strictBody)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    showToast('Command Executed', `${cleanCmd} set to ${cleanState}`, 'success');
+
+    httpApiReachable = true;
+    lastHttpApiSuccessTimestamp = Date.now();
+    if (lastResultEl) {
+      lastResultEl.textContent = `Confirmed: ${cleanCmd} (${cleanState}) @ ${new Date().toLocaleTimeString()}`;
+      lastResultEl.className = 'tabular-nums text-mint';
+    }
+    pushActivityEvent('DISPATCH', `Confirmed by Server: ${cleanCmd} -> ${cleanState}`);
+    showToast('Command Confirmed', `Node-RED acknowledged ${cleanCmd} -> ${cleanState}.`, 'success');
+    updateHeartbeatDiagnosticsUI();
+    return true;
   } catch {
-    showToast('Command Dispatched (Offline)', `Node-RED (${NODE_RED_HTTP}) unreachable for ${cleanCmd}`, 'error');
+    if (lastResultEl) {
+      lastResultEl.textContent = `Failed (Server Unreachable): ${cleanCmd}`;
+      lastResultEl.className = 'tabular-nums text-rose';
+    }
+    pushActivityEvent('ERROR', `Dispatch Failed (Unreachable): ${cleanCmd} -> ${cleanState}`);
+    showToast('Dispatch Failed — Server Offline', `Node-RED (${getNodeRedHttp()}) did not acknowledge ${cleanCmd}. Hardware state unverified.`, 'error');
+    updateHeartbeatDiagnosticsUI();
+    return false;
   }
 }
 
 // ============================================================================
-// 11. 5-SECOND HEARTBEAT WATCHDOG
+// 14. INDEPENDENT SUBSYSTEM DIAGNOSTICS & FACILITY STATUS EVALUATION
 // ============================================================================
+
+function formatAgeSeconds(timestampMs) {
+  if (!timestampMs) return 'Never';
+  const sec = Math.max(0, Math.floor((Date.now() - timestampMs) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  return `${min}m ${sec % 60}s ago`;
+}
+
+function updateFacilityStatusAndFreshness() {
+  const now = Date.now();
+  const telAgeMs = hasReceivedTelemetry ? (now - lastTelemetryTimestamp) : Infinity;
+  const isTelFresh = hasReceivedTelemetry && telAgeMs <= 10000;
+  const isTelStale = hasReceivedTelemetry && telAgeMs > 10000;
+
+  // Global Header Freshness Indicator
+  const globalFreshEl = document.getElementById('global-freshness-label');
+  if (globalFreshEl) {
+    if (!hasReceivedTelemetry) {
+      globalFreshEl.textContent = 'No Data Received';
+      globalFreshEl.className = 'tabular-nums text-muted';
+    } else if (isTelFresh) {
+      globalFreshEl.textContent = `Live (${formatAgeSeconds(lastTelemetryTimestamp)})`;
+      globalFreshEl.className = 'tabular-nums text-mint';
+    } else {
+      globalFreshEl.textContent = `Stale (${formatAgeSeconds(lastTelemetryTimestamp)})`;
+      globalFreshEl.className = 'tabular-nums text-amber';
+    }
+  }
+
+  // Metric Card Freshness Labels
+  const freshLabel = !hasReceivedTelemetry
+    ? 'Awaiting Stream'
+    : (isTelFresh ? `Live · ${formatAgeSeconds(lastTelemetryTimestamp)}` : `Stale · ${formatAgeSeconds(lastTelemetryTimestamp)}`);
+  ['fresh-door', 'fresh-temp', 'fresh-hum', 'fresh-smoke', 'fresh-fan', 'fresh-light'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = freshLabel;
+  });
+
+  const freshMfaEl = document.getElementById('fresh-mfa');
+  if (freshMfaEl) {
+    freshMfaEl.textContent = wsMfaState === 'ONLINE'
+      ? (lastNode1EvidenceTimestamp ? `Live · ${formatAgeSeconds(lastNode1EvidenceTimestamp)}` : 'Stream Open')
+      : 'Stream Offline';
+  }
+
+  // Connectivity Metric Card (#snap-conn)
+  const openStreamCount = (wsTelemetryState === 'ONLINE' ? 1 : 0) + (wsMfaState === 'ONLINE' ? 1 : 0);
+  const snapConn = document.getElementById('snap-conn');
+  const snapConnDetail = document.getElementById('snap-conn-detail');
+  const freshConn = document.getElementById('fresh-conn');
+  const bannerStreamState = document.getElementById('banner-stream-state');
+
+  if (snapConn) {
+    if (openStreamCount === 2) {
+      snapConn.textContent = 'ONLINE';
+      snapConn.className = 'card-value text-mint tabular-nums';
+    } else if (openStreamCount === 1 || httpApiReachable) {
+      snapConn.textContent = 'PARTIAL';
+      snapConn.className = 'card-value text-amber tabular-nums';
+    } else {
+      snapConn.textContent = 'OFFLINE';
+      snapConn.className = 'card-value text-rose tabular-nums';
+    }
+  }
+  if (snapConnDetail) {
+    snapConnDetail.textContent = `${openStreamCount} / 2 WS Active · REST ${httpApiReachable ? 'OK' : 'Offline'}`;
+  }
+  if (freshConn) {
+    freshConn.textContent = openStreamCount === 2 ? 'Connected' : 'Degraded / Offline';
+  }
+  if (bannerStreamState) {
+    bannerStreamState.textContent = openStreamCount === 2 ? '2/2 WS ONLINE' : (openStreamCount === 1 ? '1/2 PARTIAL' : 'DISCONNECTED');
+  }
+
+  // Facility Status Banner (#global-status-banner)
+  const banner = document.getElementById('global-status-banner');
+  const kicker = document.getElementById('global-status-kicker');
+  const title = document.getElementById('global-status-title');
+  const subtitle = document.getElementById('global-status-subtitle');
+  if (!banner || !title) return;
+
+  if (!hasReceivedTelemetry) {
+    banner.className = 'status-banner status-unknown';
+    if (kicker) kicker.textContent = 'Facility Operating State · Unverified';
+    title.textContent = wsTelemetryState === 'ONLINE'
+      ? 'Stream Connected — Awaiting Initial Sensor Packet'
+      : 'Awaiting Telemetry Stream — Status Unknown';
+    if (subtitle) {
+      subtitle.innerHTML = `No verified telemetry frames received from <code>${escapeHTML(getWsTelemetryUrl())}</code>. Initial zero values do not confirm normal sensor operation.`;
+    }
+    return;
+  }
+
+  const isSmokeCritical = smoke_gas_level >= 400;
+  const isSmokeElevated = smoke_gas_level >= 250 && smoke_gas_level < 400;
+  const isTempElevated = temperature > 30.0;
+
+  if (isSmokeCritical) {
+    banner.className = 'status-banner emergency';
+    if (kicker) kicker.textContent = 'Critical Facility Alarm · Immediate Attention Required';
+    title.textContent = `Emergency Alert — High Smoke/Gas Detected (${smoke_gas_level} PPM)`;
+    if (subtitle) {
+      subtitle.textContent = `MQ-2 concentration exceeds 400 PPM threshold on Node 2 (${ip_node2}). Autonomous HVAC extraction and fail-safe egress protocols active.`;
+    }
+  } else if (wsTelemetryState === 'OFFLINE' || isTelStale) {
+    banner.className = 'status-banner warning';
+    if (kicker) kicker.textContent = 'Telemetry Degraded · Stale Readings Displayed';
+    title.textContent = `Telemetry Stream Interrupted — Last Frame ${formatAgeSeconds(lastTelemetryTimestamp)}`;
+    if (subtitle) {
+      subtitle.textContent = `Displayed metrics reflect the last known frame prior to disconnection. Edge nodes continue local millis() autonomous execution.`;
+    }
+  } else if (isSmokeElevated || isTempElevated || system_errors.length > 0) {
+    banner.className = 'status-banner warning';
+    if (kicker) kicker.textContent = 'Facility Operating State · Warning / Threshold Active';
+    const reasons = [];
+    if (isTempElevated) reasons.push(`Temperature ${temperature.toFixed(1)} °C (> 30.0 °C Auto-Fan Threshold)`);
+    if (isSmokeElevated) reasons.push(`Elevated Smoke/Gas (${smoke_gas_level} PPM)`);
+    if (system_errors.length > 0) reasons.push(`${system_errors.length} System Error(s) Logged`);
+    title.textContent = `Warning Condition — ${reasons.join(' · ')}`;
+    if (subtitle) {
+      subtitle.textContent = 'Telemetry stream is live and verified, but one or more parameters require operator review.';
+    }
+  } else {
+    banner.className = 'status-banner normal';
+    if (kicker) kicker.textContent = 'Facility Operating State · Verified Nominal';
+    title.textContent = 'Normal Operations — All Thresholds Nominal';
+    if (subtitle) {
+      subtitle.textContent = `Verified live telemetry from Node 2 (${ip_node2}) within nominal environmental bounds (Temp ${temperature.toFixed(1)} °C, Smoke ${smoke_gas_level} PPM).`;
+    }
+  }
+}
+
+function updateHeartbeatDiagnosticsUI() {
+  const now = Date.now();
+
+  // 1. Central Server (#hb-server)
+  const srvOnline = wsTelemetryState === 'ONLINE' || wsMfaState === 'ONLINE' || (httpApiReachable && (now - lastHttpApiSuccessTimestamp) < 15000);
+  const srvPartial = !srvOnline && httpApiReachable;
+  const hbServer = document.getElementById('hb-server');
+  const topoServer = document.getElementById('topo-status-server');
+  if (hbServer) {
+    hbServer.className = `hb-pill ${srvOnline ? 'online' : (srvPartial ? 'warning' : 'offline')}`;
+    hbServer.textContent = srvOnline ? 'ONLINE (<5s)' : (srvPartial ? 'REST ONLY' : 'OFFLINE (>5s)');
+  }
+  if (topoServer) {
+    topoServer.className = `status-tag ${srvOnline ? 'status-nominal' : (srvPartial ? 'status-warning' : 'status-offline')}`;
+    topoServer.textContent = srvOnline ? 'ONLINE' : (srvPartial ? 'PARTIAL' : 'OFFLINE');
+  }
+
+  const lastServerTs = Math.max(lastTelemetryTimestamp, lastNode1EvidenceTimestamp, lastHttpApiSuccessTimestamp);
+  const setDiagText = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+  setDiagText('diag-http-state', httpApiReachable ? `OK (${formatAgeSeconds(lastHttpApiSuccessTimestamp)})` : 'Unreachable');
+  setDiagText('diag-ws-tel-state', wsTelemetryState);
+  setDiagText('diag-ws-mfa-state', wsMfaState);
+  setDiagText('diag-server-last', formatAgeSeconds(lastServerTs));
+  setDiagText('topo-ws-tel', wsTelemetryState);
+  setDiagText('topo-ws-mfa', wsMfaState);
+
+  // 2. Node 1 (#hb-node1) — Evaluated strictly from Node 1 MFA/Door evidence
+  const n1Age = lastNode1EvidenceTimestamp ? (now - lastNode1EvidenceTimestamp) : Infinity;
+  const hbNode1 = document.getElementById('hb-node1');
+  const topoNode1 = document.getElementById('topo-status-node1');
+  if (n1Age <= 6000) {
+    if (hbNode1) { hbNode1.className = 'hb-pill online'; hbNode1.textContent = 'ONLINE (<5s)'; }
+    if (topoNode1) { topoNode1.className = 'status-tag status-nominal'; topoNode1.textContent = 'ONLINE'; }
+  } else if (n1Age <= 20000) {
+    if (hbNode1) { hbNode1.className = 'hb-pill stale'; hbNode1.textContent = `STALE (${Math.floor(n1Age / 1000)}s)`; }
+    if (topoNode1) { topoNode1.className = 'status-tag status-warning'; topoNode1.textContent = 'STALE'; }
+  } else if (wsMfaState === 'ONLINE') {
+    if (hbNode1) { hbNode1.className = 'hb-pill unknown'; hbNode1.textContent = 'IDLE / AWAITING'; }
+    if (topoNode1) { topoNode1.className = 'status-tag status-unknown'; topoNode1.textContent = 'AWAITING EVENT'; }
+  } else {
+    if (hbNode1) { hbNode1.className = 'hb-pill offline'; hbNode1.textContent = 'OFFLINE (>5s)'; }
+    if (topoNode1) { topoNode1.className = 'status-tag status-offline'; topoNode1.textContent = 'OFFLINE'; }
+  }
+  setDiagText('diag-node1-last', formatAgeSeconds(lastNode1EvidenceTimestamp));
+
+  // 3. Node 2 (#hb-node2) — Evaluated strictly from Node 2 Environmental Telemetry
+  const n2Age = lastNode2FrameTimestamp ? (now - lastNode2FrameTimestamp) : Infinity;
+  const hbNode2 = document.getElementById('hb-node2');
+  const topoNode2 = document.getElementById('topo-status-node2');
+  if (n2Age <= 6000 && wsTelemetryState === 'ONLINE') {
+    if (hbNode2) { hbNode2.className = 'hb-pill online'; hbNode2.textContent = 'ONLINE (<5s)'; }
+    if (topoNode2) { topoNode2.className = 'status-tag status-nominal'; topoNode2.textContent = 'ONLINE'; }
+  } else if (n2Age <= 15000) {
+    if (hbNode2) { hbNode2.className = 'hb-pill stale'; hbNode2.textContent = `STALE (${Math.floor(n2Age / 1000)}s)`; }
+    if (topoNode2) { topoNode2.className = 'status-tag status-warning'; topoNode2.textContent = 'STALE'; }
+  } else {
+    if (hbNode2) { hbNode2.className = 'hb-pill offline'; hbNode2.textContent = 'OFFLINE (>5s)'; }
+    if (topoNode2) { topoNode2.className = 'status-tag status-offline'; topoNode2.textContent = 'OFFLINE'; }
+  }
+  setDiagText('diag-node2-last', formatAgeSeconds(lastNode2FrameTimestamp));
+
+  // 4. Node 3 (#hb-node3) — Evaluated strictly from Camera Probe / Biometric Face Event
+  const n3Age = lastNode3CaptureTimestamp ? (now - lastNode3CaptureTimestamp) : Infinity;
+  const hbNode3 = document.getElementById('hb-node3');
+  const topoNode3 = document.getElementById('topo-status-node3');
+  if (node3ProbeStatus === 'ONLINE' && n3Age <= 30000) {
+    if (hbNode3) { hbNode3.className = 'hb-pill online'; hbNode3.textContent = 'ONLINE (CAPTURED)'; }
+    if (topoNode3) { topoNode3.className = 'status-tag status-nominal'; topoNode3.textContent = 'ONLINE'; }
+  } else if (node3ProbeStatus === 'UNREACHABLE') {
+    if (hbNode3) { hbNode3.className = 'hb-pill offline'; hbNode3.textContent = 'OFFLINE / SLEEP'; }
+    if (topoNode3) { topoNode3.className = 'status-tag status-offline'; topoNode3.textContent = 'UNREACHABLE'; }
+  } else {
+    if (hbNode3) { hbNode3.className = 'hb-pill unknown'; hbNode3.textContent = 'PIR STANDBY'; }
+    if (topoNode3) { topoNode3.className = 'status-tag status-unknown'; topoNode3.textContent = 'PIR STANDBY'; }
+  }
+  setDiagText('diag-node3-probe', node3ProbeStatus);
+  setDiagText('diag-node3-last', formatAgeSeconds(lastNode3CaptureTimestamp));
+}
 
 function startHeartbeatMonitor() {
   setInterval(() => {
-    const isOnline = lastWsHeartbeat > 0 && (Date.now() - lastWsHeartbeat) <= 5000;
-    const ids = ['hb-server', 'hb-node1', 'hb-node2', 'hb-node3'];
-    ids.forEach(id => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.className = `hb-pill ${isOnline ? 'online' : 'offline'}`;
-      el.textContent = isOnline ? 'ONLINE (<5s)' : 'OFFLINE (>5s)';
-    });
+    updateFacilityStatusAndFreshness();
+    updateHeartbeatDiagnosticsUI();
   }, 1000);
 }
 
 // ============================================================================
-// 12. INITIALIZATION & HYBRID SQLITE + LOCAL AUTHENTICATION
+// 15. INITIALIZATION & VERIFIED SERVER AUTHENTICATION WORKFLOW
 // ============================================================================
 
 function bootAuthenticatedSession() {
   const loginOverlay = document.getElementById('login-overlay');
   if (loginOverlay) loginOverlay.classList.add('hidden');
 
-  const operatorName = sessionStorage.getItem('lci_operator_id') || 'admin';
+  const operatorName = sessionStorage.getItem('lci_operator_id') || 'Operator';
   const adminUserField = document.getElementById('admin_new_username');
   if (adminUserField) adminUserField.value = operatorName;
 
   applyRBACPermissions();
   mountAuthenticatedViewListeners();
   checkNodeIPsOnStartup();
+  updateFacilityStatusAndFreshness();
+  updateHeartbeatDiagnosticsUI();
   renderActivityFeed();
   renderMFAUI();
   renderUserManagementTable();
@@ -1674,7 +2778,7 @@ function bootAuthenticatedSession() {
   connectWebSockets();
   fetchSQLiteLogs('access_logs');
   fetchSQLiteLogs('system_errors');
-  if (getActiveRole() === 'Admin') {
+  if (isPrivilegedAdmin()) {
     fetchSystemUsers();
   }
 }
@@ -1682,9 +2786,28 @@ function bootAuthenticatedSession() {
 window.addEventListener('DOMContentLoaded', () => {
   const tempCanvas = document.getElementById('temp-chart-canvas');
   const humCanvas = document.getElementById('hum-chart-canvas');
-  if (tempCanvas) tempChart = new LocalFIFOChart(tempCanvas, { color: '#60a5fa', min: 0, max: 50, unit: '°C' });
-  if (humCanvas) humChart = new LocalFIFOChart(humCanvas, { color: '#34d399', min: 0, max: 100, unit: '%' });
+  if (tempCanvas) {
+    tempChart = new LocalFIFOChart(tempCanvas, {
+      color: '#38bdf8',
+      min: 0,
+      max: 50,
+      unit: '°C',
+      warningThreshold: 30,
+      thresholdLabel: 'Auto-Fan > 30°C',
+      statsElId: 'temp-chart-stats'
+    });
+  }
+  if (humCanvas) {
+    humChart = new LocalFIFOChart(humCanvas, {
+      color: '#10b981',
+      min: 0,
+      max: 100,
+      unit: '%',
+      statsElId: 'hum-chart-stats'
+    });
+  }
 
+  checkNodeIPsOnStartup();
   startLiveDigitalClock();
   initFullscreenToggle();
   initThemeAndSidebar();
@@ -1695,36 +2818,52 @@ window.addEventListener('DOMContentLoaded', () => {
   renderUserManagementTable();
 
   // Toast Clear All (X) Button
-  const clearToastsBtn = document.getElementById('toast-clear-all-btn');
-  if (clearToastsBtn) {
-    clearToastsBtn.addEventListener('click', clearAllToasts);
-  }
+  document.getElementById('toast-clear-all-btn')?.addEventListener('click', clearAllToasts);
 
-  // Hybrid Database Authentication:
-  // 1) Tries POST http://192.168.43.225:1880/api/auth/login (2.5s timeout).
-  // 2) If Node-RED returns 200 OK -> unlocks with SQLite role & token.
-  // 3) If Node-RED returns 401 -> blocks login ("Invalid Credentials").
-  // 4) If Node-RED is offline/unreachable -> falls back to Local RBAC Auth so the login screen never gets stuck!
+  // Login Screen Server Host Override
+  const loginServerHostInput = document.getElementById('login_server_host');
+  if (loginServerHostInput) loginServerHostInput.value = server_host;
+  document.getElementById('login-apply-host-btn')?.addEventListener('click', () => {
+    const candidate = sanitizeInput(loginServerHostInput?.value || '');
+    if (!isValidHostPort(candidate)) {
+      showToast('Invalid Host Format', 'Enter a valid IPv4:Port (e.g. 192.168.43.225:1880).', 'error');
+      return;
+    }
+    server_host = candidate;
+    localStorage.setItem('lci_server_host', server_host);
+    syncIPInputs();
+    showToast('Gateway Host Updated', `Authentication endpoint set to ${getNodeRedHttp()}.`, 'info');
+  });
+
+  // Strict Server-Verified Authentication Flow:
+  // 1) Sends POST http://<server_host>/api/auth/login
+  // 2) On 200 OK -> Unlocks console with server-verified role & token (lci_auth_verified = 'true')
+  // 3) On 401 -> Rejects login ("Invalid Credentials")
+  // 4) On Network Error / Timeout -> NEVER silently elevates to Admin! Displays #login-offline-alert
+  //    allowing explicit entry into Unverified Read-Only Inspection Mode (Viewer only, controls locked).
   const loginForm = document.getElementById('login-form');
   const loginSubmitBtn = document.getElementById('login-submit-btn');
+  const loginOfflineAlert = document.getElementById('login-offline-alert');
+  const loginOfflineDesc = document.getElementById('login-offline-desc');
 
-  loginForm.addEventListener('submit', async (e) => {
+  loginForm?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const rawUsername = document.getElementById('login_username').value;
-    const rawPassword = document.getElementById('login_password').value;
+    const rawUsername = document.getElementById('login_username')?.value || '';
+    const rawPassword = document.getElementById('login_password')?.value || '';
 
     const cleanUsername = sanitizeInput(rawUsername);
     const cleanPassword = sanitizeInput(rawPassword);
 
     if (!cleanUsername || !cleanPassword) {
-      showToast('Validation Error', 'Both Username and Password are required.', 'error');
+      showToast('Credentials Required', 'Enter both operator username and password.', 'error');
       return;
     }
 
     if (loginSubmitBtn) loginSubmitBtn.disabled = true;
+    loginOfflineAlert?.classList.add('hidden');
 
     try {
-      const response = await fetchWithTimeout(`${NODE_RED_HTTP}/api/auth/login`, {
+      const response = await fetchWithTimeout(`${getNodeRedHttp()}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1733,8 +2872,8 @@ window.addEventListener('DOMContentLoaded', () => {
         })
       }, 2500);
 
-      if (response.status === 401) {
-        showToast('Invalid Credentials', 'Username or password rejected by SQLite authentication.', 'error');
+      if (response.status === 401 || response.status === 403) {
+        showToast('Authentication Rejected', 'Invalid username or password rejected by SQLite backend.', 'error');
         return;
       }
 
@@ -1743,87 +2882,107 @@ window.addEventListener('DOMContentLoaded', () => {
       }
 
       const authData = await response.json();
-      const token = sanitizeInput(String(authData.token || `LCI-SQL-${Date.now()}`));
+      const token = sanitizeInput(String(authData.token || ''));
+      if (!token) {
+        throw new Error('Missing session token from backend');
+      }
       const role = authData.role === 'Admin' ? 'Admin' : 'Viewer';
       const verifiedUser = sanitizeInput(String(authData.username || cleanUsername));
+
+      httpApiReachable = true;
+      lastHttpApiSuccessTimestamp = Date.now();
 
       sessionStorage.setItem('lci_session_token', token);
       sessionStorage.setItem('lci_rbac_role', role);
       sessionStorage.setItem('lci_operator_id', verifiedUser);
+      sessionStorage.setItem('lci_auth_verified', 'true');
 
       bootAuthenticatedSession();
-      pushActivityEvent(`SQLite Auth Success: ${verifiedUser} (${role})`);
-      showToast('Console Unlocked (SQLite)', `Authenticated as ${verifiedUser} [${role}]`, 'success');
+      pushActivityEvent('AUTH', `Verified SQLite Login: ${verifiedUser} (${role})`);
+      showToast('Session Authenticated', `Signed in as ${verifiedUser} [${role}]`, 'success');
     } catch {
-      // Fallback when Node-RED (192.168.43.225:1880) is offline or blocked by HTTPS/HTTP mixed-content
-      const localAdmin = getLocalAdminCredentials();
-      const matchedUser = system_users.find(
-        u => (u.username || u.name) === cleanUsername && String(u.pin) === cleanPassword
-      );
-
-      let assignedRole = 'Viewer';
-      if (cleanUsername === localAdmin.username && cleanPassword === localAdmin.password) {
-        assignedRole = 'Admin';
-      } else if (matchedUser && matchedUser.role === 'Admin') {
-        assignedRole = 'Admin';
+      httpApiReachable = false;
+      if (loginOfflineAlert) {
+        loginOfflineAlert.classList.remove('hidden');
       }
-
-      const fallbackToken = `LCI-LOCAL-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      sessionStorage.setItem('lci_session_token', fallbackToken);
-      sessionStorage.setItem('lci_rbac_role', assignedRole);
-      sessionStorage.setItem('lci_operator_id', cleanUsername);
-
-      bootAuthenticatedSession();
-      pushActivityEvent(`Offline Auth Fallback: ${cleanUsername} (${assignedRole})`);
-      showToast(
-        'Console Unlocked (Offline Mode)',
-        `Node-RED unreachable; signed in locally as ${cleanUsername} [${assignedRole}].`,
-        'info'
-      );
+      if (loginOfflineDesc) {
+        loginOfflineDesc.textContent = `Could not reach ${getNodeRedHttp()}/api/auth/login. Server verification is required for Administrator clearance and actuator control. You may retry after verifying network connectivity or enter Unverified Read-Only Inspection Mode.`;
+      }
+      const statusBadge = document.getElementById('login-server-status-badge');
+      if (statusBadge) {
+        statusBadge.textContent = 'Server Unreachable';
+        statusBadge.className = 'status-tag status-offline';
+      }
+      showToast('Authentication Service Offline', `Cannot verify credentials against ${getNodeRedHttp()}.`, 'error');
     } finally {
       if (loginSubmitBtn) loginSubmitBtn.disabled = false;
     }
   });
 
-  // Lock System / Logout Button
-  document.getElementById('logout-btn').addEventListener('click', () => {
+  // Explicit Unverified Read-Only Offline Inspection Mode Button
+  document.getElementById('login-offline-readonly-btn')?.addEventListener('click', () => {
+    const enteredUser = sanitizeInput(document.getElementById('login_username')?.value || '') || 'offline-inspector';
+    sessionStorage.setItem('lci_session_token', `UNVERIFIED-READONLY-${Date.now()}`);
+    sessionStorage.setItem('lci_rbac_role', 'Viewer');
+    sessionStorage.setItem('lci_operator_id', enteredUser);
+    sessionStorage.setItem('lci_auth_verified', 'false');
+
+    bootAuthenticatedSession();
+    pushActivityEvent('AUTH', `Entered Unverified Read-Only Mode (${enteredUser})`);
+    showToast('Read-Only Inspection Mode', 'Viewing console without server verification. All control actions are locked.', 'info');
+  });
+
+  // Return to Login Overlay from Unverified Banner to Retry Server Auth
+  document.getElementById('retry-server-auth-btn')?.addEventListener('click', () => {
     lockAndLogoutSystem();
   });
 
-  // Startup / Node IP Modal Controls ((X), Cancel, Save)
-  document.getElementById('open-ip-modal-btn').addEventListener('click', () => {
-    openIpModal();
+  // Lock System / Logout Button
+  document.getElementById('logout-btn')?.addEventListener('click', () => {
+    lockAndLogoutSystem();
   });
 
-  document.getElementById('close-ip-modal-x').addEventListener('click', () => {
-    closeIpModal();
-  });
+  // Endpoint Configuration Modal Controls
+  document.getElementById('open-ip-modal-btn')?.addEventListener('click', openIpModal);
+  document.getElementById('close-ip-modal-x')?.addEventListener('click', closeIpModal);
+  document.getElementById('cancel-ip-modal-btn')?.addEventListener('click', closeIpModal);
 
-  document.getElementById('cancel-ip-modal-btn').addEventListener('click', () => {
-    closeIpModal();
-  });
-
-  document.getElementById('startup-ip-form').addEventListener('submit', (e) => {
+  document.getElementById('startup-ip-form')?.addEventListener('submit', (e) => {
     e.preventDefault();
-    if (getActiveRole() !== 'Admin') {
-      showToast('Read-Only Mode', 'Viewer role cannot overwrite Node IP configuration.', 'error');
+    if (!isPrivilegedAdmin()) {
+      showToast('Read-Only Session', 'Endpoint changes require a verified Admin session.', 'error');
       return;
     }
     const ok = saveNodeIPs(
       document.getElementById('modal_ip_node1').value,
       document.getElementById('modal_ip_node2').value,
-      document.getElementById('modal_ip_node3').value
+      document.getElementById('modal_ip_node3').value,
+      document.getElementById('modal_server_host')?.value || server_host
     );
     if (ok) closeIpModal();
   });
 
+  // Confirmation Modal Controls
+  document.getElementById('close-confirm-modal-x')?.addEventListener('click', closeConfirmModal);
+  document.getElementById('cancel-confirm-modal-btn')?.addEventListener('click', closeConfirmModal);
+  document.getElementById('execute-confirm-modal-btn')?.addEventListener('click', () => {
+    const cb = pendingConfirmCallback;
+    closeConfirmModal();
+    if (typeof cb === 'function') cb();
+  });
+
+  // Event Detail Inspector Modal Controls
+  document.getElementById('close-event-detail-x')?.addEventListener('click', closeEventDetailModal);
+  document.getElementById('close-event-detail-btn')?.addEventListener('click', closeEventDetailModal);
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       closeIpModal();
+      closeConfirmModal();
+      closeEventDetailModal();
     }
   });
 
-  // Auto-restore session if already authenticated in current tab sessionStorage
   if (isAuthenticated()) {
     bootAuthenticatedSession();
   }
