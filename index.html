@@ -30,7 +30,7 @@
     <div id="toast-container" class="toast-container"></div>
   </div>
 
-  <!-- Full-Screen Glassmorphism RBAC Login Overlay -->
+  <!-- Full-Screen Glassmorphism RBAC Login Overlay (SQLite Backend Authentication) -->
   <div id="login-overlay" class="login-backdrop">
     <div class="login-panel glass-card">
       <div class="login-brand">
@@ -40,49 +40,21 @@
           <h2>LCI-SFM Authentication</h2>
         </div>
       </div>
-      <p class="login-subtitle">Select an operational clearance role and enter your 6-digit operator passkey to unlock the facility console.</p>
+      <p class="login-subtitle">Authenticate against the Node-RED SQLite <code>system_users</code> database (<code>http://192.168.43.225:1880/api/auth/login</code>).</p>
 
       <form id="login-form" autocomplete="off" novalidate>
         <div class="field-group">
-          <label>Operational Clearance Role (RBAC)</label>
-          <div class="role-selector" role="radiogroup" aria-label="Select Role">
-            <label class="role-option active" id="role-card-admin">
-              <input type="radio" name="rbac_role" value="Admin" checked />
-              <div class="role-option-head">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-                </svg>
-                <strong>Admin</strong>
-              </div>
-              <span class="role-desc">Full read/write command &amp; provisioning</span>
-            </label>
-
-            <label class="role-option" id="role-card-viewer">
-              <input type="radio" name="rbac_role" value="Viewer" />
-              <div class="role-option-head">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                  <circle cx="12" cy="12" r="3"></circle>
-                </svg>
-                <strong>Viewer</strong>
-              </div>
-              <span class="role-desc">Read-only telemetry &amp; audit monitoring</span>
-            </label>
-          </div>
+          <label for="login_username">Username</label>
+          <input type="text" id="login_username" value="admin" maxlength="32" placeholder="Enter username (e.g. admin)" required />
         </div>
 
         <div class="field-group">
-          <label for="login_operator">Operator Identifier</label>
-          <input type="text" id="login_operator" value="ENG-SARHAN-01" maxlength="32" placeholder="ENG-SARHAN-01" required />
+          <label for="login_password">Password</label>
+          <input type="password" id="login_password" value="admin" maxlength="64" placeholder="Enter password" required />
+          <span class="input-hint">Default seeded SQLite Admin: <code>admin</code> / <code>admin</code> (SHA-256 verified)</span>
         </div>
 
-        <div class="field-group">
-          <label for="login_pin">6-Digit Security PIN</label>
-          <input type="password" id="login_pin" value="123456" maxlength="6" inputmode="numeric" placeholder="••••••" required />
-          <span class="input-hint"> Strict 6-digit integer required (Default pre-filled: <code>123456</code>)</span>
-        </div>
-
-        <button type="submit" class="btn-mint full-width login-submit-btn">
+        <button type="submit" id="login-submit-btn" class="btn-mint full-width login-submit-btn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
             <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
@@ -166,10 +138,10 @@
           <span class="nav-label">Health &amp; Diagnostics</span>
         </button>
 
-        <div class="nav-divider" role="separator" aria-hidden="true"></div>
+        <div id="nav-divider-view-6" class="nav-divider" role="separator" aria-hidden="true"></div>
 
-        <!-- Visually Separated System Management Nav Item -->
-        <button type="button" class="nav-item nav-item-management" data-view="view-6" title="06. System Management &amp; User Provisioning">
+        <!-- Visually Separated System Management Nav Item (Strictly Hidden for Viewers) -->
+        <button type="button" id="nav-item-view-6" class="nav-item nav-item-management" data-view="view-6" title="06. System Management &amp; User Provisioning (Admin Only)">
           <span class="nav-icon" aria-hidden="true">06</span>
           <span class="nav-label">System Management</span>
         </button>
@@ -246,7 +218,7 @@
             <span id="theme-icon-moon" class="theme-icon">☾ Dark</span>
           </button>
 
-          <button type="button" id="open-ip-modal-btn" class="btn-outline" title="Configure Node IPv4 Addresses">Node IPs</button>
+          <button type="button" id="open-ip-modal-btn" class="btn-outline rbac-protected" title="Configure Node IPv4 Addresses">Node IPs</button>
         </div>
       </header>
 
@@ -454,14 +426,32 @@
           </div>
         </div>
 
-        <div class="glass-card mt-24 flex-between">
-          <div>
-            <h3 class="section-heading">Actuator Override Mode</h3>
-            <p class="helper-note">Switch between Automated Sensor Threshold Logic and Manual Relay Control on Node-RED.</p>
+        <div class="glass-card mt-24">
+          <div class="flex-between">
+            <div>
+              <h3 class="section-heading">Actuator Override Mode</h3>
+              <p class="helper-note">Switch between Automated Sensor Threshold Logic and Manual Relay Control on Node-RED.</p>
+            </div>
+            <div class="override-controls">
+              <button type="button" id="mode-auto-btn" class="btn-mint rbac-protected">Auto Sensor Logic</button>
+              <button type="button" id="mode-manual-btn" class="btn-outline rbac-protected">Manual Override</button>
+            </div>
           </div>
-          <div class="override-controls">
-            <button type="button" id="mode-auto-btn" class="btn-mint rbac-protected">Auto Sensor Logic</button>
-            <button type="button" id="mode-manual-btn" class="btn-outline rbac-protected">Manual Override</button>
+
+          <!-- Manual Controls Panel (Strictly Hidden in AUTO mode, Revealed only in MANUAL mode) -->
+          <div id="manual-controls-panel" class="manual-controls-panel hidden">
+            <div class="manual-panel-header">
+              <span class="kicker-text">Direct Actuator Dispatch (Manual Override Active)</span>
+              <p class="helper-note">Manually toggle environmental relays connected to Node 2 (<code>ip_node2</code>).</p>
+            </div>
+            <div class="manual-btn-grid">
+              <button type="button" id="env-manual-toggle-fan" class="btn-cyber action-btn rbac-protected">
+                <span class="btn-label">Toggle HVAC Fan</span>
+              </button>
+              <button type="button" id="env-manual-toggle-light" class="btn-mint action-btn rbac-protected">
+                <span class="btn-label">Toggle Aux Light</span>
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -542,11 +532,11 @@
             <table class="data-table">
               <thead>
                 <tr>
-                  <th>ID</th>
+                  <th>Error ID</th>
                   <th>Timestamp</th>
                   <th>Source Node</th>
-                  <th>Severity</th>
-                  <th>Error Message</th>
+                  <th>Error Code</th>
+                  <th>Error Description</th>
                 </tr>
               </thead>
               <tbody id="system-errors-body"></tbody>
@@ -555,18 +545,16 @@
         </div>
       </section>
 
-      <!-- VIEW 6: SYSTEM MANAGEMENT & PROVISIONING -->
+      <!-- VIEW 6: ADVANCED USER MANAGEMENT & SYSTEM PROVISIONING (ADMIN ONLY) -->
       <section id="view-6" class="view-section">
-        <div class="two-col-grid">
+        <div class="three-col-grid">
+          <!-- 1. User Provisioning Form with Node 3 Camera Face Capture (POST /api/provision/user) -->
           <div class="glass-card">
-            <div class="flex-between">
-              <h3 class="section-heading">Access Credential Provisioning</h3>
-              <span class="rbac-lock-tag hidden">Read-Only (Viewer)</span>
-            </div>
-            <p class="helper-note">Sanitized &amp; type-checked personnel credentials dispatched via HTTP POST to Node-RED SQLite store.</p>
+            <h3 class="section-heading">Access Credential Provisioning</h3>
+            <p class="helper-note">SHA-256 hashes the credential and inserts directly into SQLite <code>system_users</code> via <code>POST /api/provision/user</code>.</p>
             <form id="user-provision-form" novalidate>
               <div class="field-group">
-                <label for="prov_name">Personnel Full Name (Alphanumeric, 2–64 chars)</label>
+                <label for="prov_name">Username / Personnel Identifier</label>
                 <input type="text" id="prov_name" class="rbac-protected-input" maxlength="64" placeholder="Eng. Tariq Al-Mansoor" required />
               </div>
               <div class="field-group">
@@ -574,19 +562,59 @@
                 <input type="text" id="prov_rfid" class="rbac-protected-input" maxlength="23" placeholder="A4:9F:21:0B" required />
               </div>
               <div class="field-group">
-                <label for="prov_pin">6-Digit Keypad PIN (Strict Integer)</label>
+                <label for="prov_pin">6-Digit Keypad PIN &amp; Login Password</label>
                 <input type="password" id="prov_pin" class="rbac-protected-input" maxlength="6" inputmode="numeric" placeholder="••••••" required />
               </div>
+
+              <!-- Node 3 Biometric Face Capture Integration -->
+              <div class="face-capture-row">
+                <div class="face-thumb-box" title="Node 3 Biometric Face Thumbnail Preview">
+                  <img id="prov-face-preview-img" class="hidden" alt="Captured Face Preview" />
+                  <div id="prov-face-placeholder" class="face-thumb-placeholder">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                      <circle cx="12" cy="7" r="4"></circle>
+                    </svg>
+                    <span id="prov-face-status-text">No Face Linked</span>
+                  </div>
+                </div>
+                <div class="face-capture-actions">
+                  <button type="button" id="prov-capture-face-btn" class="btn-cyber full-width rbac-protected">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                      <circle cx="12" cy="13" r="4"></circle>
+                    </svg>
+                    <span>Capture Face from Node 3</span>
+                  </button>
+                  <span class="input-hint">Fetches <code>http://&lt;ip_node3&gt;/capture.jpg</code></span>
+                </div>
+              </div>
+
               <button type="submit" id="prov-submit-btn" class="btn-mint full-width rbac-protected">Provision User Credential</button>
             </form>
           </div>
 
+          <!-- 2. Admin Profile Form (Update Admin Username & Password in SQLite) -->
           <div class="glass-card">
-            <div class="flex-between">
-              <h3 class="section-heading">Dynamic Node IP Configuration (<code>localStorage</code>)</h3>
-              <span class="rbac-lock-tag hidden">Read-Only (Viewer)</span>
-            </div>
-            <p class="helper-note">Validated IPv4 node addresses used for hardware polling and direct commands.</p>
+            <h3 class="section-heading">Admin Profile Credentials</h3>
+            <p class="helper-note">Update the Administrator Username and SHA-256 Password hash in SQLite <code>system_users</code>.</p>
+            <form id="admin-profile-form" autocomplete="off" novalidate>
+              <div class="field-group">
+                <label for="admin_new_username">New Admin Username</label>
+                <input type="text" id="admin_new_username" class="rbac-protected-input" maxlength="32" placeholder="admin" required />
+              </div>
+              <div class="field-group">
+                <label for="admin_new_password">New Admin Password</label>
+                <input type="password" id="admin_new_password" class="rbac-protected-input" maxlength="64" placeholder="Enter new password" required />
+              </div>
+              <button type="submit" id="admin-profile-submit-btn" class="btn-mint full-width rbac-protected">Update Admin Credentials</button>
+            </form>
+          </div>
+
+          <!-- 3. Dynamic Node IP Configuration Form -->
+          <div class="glass-card">
+            <h3 class="section-heading">Dynamic Node IP Configuration</h3>
+            <p class="helper-note">Validated IPv4 node addresses stored in <code>localStorage</code> for hardware polling.</p>
             <form id="settings-ip-form" novalidate>
               <div class="field-group">
                 <label for="set_ip_node1">Node 1 — Access Node (<code>ip_node1</code>)</label>
@@ -602,6 +630,36 @@
               </div>
               <button type="submit" id="settings-ip-submit-btn" class="btn-cyber full-width rbac-protected">Update Node Endpoints</button>
             </form>
+          </div>
+        </div>
+
+        <!-- 4. Dynamic SQLite User Management Table (/api/logs/system_users) -->
+        <div class="glass-card mt-24">
+          <div class="flex-between">
+            <div>
+              <h3 class="section-heading">Facility User Management Directory (<code>system_users</code>)</h3>
+              <p class="helper-note">Live records fetched from <code>GET /api/logs/system_users</code>. Toggle clearance roles or delete accounts.</p>
+            </div>
+            <div class="search-group">
+              <span id="user-count-label" class="sub-label tabular-nums">0 Users</span>
+              <button type="button" id="refresh-users-btn" class="btn-outline btn-sm">Refresh Users</button>
+            </div>
+          </div>
+          <div class="table-container mt-24">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Username</th>
+                  <th>RFID UID</th>
+                  <th>PIN</th>
+                  <th>Face Linked</th>
+                  <th>Role</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="user-management-table-body"></tbody>
+            </table>
           </div>
         </div>
       </section>

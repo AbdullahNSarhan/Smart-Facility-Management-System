@@ -1,8 +1,9 @@
 /**
  * LCI-SFM Air-Gapped Dashboard Application Logic (ES6 Standalone Module)
  * - Strictly 3-File Architecture (Chart Engine Embedded)
- * - Backend Server IP: 192.168.43.225:1880
- * - Strict Input Sanitization, Data Type Enforcement, RBAC Session & Security
+ * - Backend Server IP: 192.168.43.225:1880 (Node-RED + SQLite3 /home/ubuntu/lci_sfm.db)
+ * - Real SQLite Authentication (POST /api/auth/login), Dynamic system_users Table (GET /api/logs/system_users),
+ *   and Secure User Provisioning (POST /api/provision/user)
  */
 
 // ============================================================================
@@ -161,7 +162,7 @@ export class LocalFIFOChart {
 const IPV4_REGEX = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 const RFID_HEX_REGEX = /^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){3,7}$/;
 const PIN_SIX_DIGIT_REGEX = /^\d{6}$/;
-const SAFE_NAME_REGEX = /^[A-Za-z0-9 .,'-]{2,64}$/;
+const SAFE_NAME_REGEX = /^[A-Za-z0-9 ._,'-]{2,64}$/;
 const ALLOWED_COMMANDS = new Set([
   'EMERGENCY_DOOR_UNLOCK',
   'TOGGLE_HVAC_FAN',
@@ -170,9 +171,6 @@ const ALLOWED_COMMANDS = new Set([
 ]);
 const ALLOWED_COMMAND_STATES = new Set(['OPEN', 'CLOSED', 'ON', 'OFF', 'AUTO', 'MANUAL']);
 
-/**
- * Strips HTML tags, script blocks, SQL injection metacharacters, and control chars.
- */
 export function sanitizeInput(rawValue) {
   if (typeof rawValue !== 'string') return '';
   return rawValue
@@ -183,9 +181,6 @@ export function sanitizeInput(rawValue) {
     .trim();
 }
 
-/**
- * Escapes any dynamic string for safe HTML rendering to prevent DOM XSS.
- */
 export function escapeHTML(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -211,7 +206,7 @@ export function isValidSixDigitPin(pinStr) {
 }
 
 // ============================================================================
-// 2. STRICT GLOBAL VARIABLES (Matching Node-RED Backend Keys)
+// 2. STRICT GLOBAL VARIABLES (Matching Node-RED Backend & SQLite Keys)
 // ============================================================================
 
 // Environment Telemetry
@@ -228,11 +223,12 @@ export let isCardPassed = false;
 export let isPinPassed = false;
 export let mfa_status = "IDLE"; // "IDLE" | "AWAITING_STAGE2" | "UNLOCKED"
 
-// Database Tables
+// SQLite Database Tables
 export let access_logs = [];
 export let environmental_telemetry = [];
 export let camera_events = [];
 export let system_errors = [];
+export let system_users = [];
 
 // Dynamic Node IPs
 export let ip_node1 = sanitizeInput(localStorage.getItem('ip_node1') || '');
@@ -255,6 +251,7 @@ window.LCI_STATE = {
   get environmental_telemetry() { return environmental_telemetry; },
   get camera_events() { return camera_events; },
   get system_errors() { return system_errors; },
+  get system_users() { return system_users; },
   get ip_node1() { return ip_node1; },
   get ip_node2() { return ip_node2; },
   get ip_node3() { return ip_node3; }
@@ -273,6 +270,12 @@ let lastWsHeartbeat = 0;
 
 let tempChart = null;
 let humChart = null;
+
+// Environmental Control Mode ("AUTO" | "MANUAL")
+let currentControlMode = 'AUTO';
+
+// Provisioning Face Capture State
+let capturedFaceUrlForProvision = '';
 
 // Authenticated Session & Listener Lifecycle Controller
 let authSessionAbortController = null;
@@ -337,11 +340,19 @@ export function showToast(title, message, type = 'info') {
 }
 
 // ============================================================================
-// 4. RBAC SESSION MANAGEMENT & LOGIN / LOGOUT SECURITY
+// 4. RBAC SESSION MANAGEMENT, VIEW 6 VISIBILITY & LOGIN / LOGOUT SECURITY
 // ============================================================================
 
 function getActiveRole() {
   return sessionStorage.getItem('lci_rbac_role') || null;
+}
+
+function getAuthHeaders() {
+  const token = sessionStorage.getItem('lci_session_token') || '';
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`
+  };
 }
 
 function isAuthenticated() {
@@ -358,7 +369,8 @@ function applyRBACPermissions() {
     roleHeaderLabel.className = isAdmin ? 'text-mint' : 'text-cyber';
   }
 
-  document.querySelectorAll('.rbac-protected').forEach(btn => {
+  // Disable all .action-btn, #open-ip-modal-btn, and .rbac-protected for Viewers
+  document.querySelectorAll('.action-btn, #open-ip-modal-btn, .rbac-protected').forEach(btn => {
     btn.disabled = !isAdmin;
     btn.title = isAdmin ? '' : 'Locked — Viewer role has read-only permissions';
   });
@@ -370,6 +382,38 @@ function applyRBACPermissions() {
   document.querySelectorAll('.rbac-lock-tag').forEach(tag => {
     tag.classList.toggle('hidden', isAdmin);
   });
+
+  // Completely hide #view-6 and its sidebar navigation item for Viewers
+  const navView6 = document.getElementById('nav-item-view-6');
+  const navDivider6 = document.getElementById('nav-divider-view-6');
+  const sectionView6 = document.getElementById('view-6');
+
+  if (navView6) navView6.classList.toggle('hidden', !isAdmin);
+  if (navDivider6) navDivider6.classList.toggle('hidden', !isAdmin);
+
+  if (!isAdmin && sectionView6) {
+    sectionView6.classList.remove('active');
+    sectionView6.classList.add('hidden');
+    const view1 = document.getElementById('view-1');
+    const nav1 = document.querySelector('.nav-item[data-view="view-1"]');
+    if (view1 && !document.querySelector('.view-section.active')) {
+      view1.classList.add('active');
+      if (nav1) nav1.classList.add('active');
+      document.getElementById('current-view-title').textContent = 'Main Command Center (Executive Overview)';
+    }
+  } else if (isAdmin && sectionView6) {
+    sectionView6.classList.remove('hidden');
+  }
+
+  syncManualControlsPanel();
+}
+
+function syncManualControlsPanel() {
+  const manualPanel = document.getElementById('manual-controls-panel');
+  if (!manualPanel) return;
+  const isAdmin = getActiveRole() === 'Admin';
+  const showManual = isAdmin && currentControlMode === 'MANUAL';
+  manualPanel.classList.toggle('hidden', !showManual);
 }
 
 function lockAndLogoutSystem() {
@@ -410,22 +454,107 @@ function lockAndLogoutSystem() {
   environmental_telemetry = [];
   camera_events = [];
   system_errors = [];
+  system_users = [];
   activityFeed = [];
   lastWsHeartbeat = 0;
+  currentControlMode = 'AUTO';
 
   if (tempChart) tempChart.reset();
   if (humChart) humChart.reset();
+
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.view-section').forEach(s => s.classList.remove('active'));
+  document.querySelector('.nav-item[data-view="view-1"]')?.classList.add('active');
+  document.getElementById('view-1')?.classList.add('active');
 
   renderActivityFeed();
   renderMFAUI();
   renderDatabaseTable();
   renderSystemErrors();
+  renderUserManagementTable();
+  syncManualControlsPanel();
 
   // 4. Show Login Overlay
   const loginOverlay = document.getElementById('login-overlay');
   if (loginOverlay) loginOverlay.classList.remove('hidden');
 
   showToast('System Locked', 'Session cleared and authenticated listeners unmounted.', 'info');
+}
+
+// ============================================================================
+// 5. VIEW 6: DYNAMIC SQLITE USER MANAGEMENT TABLE (/api/logs/system_users)
+// ============================================================================
+
+async function fetchSystemUsers() {
+  if (getActiveRole() !== 'Admin') return;
+  try {
+    const res = await fetch(`${NODE_RED_HTTP}/api/logs/system_users`, {
+      method: 'GET',
+      headers: getAuthHeaders()
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rows = await res.json();
+    system_users = Array.isArray(rows) ? rows : [];
+  } catch {
+    showToast('User Directory Offline', `Could not fetch /api/logs/system_users from ${NODE_RED_HTTP}.`, 'error');
+  }
+  renderUserManagementTable();
+}
+
+function renderUserManagementTable() {
+  const tbody = document.getElementById('user-management-table-body');
+  const countLabel = document.getElementById('user-count-label');
+  if (!tbody) return;
+
+  if (countLabel) {
+    countLabel.textContent = `${system_users.length} SQLite User${system_users.length === 1 ? '' : 's'}`;
+  }
+
+  if (system_users.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7">${getEmptyTableIllustrationHTML(
+      'No Records in SQLite "system_users"',
+      `Ensure the Node-RED SQLite Setup Flow has been initialized on ${NODE_RED_HTTP} or provision a new user.`
+    )}</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = system_users
+    .map(u => {
+      const uid = u.id;
+      const uname = u.username || u.name || '';
+      const rfid = u.rfid || '—';
+      const pin = u.pin ?? '••••••';
+      const faceLinked = Boolean(u.face_linked);
+      const role = u.role === 'Admin' ? 'Admin' : 'Viewer';
+
+      return `
+        <tr>
+          <td class="tabular-nums">#${escapeHTML(uid)}</td>
+          <td><strong>${escapeHTML(uname)}</strong></td>
+          <td><code>${escapeHTML(rfid)}</code></td>
+          <td class="tabular-nums"><code>${escapeHTML(pin)}</code></td>
+          <td>
+            <span class="${faceLinked ? 'text-mint' : 'text-cyber'}">
+              ${faceLinked ? 'Linked (Node 3)' : 'Unlinked'}
+            </span>
+          </td>
+          <td>
+            <strong class="${role === 'Admin' ? 'text-mint' : 'text-cyber'}">${escapeHTML(role)}</strong>
+          </td>
+          <td>
+            <div class="table-actions-cell">
+              <button type="button" class="btn-cyber btn-sm" data-user-action="toggle-role" data-user-id="${escapeHTML(uid)}" data-current-role="${escapeHTML(role)}">
+                Toggle Role (Admin/Viewer)
+              </button>
+              <button type="button" class="btn-rose btn-sm" data-user-action="delete-user" data-user-id="${escapeHTML(uid)}" data-username="${escapeHTML(uname)}">
+                Delete User
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    })
+    .join('');
 }
 
 function mountAuthenticatedViewListeners() {
@@ -435,7 +564,6 @@ function mountAuthenticatedViewListeners() {
   authSessionAbortController = new AbortController();
   const { signal } = authSessionAbortController;
 
-  // Sidebar View Navigation
   const viewTitles = {
     'view-1': 'Main Command Center (Executive Overview)',
     'view-2': 'Smart Access & Biometrics',
@@ -447,10 +575,15 @@ function mountAuthenticatedViewListeners() {
 
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => {
+      const viewId = btn.getAttribute('data-view');
+      if (viewId === 'view-6' && getActiveRole() !== 'Admin') {
+        showToast('Access Denied', 'System Management is restricted to Admin accounts.', 'error');
+        return;
+      }
+
       document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.view-section').forEach(s => s.classList.remove('active'));
       btn.classList.add('active');
-      const viewId = btn.getAttribute('data-view');
       document.getElementById(viewId).classList.add('active');
       document.getElementById('current-view-title').textContent = viewTitles[viewId] || 'LCI-SFM';
       if (viewId === 'view-3') {
@@ -459,16 +592,16 @@ function mountAuthenticatedViewListeners() {
           if (humChart) humChart.draw();
         });
       }
+      if (viewId === 'view-6') {
+        fetchSystemUsers();
+      }
     }, { signal });
   });
 
-  // Quick Action Buttons with RBAC check + 1.5s Anti-Spam Spinner
+  // View 1 Quick Action Buttons with RBAC check + 1.5s Anti-Spam Spinner
   const btnUnlockDoor = document.getElementById('cmd-unlock-door');
   btnUnlockDoor.addEventListener('click', () => {
-    if (getActiveRole() !== 'Admin') {
-      showToast('Access Denied', 'Viewer role cannot dispatch hardware commands.', 'error');
-      return;
-    }
+    if (getActiveRole() !== 'Admin') return;
     withButtonLoading(btnUnlockDoor, () => {
       const next = door_state === 'OPEN' ? 'CLOSED' : 'OPEN';
       sendCommand('EMERGENCY_DOOR_UNLOCK', next);
@@ -477,10 +610,7 @@ function mountAuthenticatedViewListeners() {
 
   const btnToggleFan = document.getElementById('cmd-toggle-fan');
   btnToggleFan.addEventListener('click', () => {
-    if (getActiveRole() !== 'Admin') {
-      showToast('Access Denied', 'Viewer role cannot dispatch hardware commands.', 'error');
-      return;
-    }
+    if (getActiveRole() !== 'Admin') return;
     withButtonLoading(btnToggleFan, () => {
       const next = fan_relay === 'ON' ? 'OFF' : 'ON';
       sendCommand('TOGGLE_HVAC_FAN', next);
@@ -489,37 +619,58 @@ function mountAuthenticatedViewListeners() {
 
   const btnToggleLight = document.getElementById('cmd-toggle-light');
   btnToggleLight.addEventListener('click', () => {
-    if (getActiveRole() !== 'Admin') {
-      showToast('Access Denied', 'Viewer role cannot dispatch hardware commands.', 'error');
-      return;
-    }
+    if (getActiveRole() !== 'Admin') return;
     withButtonLoading(btnToggleLight, () => {
       const next = light_state === 'ON' ? 'OFF' : 'ON';
       sendCommand('TOGGLE_AUX_LIGHT', next);
     });
   }, { signal });
 
-  // Camera Refresh
+  // View 2 Camera Refresh
   document.getElementById('refresh-cam-btn').addEventListener('click', () => {
     refreshCameraSnapshot();
     showToast('Camera Frame Requested', `Pulling snapshot from http://${ip_node3}/capture.jpg`, 'info');
   }, { signal });
 
-  // View 3 Override Mode Buttons
+  // View 3 Override Mode Buttons (AUTO hides Manual Controls Panel; MANUAL reveals it)
   const autoBtn = document.getElementById('mode-auto-btn');
   const manualBtn = document.getElementById('mode-manual-btn');
+
   autoBtn.addEventListener('click', () => {
     if (getActiveRole() !== 'Admin') return;
+    currentControlMode = 'AUTO';
     autoBtn.className = 'btn-mint rbac-protected';
     manualBtn.className = 'btn-outline rbac-protected';
+    syncManualControlsPanel();
     sendCommand('SET_CONTROL_MODE', 'AUTO');
   }, { signal });
 
   manualBtn.addEventListener('click', () => {
     if (getActiveRole() !== 'Admin') return;
+    currentControlMode = 'MANUAL';
     manualBtn.className = 'btn-cyber rbac-protected';
     autoBtn.className = 'btn-outline rbac-protected';
+    syncManualControlsPanel();
     sendCommand('SET_CONTROL_MODE', 'MANUAL');
+  }, { signal });
+
+  // View 3 Manual Controls Panel Buttons ("Toggle HVAC Fan" & "Toggle Aux Light")
+  const envManualFanBtn = document.getElementById('env-manual-toggle-fan');
+  envManualFanBtn.addEventListener('click', () => {
+    if (getActiveRole() !== 'Admin' || currentControlMode !== 'MANUAL') return;
+    withButtonLoading(envManualFanBtn, () => {
+      const next = fan_relay === 'ON' ? 'OFF' : 'ON';
+      sendCommand('TOGGLE_HVAC_FAN', next);
+    });
+  }, { signal });
+
+  const envManualLightBtn = document.getElementById('env-manual-toggle-light');
+  envManualLightBtn.addEventListener('click', () => {
+    if (getActiveRole() !== 'Admin' || currentControlMode !== 'MANUAL') return;
+    withButtonLoading(envManualLightBtn, () => {
+      const next = light_state === 'ON' ? 'OFF' : 'ON';
+      sendCommand('TOGGLE_AUX_LIGHT', next);
+    });
   }, { signal });
 
   // View 4 Database Tabs & Search with Dynamic Clear (X) Button
@@ -559,38 +710,57 @@ function mountAuthenticatedViewListeners() {
     fetchSQLiteLogs('system_errors');
   }, { signal });
 
-  // View 6 IP Settings Form (Strict IPv4 Validation)
-  document.getElementById('settings-ip-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    if (getActiveRole() !== 'Admin') {
-      showToast('Access Denied', 'Only Admin role can modify Node IP endpoints.', 'error');
+  // View 6: Refresh SQLite Users Button
+  const refreshUsersBtn = document.getElementById('refresh-users-btn');
+  if (refreshUsersBtn) {
+    refreshUsersBtn.addEventListener('click', () => {
+      fetchSystemUsers();
+    }, { signal });
+  }
+
+  // View 6: Capture Face from Node 3 inside Provisioning Form
+  const captureFaceBtn = document.getElementById('prov-capture-face-btn');
+  const facePreviewImg = document.getElementById('prov-face-preview-img');
+  const facePlaceholder = document.getElementById('prov-face-placeholder');
+  const faceStatusText = document.getElementById('prov-face-status-text');
+
+  captureFaceBtn.addEventListener('click', () => {
+    if (getActiveRole() !== 'Admin') return;
+    if (!isValidIPv4(ip_node3)) {
+      showToast('Invalid Node 3 IP', 'Configure a valid IPv4 address for Node 3 first.', 'error');
       return;
     }
-    saveNodeIPs(
-      document.getElementById('set_ip_node1').value,
-      document.getElementById('set_ip_node2').value,
-      document.getElementById('set_ip_node3').value
-    );
+
+    const snapshotUrl = `http://${ip_node3}/capture.jpg?t=${Date.now()}`;
+    capturedFaceUrlForProvision = snapshotUrl;
+
+    facePreviewImg.onload = () => {
+      facePreviewImg.classList.remove('hidden');
+      if (facePlaceholder) facePlaceholder.classList.add('hidden');
+      showToast('Face Captured', `Linked biometric frame from ${ip_node3}`, 'success');
+    };
+
+    facePreviewImg.onerror = () => {
+      facePreviewImg.classList.add('hidden');
+      if (facePlaceholder) facePlaceholder.classList.remove('hidden');
+      if (faceStatusText) faceStatusText.textContent = 'Node 3 Frame Linked';
+      showToast('Face Endpoint Linked', `Associated http://${ip_node3}/capture.jpg with new user profile.`, 'info');
+    };
+
+    facePreviewImg.src = snapshotUrl;
   }, { signal });
 
-  // View 6 User Provisioning Form (Strict Sanitization & Type Enforcement)
+  // View 6: User Provisioning Form Submission (POST /api/provision/user -> SQLite system_users)
   document.getElementById('user-provision-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    if (getActiveRole() !== 'Admin') {
-      showToast('Access Denied', 'Viewer role cannot provision credentials.', 'error');
-      return;
-    }
+    if (getActiveRole() !== 'Admin') return;
 
-    const rawName = document.getElementById('prov_name').value;
-    const rawRfid = document.getElementById('prov_rfid').value;
-    const rawPin = document.getElementById('prov_pin').value;
+    const cleanUsername = sanitizeInput(document.getElementById('prov_name').value);
+    const cleanRfid = sanitizeInput(document.getElementById('prov_rfid').value).toUpperCase();
+    const cleanPinStr = sanitizeInput(document.getElementById('prov_pin').value);
 
-    const cleanName = sanitizeInput(rawName);
-    const cleanRfid = sanitizeInput(rawRfid).toUpperCase();
-    const cleanPinStr = sanitizeInput(rawPin);
-
-    if (!SAFE_NAME_REGEX.test(cleanName)) {
-      showToast('Validation Error', 'Personnel Name must be 2–64 alphanumeric characters without HTML/SQL symbols.', 'error');
+    if (!SAFE_NAME_REGEX.test(cleanUsername)) {
+      showToast('Validation Error', 'Username must be 2–64 alphanumeric characters.', 'error');
       return;
     }
     if (!isValidHexRFID(cleanRfid)) {
@@ -603,29 +773,139 @@ function mountAuthenticatedViewListeners() {
     }
 
     const strictPayload = {
-      name: String(cleanName),
+      username: String(cleanUsername),
+      password: String(cleanPinStr),
+      role: 'Viewer',
       rfid: String(cleanRfid),
-      pin: Number.parseInt(cleanPinStr, 10)
+      pin: Number.parseInt(cleanPinStr, 10),
+      face_linked: Boolean(capturedFaceUrlForProvision)
     };
 
     try {
       const res = await fetch(`${NODE_RED_HTTP}/api/provision/user`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(strictPayload)
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      pushActivityEvent(`Provisioned User: ${cleanName} (RFID: ${cleanRfid})`);
-      showToast('User Provisioned', `${cleanName} registered in SQLite access control.`, 'success');
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}`);
+      }
+
+      // Reset Face preview state
+      capturedFaceUrlForProvision = '';
+      facePreviewImg.classList.add('hidden');
+      if (facePlaceholder) facePlaceholder.classList.remove('hidden');
+      if (faceStatusText) faceStatusText.textContent = 'No Face Linked';
       e.target.reset();
+
+      pushActivityEvent(`Provisioned SQLite User: ${cleanUsername} (RFID: ${cleanRfid})`);
+      showToast('User Provisioned', `${cleanUsername} hashed & saved to SQLite system_users.`, 'success');
+
+      // Reload dynamic table from /api/logs/system_users
+      await fetchSystemUsers();
+    } catch (err) {
+      showToast('Provisioning Failed', err.message || `Unable to reach ${NODE_RED_HTTP}/api/provision/user.`, 'error');
+    }
+  }, { signal });
+
+  // View 6: Admin Profile Form (POST /api/auth/admin-profile to update SQLite Admin credentials)
+  document.getElementById('admin-profile-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (getActiveRole() !== 'Admin') return;
+
+    const newUsername = sanitizeInput(document.getElementById('admin_new_username').value);
+    const newPassword = sanitizeInput(document.getElementById('admin_new_password').value);
+
+    if (!SAFE_NAME_REGEX.test(newUsername)) {
+      showToast('Validation Error', 'Admin Username must be 2–32 alphanumeric characters.', 'error');
+      return;
+    }
+    if (newPassword.length < 4) {
+      showToast('Validation Error', 'Admin Password must be at least 4 characters.', 'error');
+      return;
+    }
+
+    try {
+      const res = await fetch(`${NODE_RED_HTTP}/api/auth/admin-profile`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          currentUsername: sessionStorage.getItem('lci_operator_id') || 'admin',
+          newUsername,
+          newPassword
+        })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      sessionStorage.setItem('lci_operator_id', newUsername);
+      document.getElementById('admin_new_password').value = '';
+      pushActivityEvent(`Updated SQLite Admin Profile: ${newUsername}`);
+      showToast('Admin Profile Updated', `Admin credentials updated in SQLite for "${newUsername}".`, 'success');
+      await fetchSystemUsers();
     } catch {
-      showToast('Provisioning Failed', `Unable to reach Node-RED (${NODE_RED_HTTP}) provisioning endpoint.`, 'error');
+      showToast('Update Failed', `Could not update Admin credentials on ${NODE_RED_HTTP}.`, 'error');
+    }
+  }, { signal });
+
+  // View 6: IP Settings Form
+  document.getElementById('settings-ip-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (getActiveRole() !== 'Admin') return;
+    saveNodeIPs(
+      document.getElementById('set_ip_node1').value,
+      document.getElementById('set_ip_node2').value,
+      document.getElementById('set_ip_node3').value
+    );
+  }, { signal });
+
+  // View 6: User Management Table Row Actions (Toggle Role & Delete User in SQLite)
+  document.getElementById('user-management-table-body').addEventListener('click', async (e) => {
+    if (getActiveRole() !== 'Admin') return;
+    const btn = e.target.closest('button[data-user-action]');
+    if (!btn) return;
+
+    const action = btn.getAttribute('data-user-action');
+    const userId = Number.parseInt(btn.getAttribute('data-user-id'), 10);
+    if (!Number.isInteger(userId)) return;
+
+    if (action === 'toggle-role') {
+      const currentRole = btn.getAttribute('data-current-role') === 'Admin' ? 'Admin' : 'Viewer';
+      const nextRole = currentRole === 'Admin' ? 'Viewer' : 'Admin';
+      try {
+        const res = await fetch(`${NODE_RED_HTTP}/api/users/role`, {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ id: userId, role: nextRole })
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        pushActivityEvent(`SQLite User #${userId} Role -> ${nextRole}`);
+        showToast('Role Updated', `User #${userId} role changed to ${nextRole}.`, 'info');
+        await fetchSystemUsers();
+      } catch {
+        showToast('Role Update Failed', `Could not update role in SQLite on ${NODE_RED_HTTP}.`, 'error');
+      }
+    } else if (action === 'delete-user') {
+      const uname = btn.getAttribute('data-username') || `#${userId}`;
+      try {
+        const res = await fetch(`${NODE_RED_HTTP}/api/users/delete`, {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ id: userId })
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        pushActivityEvent(`Deleted SQLite User: ${uname}`);
+        showToast('User Deleted', `Removed ${uname} from SQLite system_users.`, 'error');
+        await fetchSystemUsers();
+      } catch {
+        showToast('Delete Failed', `Could not delete user #${userId} on ${NODE_RED_HTTP}.`, 'error');
+      }
     }
   }, { signal });
 }
 
 // ============================================================================
-// 5. HEADER UTILITIES: LIVE DIGITAL CLOCK, FULLSCREEN, THEME & SIDEBAR
+// 6. HEADER UTILITIES: LIVE DIGITAL CLOCK, FULLSCREEN, THEME & SIDEBAR
 // ============================================================================
 
 function startLiveDigitalClock() {
@@ -745,7 +1025,7 @@ function applyTheme(theme) {
 }
 
 // ============================================================================
-// 6. BUTTON LOADING STATES (1.5-Second Anti-Spam Lock + Pure CSS Spinner)
+// 7. BUTTON LOADING STATES (1.5-Second Anti-Spam Lock + Pure CSS Spinner)
 // ============================================================================
 
 function withButtonLoading(buttonEl, actionCallback) {
@@ -767,10 +1047,14 @@ function withButtonLoading(buttonEl, actionCallback) {
 }
 
 // ============================================================================
-// 7. DYNAMIC IP CONFIGURATION MODAL & STRICT IPV4 ENFORCEMENT
+// 8. DYNAMIC IP CONFIGURATION MODAL & STRICT IPV4 ENFORCEMENT
 // ============================================================================
 
 function openIpModal() {
+  if (getActiveRole() !== 'Admin') {
+    showToast('Read-Only Access', 'Viewer role cannot modify Node IP endpoints.', 'error');
+    return;
+  }
   const modal = document.getElementById('startup-modal');
   document.getElementById('modal_ip_node1').value = ip_node1 || '192.168.43.11';
   document.getElementById('modal_ip_node2').value = ip_node2 || '192.168.43.12';
@@ -788,7 +1072,9 @@ function checkNodeIPsOnStartup() {
     ip_node2 = '192.168.43.12';
     ip_node3 = '192.168.43.13';
     syncIPInputs();
-    openIpModal();
+    if (getActiveRole() === 'Admin') {
+      openIpModal();
+    }
   } else {
     syncIPInputs();
   }
@@ -850,7 +1136,7 @@ function refreshCameraSnapshot() {
 }
 
 // ============================================================================
-// 8. TELEMETRY & MFA PARSING LOGIC (Strict Variable Names)
+// 9. TELEMETRY & MFA PARSING LOGIC (Strict Variable Names)
 // ============================================================================
 
 function updateCircularGauge(arcId, value, maxVal) {
@@ -1065,7 +1351,7 @@ function renderActivityFeed() {
 }
 
 // ============================================================================
-// 9. WEBSOCKET CLIENTS & SQLITE REST FETCH (192.168.43.225:1880)
+// 10. WEBSOCKET CLIENTS & SQLITE REST FETCH (192.168.43.225:1880)
 // ============================================================================
 
 function connectWebSockets() {
@@ -1124,11 +1410,20 @@ function connectWebSockets() {
 }
 
 async function fetchSQLiteLogs(tableName) {
-  const allowedTables = new Set(['access_logs', 'camera_events', 'environmental_telemetry', 'system_errors']);
+  const allowedTables = new Set([
+    'access_logs',
+    'camera_events',
+    'environmental_telemetry',
+    'system_errors',
+    'system_users'
+  ]);
   if (!allowedTables.has(tableName)) return;
 
   try {
-    const res = await fetch(`${NODE_RED_HTTP}/api/logs/${tableName}`);
+    const res = await fetch(`${NODE_RED_HTTP}/api/logs/${tableName}`, {
+      method: 'GET',
+      headers: getAuthHeaders()
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const rows = await res.json();
 
@@ -1136,11 +1431,13 @@ async function fetchSQLiteLogs(tableName) {
     if (tableName === 'camera_events') camera_events = Array.isArray(rows) ? rows : [];
     if (tableName === 'environmental_telemetry') environmental_telemetry = Array.isArray(rows) ? rows : [];
     if (tableName === 'system_errors') system_errors = Array.isArray(rows) ? rows : [];
+    if (tableName === 'system_users') system_users = Array.isArray(rows) ? rows : [];
   } catch {
     showToast('Database Unreachable', `Could not fetch /api/logs/${tableName} from ${NODE_RED_HTTP}.`, 'error');
   }
   renderDatabaseTable();
   renderSystemErrors();
+  renderUserManagementTable();
 }
 
 function getEmptyTableIllustrationHTML(title, subtitle) {
@@ -1199,15 +1496,22 @@ function renderSystemErrors() {
     return;
   }
   tbody.innerHTML = system_errors
-    .map(err => `
-      <tr>
-        <td>#${escapeHTML(err.id)}</td>
-        <td>${escapeHTML(err.timestamp)}</td>
-        <td><code>${escapeHTML(err.node)}</code></td>
-        <td><span class="text-rose">${escapeHTML(err.severity)}</span></td>
-        <td>${escapeHTML(err.message)}</td>
-      </tr>
-    `)
+    .map(err => {
+      const id = err.error_id ?? err.id ?? '';
+      const ts = err.timestamp ?? '';
+      const node = err.source_node ?? err.node ?? '';
+      const code = err.error_code ?? err.severity ?? '';
+      const desc = err.error_description ?? err.message ?? '';
+      return `
+        <tr>
+          <td>#${escapeHTML(id)}</td>
+          <td>${escapeHTML(ts)}</td>
+          <td><code>${escapeHTML(node)}</code></td>
+          <td><span class="text-rose">${escapeHTML(code)}</span></td>
+          <td>${escapeHTML(desc)}</td>
+        </tr>
+      `;
+    })
     .join('');
 }
 
@@ -1242,7 +1546,7 @@ async function sendCommand(command, targetState) {
   try {
     const response = await fetch(`${NODE_RED_HTTP}/api/command`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify(strictBody)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1253,7 +1557,7 @@ async function sendCommand(command, targetState) {
 }
 
 // ============================================================================
-// 10. 5-SECOND HEARTBEAT WATCHDOG
+// 11. 5-SECOND HEARTBEAT WATCHDOG
 // ============================================================================
 
 function startHeartbeatMonitor() {
@@ -1270,12 +1574,16 @@ function startHeartbeatMonitor() {
 }
 
 // ============================================================================
-// 11. INITIALIZATION & GLOBAL SECURITY / MODAL BINDINGS
+// 12. INITIALIZATION & REAL SQLITE AUTHENTICATION (POST /api/auth/login)
 // ============================================================================
 
 function bootAuthenticatedSession() {
   const loginOverlay = document.getElementById('login-overlay');
   if (loginOverlay) loginOverlay.classList.add('hidden');
+
+  const operatorName = sessionStorage.getItem('lci_operator_id') || 'admin';
+  const adminUserField = document.getElementById('admin_new_username');
+  if (adminUserField) adminUserField.value = operatorName;
 
   applyRBACPermissions();
   mountAuthenticatedViewListeners();
@@ -1286,6 +1594,9 @@ function bootAuthenticatedSession() {
   connectWebSockets();
   fetchSQLiteLogs('access_logs');
   fetchSQLiteLogs('system_errors');
+  if (getActiveRole() === 'Admin') {
+    fetchSystemUsers();
+  }
 }
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -1301,6 +1612,7 @@ window.addEventListener('DOMContentLoaded', () => {
   renderActivityFeed();
   renderDatabaseTable();
   renderSystemErrors();
+  renderUserManagementTable();
 
   // Toast Clear All (X) Button
   const clearToastsBtn = document.getElementById('toast-clear-all-btn');
@@ -1308,43 +1620,66 @@ window.addEventListener('DOMContentLoaded', () => {
     clearToastsBtn.addEventListener('click', clearAllToasts);
   }
 
-  // Role Selector Radio Cards on Login Overlay
-  const roleCardAdmin = document.getElementById('role-card-admin');
-  const roleCardViewer = document.getElementById('role-card-viewer');
-  document.querySelectorAll('input[name="rbac_role"]').forEach(radio => {
-    radio.addEventListener('change', () => {
-      roleCardAdmin.classList.toggle('active', radio.value === 'Admin' && radio.checked);
-      roleCardViewer.classList.toggle('active', radio.value === 'Viewer' && radio.checked);
-    });
-  });
+  // Real Database Authentication via HTTP POST to http://192.168.43.225:1880/api/auth/login
+  const loginForm = document.getElementById('login-form');
+  const loginSubmitBtn = document.getElementById('login-submit-btn');
 
-  // RBAC Login Form Submission
-  document.getElementById('login-form').addEventListener('submit', (e) => {
+  loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const selectedRole = document.querySelector('input[name="rbac_role"]:checked')?.value || 'Viewer';
-    const rawOperator = document.getElementById('login_operator').value;
-    const rawPin = document.getElementById('login_pin').value;
+    const rawUsername = document.getElementById('login_username').value;
+    const rawPassword = document.getElementById('login_password').value;
 
-    const cleanOperator = sanitizeInput(rawOperator);
-    const cleanPin = sanitizeInput(rawPin);
+    const cleanUsername = sanitizeInput(rawUsername);
+    const cleanPassword = sanitizeInput(rawPassword);
 
-    if (!SAFE_NAME_REGEX.test(cleanOperator)) {
-      showToast('Invalid Operator ID', 'Operator Identifier must be 2–32 alphanumeric characters.', 'error');
-      return;
-    }
-    if (!isValidSixDigitPin(cleanPin)) {
-      showToast('Invalid Passkey', 'Security PIN must be an exact 6-digit integer.', 'error');
+    if (!cleanUsername || !cleanPassword) {
+      showToast('Validation Error', 'Both Username and Password are required.', 'error');
       return;
     }
 
-    const token = `LCI-SESS-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    sessionStorage.setItem('lci_session_token', token);
-    sessionStorage.setItem('lci_rbac_role', selectedRole === 'Admin' ? 'Admin' : 'Viewer');
-    sessionStorage.setItem('lci_operator_id', cleanOperator);
+    if (loginSubmitBtn) loginSubmitBtn.disabled = true;
 
-    bootAuthenticatedSession();
-    pushActivityEvent(`Session Unlocked by ${cleanOperator} (${selectedRole})`);
-    showToast('Console Unlocked', `Authenticated as ${cleanOperator} [${selectedRole}]`, 'success');
+    try {
+      const response = await fetch(`${NODE_RED_HTTP}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: String(cleanUsername),
+          password: String(cleanPassword)
+        })
+      });
+
+      if (response.status === 401) {
+        showToast('Invalid Credentials', 'Username or password rejected by SQLite authentication.', 'error');
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const authData = await response.json();
+      const token = sanitizeInput(String(authData.token || ''));
+      const role = authData.role === 'Admin' ? 'Admin' : 'Viewer';
+      const verifiedUser = sanitizeInput(String(authData.username || cleanUsername));
+
+      if (!token) {
+        showToast('Authentication Error', 'Malformed token response from server.', 'error');
+        return;
+      }
+
+      sessionStorage.setItem('lci_session_token', token);
+      sessionStorage.setItem('lci_rbac_role', role);
+      sessionStorage.setItem('lci_operator_id', verifiedUser);
+
+      bootAuthenticatedSession();
+      pushActivityEvent(`SQLite Auth Success: ${verifiedUser} (${role})`);
+      showToast('Console Unlocked', `Authenticated as ${verifiedUser} [${role}]`, 'success');
+    } catch {
+      showToast('Authentication Server Offline', `Could not reach ${NODE_RED_HTTP}/api/auth/login.`, 'error');
+    } finally {
+      if (loginSubmitBtn) loginSubmitBtn.disabled = false;
+    }
   });
 
   // Lock System / Logout Button
