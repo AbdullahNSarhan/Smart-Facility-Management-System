@@ -266,6 +266,21 @@ npm run build
 
 The build should create `dist/index.html` and the bundled assets. Stop and resolve any failing lint, test, or build command before bringing services online.
 
+If you do not want to install Node.js on the host, run the build/test commands inside a Node 24 container instead:
+
+```bash
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp \
+  -e npm_config_cache=/tmp/npm-cache \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  node:24-alpine \
+  sh -lc 'npm install --no-package-lock && npm run lint && npm test && npm run build'
+```
+
+This mounts the repository into a temporary build container and writes `dist/` and `node_modules/` into the checkout. Ensure the checkout directory is writable by the current deployment user.
+
 Validate the essential deployment files and Compose syntax:
 
 ```bash
