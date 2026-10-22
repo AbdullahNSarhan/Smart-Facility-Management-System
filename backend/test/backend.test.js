@@ -6,6 +6,7 @@ import os from 'node:os';
 import request from 'supertest';
 import { WebSocket } from 'ws';
 import { createBackendContext } from '../src/app.js';
+import { createAuthMiddleware } from '../src/middleware/auth.js';
 import { createDatabaseBackup, restoreDatabaseBackup } from '../src/db/backup.js';
 
 const TEST_ADMIN_USER = 'admin';
@@ -485,6 +486,39 @@ describe('LCI-SFM Production Node.js Backend Integration Suite', () => {
       });
     assert.equal(invalidStateRes.status, 400);
     assert.equal(invalidStateRes.body.code, 'INVALID_COMMAND_PAYLOAD');
+  });
+
+  it('rejects WebSocket query-string session tokens when Bearer compatibility is disabled', () => {
+    const auth = createAuthMiddleware(
+      {
+        verifySessionToken(token) {
+          if (token !== 'test-valid-session') return null;
+          return {
+            sessionId: 'test-session-id',
+            csrfToken: 'test-csrf',
+            user: { id: 1, username: 'test-admin', role: 'Admin' }
+          };
+        }
+      },
+      {
+        sessionCookieName: 'lci_sid',
+        allowBearerCompat: false,
+        sessionIdleTtlMs: 60000
+      }
+    );
+
+    const queryOnly = auth.authenticateWsUpgrade({
+      headers: {},
+      url: '/ws/telemetry?token=test-valid-session'
+    });
+    assert.equal(queryOnly, null);
+
+    const cookieSession = auth.authenticateWsUpgrade({
+      headers: { cookie: 'lci_sid=test-valid-session' },
+      url: '/ws/telemetry'
+    });
+    assert.equal(cookieSession?.user?.role, 'Admin');
+    assert.equal(cookieSession?.rawToken, 'test-valid-session');
   });
 
   // --------------------------------------------------------------------------
