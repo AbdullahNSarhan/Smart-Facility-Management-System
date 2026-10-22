@@ -1,0 +1,34 @@
+# ==============================================================================
+# LCI-SFM Mosquitto Topic Access Control List (Least-Privilege per Service/Node)
+# ==============================================================================
+
+# 1. Central Node.js Backend Service (lci_backend)
+user lci_backend
+topic read lecf/env/telemetry
+topic read lecf/access/mfa_face
+topic read lecf/access/state
+topic read lecf/access/command/ack
+topic read lecf/env/command/ack
+topic read lecf/+/heartbeat
+topic write lecf/access/command
+topic write lecf/env/command
+
+# 2. Node 1 — Smart Access & 2-of-3 MFA Controller (node1_access)
+user node1_access
+topic write lecf/access/state
+topic write lecf/access/command/ack
+topic write lecf/node1/heartbeat
+topic read lecf/access/command
+topic read lecf/access/mfa_face
+
+# 3. Node 2 — Environmental Telemetry & HVAC Relay Node (node2_env)
+user node2_env
+topic write lecf/env/telemetry
+topic write lecf/env/command/ack
+topic write lecf/env/heartbeat
+topic read lecf/env/command
+
+# 4. Python OpenCV Biometric Vision Service (vision_service)
+user vision_service
+topic write lecf/access/mfa_face
+topic write lecf/vision/heartbeat

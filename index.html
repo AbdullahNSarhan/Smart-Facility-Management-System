@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <!-- Strict Air-Gapped Content Security Policy (Blocks all external scripts, fonts, frames, and CDNs) -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://192.168.43.225:1880 http://192.168.43.* http://192.168.* http://10.* http://172.16.* http://127.0.0.1:* http://localhost:*; connect-src 'self' ws://192.168.43.225:1880 http://192.168.43.225:1880 ws://192.168.* http://192.168.* ws://10.* http://10.* ws://172.16.* http://172.16.* ws://127.0.0.1:* http://127.0.0.1:* ws://localhost:* http://localhost:*; font-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://192.168.43.225:1880 http://192.168.43.* http://192.168.* http://10.* http://172.16.* http://127.0.0.1:* http://localhost:*; connect-src 'self' ws: wss: ws://192.168.43.225:1880 http://192.168.43.225:1880 ws://192.168.* http://192.168.* ws://10.* http://10.* ws://172.16.* http://172.16.* ws://127.0.0.1:* http://127.0.0.1:* ws://localhost:* http://localhost:*; font-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self';" />
   <title>LCI-SFM Command &amp; Control Dashboard</title>
   <meta name="description" content="Air-gapped Light Current Infrastructure for Smart Facility Management (LCI-SFM) Web GUI Dashboard with real-time WebSocket telemetry, 2-of-3 MFA tracker, environmental monitoring, and SQLite audit explorer." />
   <meta property="og:title" content="LCI-SFM Command &amp; Control Dashboard" />
@@ -935,10 +935,10 @@
             </div>
           </div>
 
-          <!-- Honest Backend Dependency Notice when 24h / 7d Rollup is inspected -->
+          <!-- Time-Bucket Aggregation Status Notice when 24h / 7d Rollup is inspected -->
           <div id="chart-agg-notice" class="callout-box callout-info mt-12 hidden">
-            <strong>Historical Time-Bucket Aggregation Dependency:</strong>
-            The current Node-RED backend exposes raw table retrieval (<code>GET /api/logs/environmental_telemetry</code>) and a live WebSocket stream, but does not expose time-bucketed SQLite aggregation endpoints (e.g. <code>GET /api/telemetry/aggregate?interval=1h&amp;range=7d</code>). The charts below strictly plot verified samples without extrapolating or fabricating multi-day trends.
+            <strong>Historical Time-Bucket Aggregation (<code>GET /api/telemetry/aggregate</code>):</strong>
+            Queries SQLite <code>environmental_telemetry</code> bucketed rollups (min/max/avg) from the Node.js backend without extrapolating or fabricating missing intervals.
           </div>
 
           <div class="two-col-grid mt-16">

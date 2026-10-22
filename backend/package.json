@@ -1,0 +1,23 @@
+{
+  "name": "lci-sfm-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LCI-SFM Central Node.js Application, MQTT Coordinator, WebSocket Gateway & SQLite Service",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/backend.test.js",
+    "backup": "node src/db/backup.js backup",
+    "restore": "node src/db/backup.js restore"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "mqtt": "^5.15.1",
+    "ws": "^8.20.0",
+    "zod": "^4.3.6"
+  }
+}

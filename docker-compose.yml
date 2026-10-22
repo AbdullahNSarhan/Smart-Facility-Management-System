@@ -1,11 +1,85 @@
-version: '3.8'
-
 services:
+  # 1. Hardened Nginx Reverse Proxy & Static Frontend Server
+  # Mounts ONLY compiled ./dist assets (never the repository root)
   frontend_dashboard:
     image: nginx:alpine
     container_name: lci_frontend
     ports:
       - "80:80"
     volumes:
-      - ./:/usr/share/nginx/html:ro
-    restart: always
+      - ./dist:/usr/share/nginx/html:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - lci_internal_net
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 2. Central Node.js Application, Auth, SQLite & MQTT Coordinator Service
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: lci_backend
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
+      - SQLITE_DB_PATH=/app/data/lci_sfm.db
+      - MQTT_BROKER_URL=mqtt://mqtt-service:1883
+      - SERVE_FRONTEND=false
+    volumes:
+      - sqlite_data:/app/data
+    depends_on:
+      mqtt-service:
+        condition: service_started
+    networks:
+      - lci_internal_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health/ready"]
+      interval: 15s
+      timeout: 4s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 3. Authenticated Eclipse Mosquitto 2.0 MQTT Broker
+  mqtt-service:
+    image: eclipse-mosquitto:2.0
+    container_name: lci_mqtt_broker
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl:/mosquitto/config/acl:ro
+      - ./mosquitto/passwd:/mosquitto/config/passwd:ro
+      - mosquitto_data:/mosquitto/data
+    networks:
+      - lci_internal_net
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  sqlite_data:
+  mosquitto_data:
+
+networks:
+  lci_internal_net:
+    driver: bridge

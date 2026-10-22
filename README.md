@@ -18,91 +18,90 @@ The frontend is an air-gapped-friendly static web application built with HTML, C
 
 ```text
 Browser / Frontend (index.html + styles.css + app.js)
-    |-- HTTP API: login, logs, commands, user administration
-    |-- WebSocket: /ws/telemetry
-    |-- WebSocket: /ws/mfa
+    |-- Same-origin HTTP API (/api/*) & WebSockets (/ws/telemetry, /ws/mfa)
+    v
+Nginx Reverse Proxy (nginx/nginx.conf, mounts compiled ./dist only)
     |
     v
-Node-RED API and flow logic ---- SQLite
+Node.js Central Backend (backend/src/server.js) ---- SQLite WAL (data/lci_sfm.db)
+    |                                                   |-- system_users (scrypt hashes)
+    |                                                   |-- sessions (SHA-256 verifiers + CSRF)
+    |                                                   |-- access_logs, camera_events
+    |                                                   |-- environmental_telemetry, command_audit
+    +---- Eclipse Mosquitto 2.0 (mosquitto/mosquitto.conf + ACL) <---- Wired Ethernet Edge Nodes
     |
-    +---- MQTT broker <---- wired Ethernet edge controllers
-    |
-    +---- Python/OpenCV biometric service <---- Node 3 camera snapshots
+    +---- Python/OpenCV Biometric Service <---- Node 3 Camera Snapshots
 
 Node 1: smart access / RFID / keypad / magnetic lock
 Node 2: environmental sensors / fan and auxiliary-light relays
 Node 3: PIR-triggered OV2640 camera / biometric capture
 ```
 
-The diagram shows the intended system relationships described by the architecture documents. The current `docker-compose.yml` starts **only the Nginx frontend container**; it does not deploy Node-RED, Mosquitto, SQLite, the Python vision service, or ESP32 firmware.
+## Quick start — development & testing
 
-## Quick start — development
-
-Requirements: a supported Node.js/npm installation and access to a reachable Node-RED backend for live features.
+Requirements: Node.js 22.5+ / 24 LTS (uses built-in `node:sqlite` and `crypto.scrypt`).
 
 ```bash
 git clone https://github.com/AbdullahNSarhan/Smart-Facility-Management-System.git
 cd Smart-Facility-Management-System
+cp .env.example .env
 npm install
 npm run dev
 ```
 
-Vite serves the frontend on port **3000** (the script binds to `0.0.0.0`). Open the URL printed by Vite. If accessing from another machine, ensure the workstation/server firewall permits the port and that the browser can reach the configured backend and device endpoints.
+`npm run dev` starts the unified Node.js Express + WebSocket + SQLite backend on port **3000** (`0.0.0.0`) with Vite middleware mounted for same-origin frontend operation.
 
-Useful checks:
+### Validation, Testing & Database Operations
 
 ```bash
-npm run lint       # JavaScript syntax check (node --check app.js)
-npm run build      # Production static bundle in dist/
-npm run preview    # Preview the production build locally
+npm test           # Run the 15-test backend integration suite (Auth, CSRF, RBAC, SQLite, MQTT, WS, Commands)
+npm run lint       # Verify syntax across frontend and backend ES modules
+npm run build      # Build production static frontend bundle into dist/
+npm run db:backup  # Perform online SQLite hot backup via VACUUM INTO
+npm run db:restore # Restore SQLite database after PRAGMA integrity_check verification
 ```
 
-## Run the current Nginx container
+## Production Docker Compose Deployment
 
-The supplied Compose file exposes port 80 and mounts the repository root read-only into Nginx's document root:
+The `docker-compose.yml` orchestrates three hardened services on an internal bridge network (`lci_internal_net`):
+1. **`frontend_dashboard` (`nginx:alpine`)**: Mounts **only** compiled `./dist` assets (never the repository root) and reverse-proxies `/api/*` and `/ws/*` to `http://backend:3000`.
+2. **`backend` (`node:24-alpine`)**: Runs as non-root `node` user, applies SQLite migrations on `./data/lci_sfm.db` (`sqlite_data` volume), and connects a singleton MQTT client to `mqtt-service`.
+3. **`mqtt-service` (`eclipse-mosquitto:2.0`)**: Enforces `allow_anonymous false`, password authentication (`mosquitto/passwd`), and per-identity topic ACLs (`mosquitto/acl`).
 
 ```bash
-docker compose up -d
+# 1. Build static frontend assets into ./dist
+npm run build
+
+# 2. Configure .env and generate mosquitto/passwd (see mosquitto/README.md)
+cp .env.example .env
+
+# 3. Launch stack
+docker compose up -d --build
 docker compose ps
-docker compose logs -f frontend_dashboard
-docker compose down
 ```
 
-**Deployment note:** because the current Compose volume mounts the repository root, files other than the three frontend assets may also be served as static files. Before using this configuration in a real facility, change the Nginx mount/configuration to expose only intended public frontend assets. This Compose file is frontend-only.
+## Default endpoints
 
-## Default local endpoints
-
-The frontend currently defaults to these local-network addresses. They are configurable in the login endpoint disclosure and in the administrator endpoint settings.
+When served behind Nginx or `npm run dev`, the frontend automatically targets the same-origin host (`window.location.host`) while allowing field engineers to override the target gateway or edge node IPs in the UI.
 
 | Component | Default |
 |---|---|
-| Node-RED HTTP API | `http://192.168.43.225:1880` |
-| Telemetry WebSocket | `ws://192.168.43.225:1880/ws/telemetry` |
-| MFA WebSocket | `ws://192.168.43.225:1880/ws/mfa` |
+| Same-Origin / Gateway HTTP API | `http://<host>/api/*` (or `http://192.168.43.225:1880`) |
+| Telemetry WebSocket | `ws://<host>/ws/telemetry` |
+| MFA WebSocket | `ws://<host>/ws/mfa` |
 | Node 1 — smart access | `192.168.43.11` |
 | Node 2 — environment | `192.168.43.12` |
 | Node 3 — biometric camera | `192.168.43.13` |
 | Node 3 snapshot | `http://192.168.43.13/capture.jpg` |
 
-These are example defaults, not evidence that the endpoints are reachable on your network. Configure the actual addresses for the local installation.
-
 ## Documentation
 
+- [Implementation Plan & Contract Matrix](docs/IMPLEMENTATION_PLAN_AND_MATRIX.md) — verified vs. proposed topic registry, route matrix, and runtime architecture notes.
 - [Frontend Documentation](docs/FRONTEND_DOCUMENTATION.md) — views, operator workflows, authentication behavior, endpoint contracts, telemetry fields, deployment, validation, and known limitations.
 - [Backend Architecture](docs/BACKEND_ARCHITECTURE.md) — Node.js, Mosquitto/MQTT, SQLite, WebSockets, authentication, command lifecycle, security, deployment, and open firmware dependencies.
-- [Backend Implementation Prompt](docs/BACKEND_IMPLEMENTATION_PROMPT.md) — detailed coding-agent instructions to implement the backend in validated milestones, with tests and frontend compatibility.
+- [Mosquitto Broker & ACL Guide](mosquitto/README.md) — provisioning per-node broker credentials and least-privilege topic ACLs.
 - [Hardware & Embedded Systems Architecture](hardware_embedded_systems_architecture_reference_lci_sfm.md)
 - [Programming & Software Concepts Guide](lci_sfm_ai_software_development_programming_concepts_guide.md)
 - [System Workflows & Logic](lci_sfm_comprehensive_workflows_system_logic.md)
 - [Docker Deployment Architecture](lci_sfm_docker_deployment_architecture.md)
 
-## Important security and safety notes
-
-- Keep this dashboard on the intended isolated local network. The default configuration uses plain HTTP and WebSocket (`http://`, `ws://`); an air-gapped design is not, by itself, encryption or authentication.
-- Server-side authorization must validate every command and administrative API request. Hiding or disabling a browser button is not an authorization boundary.
-- Hardware actions affect physical access-control and actuator systems. Confirm the backend acknowledgement and independently verify the controller/hardware state when required by operating procedures.
-- When the authentication service is unreachable, the frontend offers an explicitly unverified, read-only inspection mode. It must not be used to authorize privileged actions.
-- The UI displays an explicit dependency notice for multi-day time-bucketed telemetry because the current API contract does not implement the required aggregation endpoint.
-- Do not expose password or PIN values, hashes, session tokens, biometric data, or other credentials in logs, browser storage, CSV exports, or unauthenticated API responses.
-
-See the frontend documentation for the backend API contract the dashboard expects and the features that still require backend implementation.

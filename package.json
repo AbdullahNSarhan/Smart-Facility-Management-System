@@ -4,33 +4,41 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev": "node backend/src/server.js",
+    "start": "node backend/src/server.js",
     "build": "vite build",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
-    "lint": "node --check app.js"
+    "clean": "rm -rf dist",
+    "lint": "node --check app.js && node --check backend/src/server.js && node --check backend/src/app.js && node --check backend/src/routes/apiRoutes.js && node --check backend/src/repositories/sqliteRepository.js && node --check backend/src/mqtt/mqttClient.js && node --check backend/src/services/commandCoordinator.js",
+    "test": "node --test backend/test/backend.test.js",
+    "db:backup": "node backend/src/db/backup.js backup",
+    "db:restore": "node backend/src/db/backup.js restore"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
     "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "mqtt": "^5.16.1",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "vite": "^8.3.0",
-    "express": "^4.21.2",
-    "dotenv": "^17.2.3",
-    "motion": "^12.23.24"
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
+    "supertest": "^7.3.1",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
-    "typescript": "^7.0.2",
-    "@types/express": "^4.17.21"
+    "typescript": "^7.0.2"
   }
 }

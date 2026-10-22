@@ -253,7 +253,7 @@ export class LocalFIFOChart {
 // ============================================================================
 
 const IPV4_REGEX = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
-const HOST_PORT_REGEX = /^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}|localhost)(:\d{1,5})?$/;
+const HOST_PORT_REGEX = /^(([a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+)(:\d{1,5})?$/;
 const RFID_HEX_REGEX = /^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){3,7}$/;
 const PIN_SIX_DIGIT_REGEX = /^\d{6}$/;
 const SAFE_NAME_REGEX = /^[A-Za-z0-9 ._,'-]{2,64}$/;
@@ -306,8 +306,16 @@ export function isValidSixDigitPin(pinStr) {
 async function fetchWithTimeout(url, options = {}, timeoutMs = 2500) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const isSameOriginTarget =
+    typeof window !== 'undefined' &&
+    window.location?.host &&
+    server_host === window.location.host;
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await fetch(url, {
+      credentials: isSameOriginTarget ? 'same-origin' : 'include',
+      ...options,
+      signal: controller.signal
+    });
   } finally {
     clearTimeout(timer);
   }
@@ -339,24 +347,51 @@ export let system_errors = [];
 export let system_users = [];
 
 // Dynamic Endpoints (Central Server + Edge Nodes 1, 2, 3)
-export let server_host = sanitizeInput(localStorage.getItem('lci_server_host') || '192.168.43.225:1880');
+// Defaults to same-origin host when served by Nginx / Node.js backend, with fallback to 192.168.43.225:1880
+const defaultBrowserHost =
+  typeof window !== 'undefined' && window.location?.host
+    ? window.location.host
+    : '192.168.43.225:1880';
+export let server_host = sanitizeInput(localStorage.getItem('lci_server_host') || defaultBrowserHost);
 if (!isValidHostPort(server_host)) {
-  server_host = '192.168.43.225:1880';
+  server_host = defaultBrowserHost;
 }
 export let ip_node1 = sanitizeInput(localStorage.getItem('ip_node1') || '192.168.43.11');
 export let ip_node2 = sanitizeInput(localStorage.getItem('ip_node2') || '192.168.43.12');
 export let ip_node3 = sanitizeInput(localStorage.getItem('ip_node3') || '192.168.43.13');
 
 function getNodeRedHttp() {
-  return `http://${server_host}`;
+  const proto =
+    typeof window !== 'undefined' &&
+    window.location?.protocol === 'https:' &&
+    server_host === window.location.host
+      ? 'https:'
+      : 'http:';
+  return `${proto}//${server_host}`;
+}
+
+function getWsProtocol() {
+  return typeof window !== 'undefined' &&
+    window.location?.protocol === 'https:' &&
+    server_host === window.location.host
+    ? 'wss:'
+    : 'ws:';
+}
+
+function getWsAuthQuery() {
+  const token = sessionStorage.getItem('lci_session_token') || '';
+  if (token && !token.startsWith('UNVERIFIED-') && token !== 'COOKIE_SESSION') {
+    return `?token=${encodeURIComponent(token)}`;
+  }
+  return '';
 }
 
 function getWsTelemetryUrl() {
-  return `ws://${server_host}/ws/telemetry`;
+  return `${getWsProtocol()}//${server_host}/ws/telemetry${getWsAuthQuery()}`;
 }
 
 function getWsMfaUrl() {
-  return `ws://${server_host}/ws/mfa`;
+  return `${getWsProtocol()}//${server_host}/ws/mfa${getWsAuthQuery()}`;
 }
 
 // Expose variables globally on window for direct Node-RED / browser inspection
@@ -498,10 +533,17 @@ function isServerAuthVerified() {
 
 function getAuthHeaders() {
   const token = sessionStorage.getItem('lci_session_token') || '';
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`
+  const csrfToken = sessionStorage.getItem('lci_csrf_token') || '';
+  const headers = {
+    'Content-Type': 'application/json'
   };
+  if (token && token !== 'COOKIE_SESSION') {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  if (csrfToken) {
+    headers['X-CSRF-Token'] = csrfToken;
+  }
+  return headers;
 }
 
 function isAuthenticated() {
@@ -610,7 +652,15 @@ function syncManualControlsPanel() {
 }
 
 function lockAndLogoutSystem() {
+  if (isServerAuthVerified()) {
+    fetchWithTimeout(`${getNodeRedHttp()}/api/auth/logout`, {
+      method: 'POST',
+      headers: getAuthHeaders()
+    }, 1500).catch(() => {});
+  }
+
   sessionStorage.removeItem('lci_session_token');
+  sessionStorage.removeItem('lci_csrf_token');
   sessionStorage.removeItem('lci_rbac_role');
   sessionStorage.removeItem('lci_operator_id');
   sessionStorage.removeItem('lci_auth_verified');
@@ -773,7 +823,10 @@ function renderUserManagementTable() {
       const uid = u.id;
       const uname = u.username || u.name || '';
       const rfid = u.rfid || '—';
-      const hasPin = Boolean(u.pin !== undefined && u.pin !== null && String(u.pin).length > 0);
+      const hasPin = Boolean(
+        u.pin_configured ||
+        (u.pin !== undefined && u.pin !== null && String(u.pin).length > 0)
+      );
       const faceLinked = Boolean(u.face_linked || u.faceLinked);
       const role = u.role === 'Admin' ? 'Admin' : 'Viewer';
 
@@ -981,8 +1034,9 @@ function mountAuthenticatedViewListeners() {
       syncChartsWithActiveMode();
     } else if (mode === 'agg') {
       if (chartWindowDesc) {
-        chartWindowDesc.textContent = 'Multi-hour / multi-day aggregation view selected — see backend capability note below.';
+        chartWindowDesc.innerHTML = `Displaying 24-hour time-bucketed rollups (15m intervals) from <code>GET /api/telemetry/aggregate?range=24h&amp;bucket=15m</code>.`;
       }
+      await fetchTelemetryAggregation('24h', '15m');
     }
   };
 
@@ -1724,12 +1778,23 @@ function renderMiniSparkline(svgId, values, minVal, maxVal, strokeColor) {
 
 export function handleTelemetryPayload(payload) {
   if (!payload || typeof payload !== 'object') return;
+
+  if (payload.type === 'command_ack') {
+    const lastResultEl = document.getElementById('dispatch-last-result');
+    if (lastResultEl) {
+      lastResultEl.textContent = `Hardware ACK (${payload.lifecycle_state}): ${payload.node_id} @ ${new Date().toLocaleTimeString()}`;
+      lastResultEl.className = 'tabular-nums text-mint';
+    }
+    pushActivityEvent('ACK', `Edge node ${payload.node_id} confirmed command (${payload.lifecycle_state})`);
+    return;
+  }
+
   const now = Date.now();
   hasReceivedTelemetry = true;
   lastTelemetryTimestamp = now;
   lastNode2FrameTimestamp = now;
 
-  if (payload.door_state !== undefined || payload.node === 'access_01') {
+  if (payload.door_state !== undefined || payload.node === 'access_01' || payload.node_id === 'node1') {
     lastNode1EvidenceTimestamp = now;
   }
 
@@ -1863,13 +1928,44 @@ export function handleTelemetryPayload(payload) {
   updateHeartbeatDiagnosticsUI();
 }
 
+async function fetchTelemetryAggregation(range = '24h', bucket = '15m') {
+  const chartAggNotice = document.getElementById('chart-agg-notice');
+  try {
+    const res = await fetchWithTimeout(
+      `${getNodeRedHttp()}/api/telemetry/aggregate?range=${encodeURIComponent(range)}&bucket=${encodeURIComponent(bucket)}`,
+      {
+        method: 'GET',
+        headers: getAuthHeaders()
+      }
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const series = Array.isArray(data.series) ? data.series : [];
+
+    const labels = series.map(b => new Date(b.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    const temps = series.map(b => Number(b.temperature_avg ?? 0));
+    const hums = series.map(b => Number(b.humidity_avg ?? 0));
+
+    if (tempChart) tempChart.setSeries(labels, temps, `${range} Rollup (${bucket})`);
+    if (humChart) humChart.setSeries(labels, hums, `${range} Rollup (${bucket})`);
+
+    if (chartAggNotice) {
+      chartAggNotice.innerHTML = `<strong>Verified SQLite Aggregation (<code>GET /api/telemetry/aggregate</code>):</strong> Loaded <strong>${series.length}</strong> time bucket(s) over range <code>${escapeHTML(range)}</code> with bucket width <code>${escapeHTML(bucket)}</code>.`;
+    }
+  } catch {
+    if (chartAggNotice) {
+      chartAggNotice.innerHTML = `<strong>Historical Time-Bucket Aggregation Unavailable:</strong> Could not reach <code>GET /api/telemetry/aggregate</code> on ${escapeHTML(getNodeRedHttp())}.`;
+    }
+  }
+}
+
 function syncChartsWithActiveMode() {
   if (!tempChart || !humChart) return;
   if (activeChartMode === 'live') {
     tempChart.setSeries(liveTempSamples.map(s => s.time), liveTempSamples.map(s => s.val), 'Live 30-Sample FIFO');
     humChart.setSeries(liveHumSamples.map(s => s.time), liveHumSamples.map(s => s.val), 'Live 30-Sample FIFO');
   } else if (activeChartMode === 'sqlite') {
-    const recentRows = environmental_telemetry.slice(-30);
+    const recentRows = environmental_telemetry.slice(0, 30).reverse();
     const labels = recentRows.map(r => String(r.timestamp || r.time || r.id || '').slice(-8));
     const temps = recentRows.map(r => Number(r.temperature ?? r.temp ?? 0));
     const hums = recentRows.map(r => Number(r.humidity ?? r.hum ?? 0));
@@ -2505,16 +2601,60 @@ async function sendCommand(command, targetState) {
       headers: getAuthHeaders(),
       body: JSON.stringify(strictBody)
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    let resData = {};
+    try {
+      resData = await response.json();
+    } catch {
+      resData = {};
+    }
+
+    if (!response.ok) {
+      const lifecycle = resData.lifecycle_state || resData.status || 'failed';
+      const errMsg = resData.error || `HTTP ${response.status}`;
+      if (lastResultEl) {
+        lastResultEl.textContent = `${lifecycle.toUpperCase()}: ${cleanCmd} (${errMsg})`;
+        lastResultEl.className = 'tabular-nums text-rose';
+      }
+      pushActivityEvent('ERROR', `Command ${lifecycle.toUpperCase()}: ${cleanCmd} -> ${cleanState}`);
+      showToast(
+        lifecycle === 'unavailable' ? 'MQTT Broker Unavailable' : 'Command Rejected / Failed',
+        errMsg,
+        'error'
+      );
+      updateHeartbeatDiagnosticsUI();
+      return false;
+    }
 
     httpApiReachable = true;
     lastHttpApiSuccessTimestamp = Date.now();
+    const lifecycleState = resData.lifecycle_state || resData.status || 'published';
+    const isHardwareAcked =
+      Boolean(resData.verified_hardware_ack) ||
+      lifecycleState === 'acknowledged' ||
+      lifecycleState === 'state_confirmed';
+
     if (lastResultEl) {
-      lastResultEl.textContent = `Confirmed: ${cleanCmd} (${cleanState}) @ ${new Date().toLocaleTimeString()}`;
-      lastResultEl.className = 'tabular-nums text-mint';
+      lastResultEl.textContent = isHardwareAcked
+        ? `Confirmed (${lifecycleState}): ${cleanCmd} (${cleanState}) @ ${new Date().toLocaleTimeString()}`
+        : `Published to MQTT (Awaiting Node ACK): ${cleanCmd} (${cleanState}) @ ${new Date().toLocaleTimeString()}`;
+      lastResultEl.className = `tabular-nums ${isHardwareAcked ? 'text-mint' : 'text-cyber'}`;
     }
-    pushActivityEvent('DISPATCH', `Confirmed by Server: ${cleanCmd} -> ${cleanState}`);
-    showToast('Command Confirmed', `Node-RED acknowledged ${cleanCmd} -> ${cleanState}.`, 'success');
+
+    pushActivityEvent(
+      'DISPATCH',
+      isHardwareAcked
+        ? `Confirmed by Edge Node: ${cleanCmd} -> ${cleanState}`
+        : `Published to MQTT (${lifecycleState}): ${cleanCmd} -> ${cleanState}`
+    );
+
+    showToast(
+      isHardwareAcked ? 'Command Confirmed by Edge Node' : 'Command Published to MQTT',
+      isHardwareAcked
+        ? `Edge hardware confirmed ${cleanCmd} -> ${cleanState}.`
+        : `Backend published ${cleanCmd} -> ${cleanState} to MQTT broker. Awaiting device ACK or telemetry state change.`,
+      isHardwareAcked ? 'success' : 'info'
+    );
     updateHeartbeatDiagnosticsUI();
     return true;
   } catch {
@@ -2523,7 +2663,7 @@ async function sendCommand(command, targetState) {
       lastResultEl.className = 'tabular-nums text-rose';
     }
     pushActivityEvent('ERROR', `Dispatch Failed (Unreachable): ${cleanCmd} -> ${cleanState}`);
-    showToast('Dispatch Failed — Server Offline', `Node-RED (${getNodeRedHttp()}) did not acknowledge ${cleanCmd}. Hardware state unverified.`, 'error');
+    showToast('Dispatch Failed — Server Offline', `Backend (${getNodeRedHttp()}) did not respond to ${cleanCmd}. Hardware state unverified.`, 'error');
     updateHeartbeatDiagnosticsUI();
     return false;
   }
@@ -2882,10 +3022,11 @@ window.addEventListener('DOMContentLoaded', () => {
       }
 
       const authData = await response.json();
-      const token = sanitizeInput(String(authData.token || ''));
+      const token = sanitizeInput(String(authData.token || (authData.authenticated ? 'COOKIE_SESSION' : '')));
       if (!token) {
         throw new Error('Missing session token from backend');
       }
+      const csrfToken = sanitizeInput(String(authData.csrfToken || ''));
       const role = authData.role === 'Admin' ? 'Admin' : 'Viewer';
       const verifiedUser = sanitizeInput(String(authData.username || cleanUsername));
 
@@ -2893,6 +3034,7 @@ window.addEventListener('DOMContentLoaded', () => {
       lastHttpApiSuccessTimestamp = Date.now();
 
       sessionStorage.setItem('lci_session_token', token);
+      if (csrfToken) sessionStorage.setItem('lci_csrf_token', csrfToken);
       sessionStorage.setItem('lci_rbac_role', role);
       sessionStorage.setItem('lci_operator_id', verifiedUser);
       sessionStorage.setItem('lci_auth_verified', 'true');
@@ -2985,5 +3127,24 @@ window.addEventListener('DOMContentLoaded', () => {
 
   if (isAuthenticated()) {
     bootAuthenticatedSession();
+  } else {
+    // Check if an active server-side HttpOnly cookie session exists
+    fetchWithTimeout(`${getNodeRedHttp()}/api/auth/session`, {
+      method: 'GET',
+      headers: getAuthHeaders()
+    }, 1500)
+      .then(async (res) => {
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && data.authenticated && data.username) {
+          sessionStorage.setItem('lci_session_token', 'COOKIE_SESSION');
+          if (data.csrfToken) sessionStorage.setItem('lci_csrf_token', String(data.csrfToken));
+          sessionStorage.setItem('lci_rbac_role', data.role === 'Admin' ? 'Admin' : 'Viewer');
+          sessionStorage.setItem('lci_operator_id', String(data.username));
+          sessionStorage.setItem('lci_auth_verified', 'true');
+          bootAuthenticatedSession();
+        }
+      })
+      .catch(() => {});
   }
 });
