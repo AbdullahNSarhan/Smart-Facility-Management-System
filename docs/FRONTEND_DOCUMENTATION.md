@@ -8,6 +8,8 @@
 
 This document describes the frontend as implemented in the repository. API paths and payloads below describe the contract the current frontend expects; they should be checked against the deployed Node-RED flows before being treated as a guarantee of backend behavior.
 
+**Backend migration:** The proposed next phase moves the central API/workflow role from Node-RED to Node.js while preserving the UI contract where practical. See [Backend Architecture](BACKEND_ARCHITECTURE.md) for the target service design and [Backend Implementation Prompt](BACKEND_IMPLEMENTATION_PROMPT.md) for staged coding-agent instructions. The routes documented here are the frontend's current expectations, not proof that the replacement backend has been implemented.
+
 ## Contents
 
 1. [Scope and architecture](#1-scope-and-architecture)
