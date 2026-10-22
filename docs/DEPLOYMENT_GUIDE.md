@@ -50,28 +50,28 @@ https://docs.docker.com/engine/install/ubuntu/
 
 SSH to the server:
 
-`BT`bash
+```bash
 ssh <your-user>@<server-ip>
-`BT`
+```
 
 Then run:
 
-`BT`bash
+```bash
 cat /etc/os-release
 ip -br address
 df -h
 sudo ss -lntp | grep -E ':(22|80|1883|3000)\b' || true
-`BT`
+```
 
 Confirm that ports 80 and 1883 are not already in use. Identify the owner of any existing service before changing it.
 
 ### 3.2 Update packages and install basic tools
 
-`BT`bash
+```bash
 sudo apt update
 sudo apt full-upgrade -y
 sudo apt install -y ca-certificates curl git openssh-client
-`BT`
+```
 
 If a reboot is required, reboot and confirm SSH connectivity again before proceeding.
 
@@ -79,7 +79,7 @@ If a reboot is required, reboot and confirm SSH connectivity again before procee
 
 Use Docker's official APT repository instructions. The core commands for supported Ubuntu releases are:
 
-`BT`bash
+```bash
 sudo apt update
 sudo apt install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -100,7 +100,7 @@ sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin d
 sudo systemctl enable --now docker
 sudo docker run --rm hello-world
 sudo docker compose version
-`BT`
+```
 
 Reference: https://docs.docker.com/engine/install/ubuntu/
 
@@ -110,20 +110,20 @@ Use `sudo docker ...` commands below. Membership in the `docker` group can grant
 
 For a new deployment:
 
-`BT`bash
+```bash
 sudo mkdir -p /opt/lci-sfm
 sudo chown "$USER":"$USER" /opt/lci-sfm
 git clone https://github.com/AbdullahNSarhan/Smart-Facility-Management-System.git /opt/lci-sfm
 cd /opt/lci-sfm
-`BT`
+```
 
 If it is already cloned, inspect changes first:
 
-`BT`bash
+```bash
 cd /opt/lci-sfm
 git status --short
 git log -1 --oneline
-`BT`
+```
 
 Do not overwrite an existing `.env`, database, Mosquitto password file, or backup when updating an installation.
 
@@ -131,12 +131,12 @@ Do not overwrite an existing `.env`, database, Mosquitto password file, or backu
 
 Create and protect the deployment file:
 
-`BT`bash
+```bash
 cd /opt/lci-sfm
 cp .env.example .env
 chmod 600 .env
 nano .env
-`BT`
+```
 
 Review all values before starting. Do not commit `.env` or paste its contents into a ticket/chat.
 
@@ -144,7 +144,7 @@ Review all values before starting. Do not commit `.env` or paste its contents in
 
 These are examples of the intended settings. Replace all placeholders and use your actual server address:
 
-`BT`dotenv
+```dotenv
 NODE_ENV=production
 HOST=0.0.0.0
 PORT=3000
@@ -166,16 +166,16 @@ MQTT_PASSWORD=REPLACE_WITH_THE_SAME_SECRET_USED_FOR_LCI_BACKEND
 
 FRONTEND_BIND_IP=127.0.0.1
 MQTT_BIND_IP=127.0.0.1
-`BT`
+```
 
 Replace `REPLACE_WITH...` and `<SERVER_LAN_IP>` with real values. Do not leave the placeholder strings in `.env`.
 
 Generate two separate random secrets on the server:
 
-`BT`bash
+```bash
 openssl rand -base64 32
 openssl rand -base64 32
-`BT`
+```
 
 Use the first for `LCI_BOOTSTRAP_ADMIN_PASSWORD`; use the second for `MQTT_PASSWORD`. Do not reuse secrets or commit them to source control.
 
@@ -204,35 +204,35 @@ The ACL file defines these broker identities:
 
 From the repository root:
 
-`BT`bash
+```bash
 cd /opt/lci-sfm
 sudo touch mosquitto/passwd
 sudo chmod 600 mosquitto/passwd
-`BT`
+```
 
 Create each account interactively using the official Mosquitto 2.x container. Use `-c` **only for the first account** because it creates/replaces the file:
 
-`BT`bash
-sudo docker run --rm -it --user 0:0 \\
-  -v "$PWD/mosquitto:/mosquitto/config" eclipse-mosquitto:2.0 \\
+```bash
+sudo docker run --rm -it --user 0:0 \
+  -v "$PWD/mosquitto:/mosquitto/config" eclipse-mosquitto:2.0 \
   mosquitto_passwd -c /mosquitto/config/passwd lci_backend
 
-sudo docker run --rm -it --user 0:0 \\
-  -v "$PWD/mosquitto:/mosquitto/config" eclipse-mosquitto:2.0 \\
+sudo docker run --rm -it --user 0:0 \
+  -v "$PWD/mosquitto:/mosquitto/config" eclipse-mosquitto:2.0 \
   mosquitto_passwd /mosquitto/config/passwd node1_access
 
-sudo docker run --rm -it --user 0:0 \\
-  -v "$PWD/mosquitto:/mosquitto/config" eclipse-mosquitto:2.0 \\
+sudo docker run --rm -it --user 0:0 \
+  -v "$PWD/mosquitto:/mosquitto/config" eclipse-mosquitto:2.0 \
   mosquitto_passwd /mosquitto/config/passwd node2_env
 
-sudo docker run --rm -it --user 0:0 \\
-  -v "$PWD/mosquitto:/mosquitto/config" eclipse-mosquitto:2.0 \\
+sudo docker run --rm -it --user 0:0 \
+  -v "$PWD/mosquitto:/mosquitto/config" eclipse-mosquitto:2.0 \
   mosquitto_passwd /mosquitto/config/passwd vision_service
 
 sudo chown 1883:1883 mosquitto/passwd
 sudo chmod 0600 mosquitto/passwd
 test -s mosquitto/passwd && echo "Mosquitto password file exists"
-`BT`
+```
 
 Enter a unique password at each prompt. Put the exact password entered for `lci_backend` into `MQTT_PASSWORD` in `.env`. The file stores hashes, not plaintext passwords.
 
@@ -250,30 +250,30 @@ The current documented topics include `lecf/env/telemetry` and `lecf/access/mfa_
 
 Use Node.js 24 LTS on the server or a controlled Node 24 build environment. Check:
 
-`BT`bash
+```bash
 node --version
 npm --version
-`BT`
+```
 
 From the repository root:
 
-`BT`bash
+```bash
 npm install --no-package-lock
 npm run lint
 npm test
 npm run build
-`BT`
+```
 
 The build should create `dist/index.html` and the bundled assets. Stop and resolve any failing lint, test, or build command before bringing services online.
 
 Validate the essential deployment files and Compose syntax:
 
-`BT`bash
+```bash
 test -f .env
 test -s mosquitto/passwd
 test -f nginx/nginx.conf
 docker compose config -q
-`BT`
+```
 
 Do not publicly share the output of `docker compose config` or `.env`; resolved configuration may reveal operational details.
 
@@ -300,25 +300,25 @@ Do not route plain MQTT port 1883 directly to the public internet. Use a VPN/pri
 
 After environment setup, password provisioning, build, and network-policy review:
 
-`BT`bash
+```bash
 docker compose config -q
 docker compose up -d --build
 docker compose ps
-`BT`
+```
 
 Check each service's logs:
 
-`BT`bash
+```bash
 docker compose logs --tail=150 mqtt-service
 docker compose logs --tail=150 backend
 docker compose logs --tail=150 frontend_dashboard
-`BT`
+```
 
 Follow live logs if debugging:
 
-`BT`bash
+```bash
 docker compose logs -f backend mqtt-service frontend_dashboard
-`BT`
+```
 
 Confirm all three containers are running and the backend becomes healthy. Backend SQLite readiness does not automatically prove MQTT is connected; check MQTT separately in the readiness response and backend logs.
 
@@ -326,10 +326,10 @@ Confirm all three containers are running and the backend becomes healthy. Backen
 
 For loopback-only smoke tests on the server:
 
-`BT`bash
+```bash
 curl -fsS http://127.0.0.1/api/health/live
 curl -fsS http://127.0.0.1/api/health/ready
-`BT`
+```
 
 For LAN deployment, use `http://<SERVER_LAN_IP>/api/health/live` and `http://<SERVER_LAN_IP>/api/health/ready` after replacing the placeholder. The liveness response should have `ok: true`; readiness should show healthy SQLite. Check the MQTT status separately.
 
@@ -352,7 +352,7 @@ Back up the database before each upgrade and on a schedule. Copies may contain s
 
 ### Create a consistent SQLite backup
 
-`BT`bash
+```bash
 mkdir -p backups
 BACKUP_NAME="lci_sfm_$(date -u +%Y%m%dT%H%M%SZ).db"
 
@@ -360,7 +360,7 @@ docker compose exec -T backend node backend/src/db/backup.js backup "/app/data/$
 docker cp "lci_backend:/app/data/$BACKUP_NAME" "backups/$BACKUP_NAME"
 chmod 600 "backups/$BACKUP_NAME"
 ls -lh "backups/$BACKUP_NAME"
-`BT`
+```
 
 Copy backups to separate protected/encrypted storage. A backup only on the same server does not protect against loss of that host. Test restore in a non-production environment.
 
@@ -368,15 +368,15 @@ Copy backups to separate protected/encrypted storage. A backup only on the same 
 
 Restore is a maintenance operation that replaces the current database. Confirm the backup is correct, then stop backend writes:
 
-`BT`bash
+```bash
 docker compose stop backend
 docker cp backups/<BACKUP_FILE>.db lci_backend:/app/data/restore-source.db
-docker compose run --rm --no-deps backend \\
+docker compose run --rm --no-deps backend \
   node backend/src/db/backup.js restore /app/data/restore-source.db
 docker compose up -d backend
 docker compose ps
 docker compose logs --tail=100 backend
-`BT`
+```
 
 Replace `<BACKUP_FILE>.db` with the actual backup filename. Verify readiness, login, expected records, and logs before reopening normal operations. Keep a separate known-good backup; never delete the only copy.
 
@@ -384,7 +384,7 @@ Replace `<BACKUP_FILE>.db` with the actual backup filename. Verify readiness, lo
 
 Before an update, review the working tree and create/copy a database backup:
 
-`BT`bash
+```bash
 cd /opt/lci-sfm
 git status --short
 git pull --ff-only
@@ -395,7 +395,7 @@ npm run build
 docker compose config -q
 docker compose up -d --build
 docker compose ps
-`BT`
+```
 
 Inspect changes to `.env.example`, database migrations, Compose, Nginx, MQTT ACLs, and firmware topics before deploying. Keep local `.env` and `mosquitto/passwd` private. Never run `docker compose down -v` during routine upgrades; it can delete persistent volumes.
 
