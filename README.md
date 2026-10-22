@@ -98,6 +98,7 @@ When served behind Nginx or `npm run dev`, the frontend automatically targets th
 
 - [Implementation Plan & Contract Matrix](docs/IMPLEMENTATION_PLAN_AND_MATRIX.md) — verified vs. proposed topic registry, route matrix, and runtime architecture notes.
 - [Frontend Documentation](docs/FRONTEND_DOCUMENTATION.md) — views, operator workflows, authentication behavior, endpoint contracts, telemetry fields, deployment, validation, and known limitations.
+- [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) — prepare Ubuntu, install Docker, configure production secrets, provision Mosquitto credentials, deploy the stack, verify it, and back up/restore SQLite.
 - [Backend Architecture](docs/BACKEND_ARCHITECTURE.md) — Node.js, Mosquitto/MQTT, SQLite, WebSockets, authentication, command lifecycle, security, deployment, and open firmware dependencies.
 - [Mosquitto Broker & ACL Guide](mosquitto/README.md) — provisioning per-node broker credentials and least-privilege topic ACLs.
 - [Hardware & Embedded Systems Architecture](hardware_embedded_systems_architecture_reference_lci_sfm.md)
