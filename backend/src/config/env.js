@@ -73,17 +73,30 @@ export function loadConfig(overrides = {}) {
   };
 
   if (isProd) {
-    if (config.mqttEnabled && !config.mqttPassword) {
+    const looksLikePlaceholder = (value) =>
+      /^(replace|change_me|changeme|example|your_|set_me)/i.test(String(value || '').trim());
+
+    if (config.bootstrapAdminUsername.trim().toLowerCase() === 'admin') {
       throw new Error(
-        'FATAL CONFIG ERROR: MQTT_PASSWORD is required in production mode when MQTT_ENABLED=true.'
+        'FATAL CONFIG ERROR: Set LCI_BOOTSTRAP_ADMIN_USERNAME to a non-default administrator name in production.'
       );
     }
     if (
-      config.bootstrapAdminPassword &&
-      config.bootstrapAdminPassword.toLowerCase() === 'admin'
+      !config.bootstrapAdminPassword ||
+      config.bootstrapAdminPassword.length < 24 ||
+      looksLikePlaceholder(config.bootstrapAdminPassword)
     ) {
       throw new Error(
-        'FATAL CONFIG ERROR: LCI_BOOTSTRAP_ADMIN_PASSWORD in production must never be "admin".'
+        'FATAL CONFIG ERROR: Set LCI_BOOTSTRAP_ADMIN_PASSWORD to a unique, randomly generated secret of at least 24 characters before production start.'
+      );
+    }
+    if (config.mqttEnabled && (
+      !config.mqttPassword ||
+      config.mqttPassword.length < 24 ||
+      looksLikePlaceholder(config.mqttPassword)
+    )) {
+      throw new Error(
+        'FATAL CONFIG ERROR: Set MQTT_PASSWORD to the matching Mosquitto backend credential (at least 24 characters) before enabling MQTT in production.'
       );
     }
   }
