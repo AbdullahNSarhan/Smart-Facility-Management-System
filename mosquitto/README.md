@@ -34,4 +34,21 @@ docker run --rm -it -v "$(pwd)/mosquitto:/mosquitto/config" eclipse-mosquitto:2.
   mosquitto_passwd /mosquitto/config/passwd vision_service
 ```
 
-Then set `MQTT_USERNAME=lci_backend` and `MQTT_PASSWORD=<your_lci_backend_password>` in `.env`.
+After adding all four identities, make the password file readable by the Mosquitto container's broker user (UID/GID 1883 in the standard image) while keeping it private:
+
+```bash
+sudo chown 1883:1883 mosquitto/passwd
+sudo chmod 0600 mosquitto/passwd
+```
+
+Because the file is owned by UID 1883, use `sudo` or the provisioning container as root when updating it later. Never commit this file.
+
+Then set `MQTT_USERNAME=lci_backend` and `MQTT_PASSWORD=<the exact password entered for lci_backend>` in `.env`. The password in `.env` must match the password hashed into this file.
+
+## 3. Network binding and firewall
+
+The Compose file supports `MQTT_BIND_IP`. Keep it at `127.0.0.1` while testing locally. If ESP32 devices must connect to Mosquitto over the LAN, set it to the server's **static private LAN IPv4 address** (for example, `192.168.43.225` only if that is actually the server address), then allow TCP 1883 only from the required device IPs using the host/upstream firewall. Do not bind the broker to every public interface or expose plain MQTT to the public internet.
+
+Docker-published ports can bypass ordinary UFW filtering depending on the host's networking setup. Review Docker's official firewall guidance and enforce restrictions in the appropriate `DOCKER-USER`/upstream firewall path: https://docs.docker.com/engine/install/ubuntu/#firewall-limitations
+
+Before starting Compose, verify that `mosquitto/passwd` exists. The Compose bind mount expects this file; do not create a directory named `passwd` in its place.
