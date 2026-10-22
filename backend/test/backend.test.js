@@ -38,6 +38,7 @@ describe('LCI-SFM Production Node.js Backend Integration Suite', () => {
       HOST: '127.0.0.1',
       SQLITE_DB_PATH: dbPath,
       MQTT_ENABLED: 'false',
+      ALLOW_BEARER_COMPAT: 'true',
       LCI_BOOTSTRAP_ADMIN_USERNAME: TEST_ADMIN_USER,
       LCI_BOOTSTRAP_ADMIN_PASSWORD: TEST_ADMIN_PASS,
       COMMAND_ACK_TIMEOUT_MS: 600

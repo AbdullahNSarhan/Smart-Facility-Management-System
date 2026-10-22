@@ -1,3 +1,4 @@
+import dns from 'node:dns';
 import mqtt from 'mqtt';
 import { MQTT_TOPICS, getSubscribedTopics } from './topics.js';
 import {
@@ -46,7 +47,7 @@ export class MqttService {
 
   connect() {
     if (!this.config.mqttEnabled) {
-      logger.info('MQTT client disabled by configuration (MQTT_ENABLED=false)');
+      logger.info('MQTT client in standby mode (MQTT_ENABLED=false)');
       return;
     }
 
@@ -54,48 +55,81 @@ export class MqttService {
       return;
     }
 
-    const options = {
-      clientId: this.config.mqttClientId,
-      clean: true,
-      connectTimeout: this.config.mqttConnectTimeoutMs,
-      reconnectPeriod: this.config.mqttReconnectPeriodMs,
-      username: this.config.mqttUsername || undefined,
-      password: this.config.mqttPassword || undefined
-    };
+    let brokerHostname = 'localhost';
+    try {
+      const parsed = new URL(this.config.mqttBrokerUrl);
+      brokerHostname = parsed.hostname;
+    } catch {
+      brokerHostname = 'localhost';
+    }
 
-    logger.info('Connecting singleton MQTT client to broker', {
-      broker_url: this.config.mqttBrokerUrl,
-      client_id: options.clientId,
-      username: options.username
-    });
+    // Pre-flight DNS check: prevents endless EAI_AGAIN / ENOTFOUND error loops when
+    // a Docker internal service name (e.g., "mqtt-service") is configured outside Docker.
+    dns.lookup(brokerHostname, (dnsErr) => {
+      if (dnsErr) {
+        logger.info('MQTT broker host is not resolvable in current network; entering standby mode', {
+          broker_url: this.config.mqttBrokerUrl,
+          host: brokerHostname
+        });
+        return;
+      }
 
-    this.client = mqtt.connect(this.config.mqttBrokerUrl, options);
+      if (this.client) return;
 
-    this.client.on('connect', () => {
-      this.connected = true;
-      logger.info('MQTT broker connection established');
-      this._subscribeAll();
-    });
+      const options = {
+        clientId: this.config.mqttClientId,
+        clean: true,
+        connectTimeout: this.config.mqttConnectTimeoutMs,
+        reconnectPeriod: this.config.mqttReconnectPeriodMs,
+        username: this.config.mqttUsername || undefined,
+        password: this.config.mqttPassword || undefined
+      };
 
-    this.client.on('reconnect', () => {
-      logger.info('Attempting MQTT broker reconnection...');
-    });
+      logger.info('Connecting singleton MQTT client to broker', {
+        broker_url: this.config.mqttBrokerUrl,
+        client_id: options.clientId,
+        username: options.username
+      });
 
-    this.client.on('close', () => {
-      this.connected = false;
-    });
+      this.client = mqtt.connect(this.config.mqttBrokerUrl, options);
+      let loggedOfflineNotice = false;
 
-    this.client.on('offline', () => {
-      this.connected = false;
-    });
+      this.client.on('connect', () => {
+        this.connected = true;
+        loggedOfflineNotice = false;
+        logger.info('MQTT broker connection established');
+        this._subscribeAll();
+      });
 
-    this.client.on('error', (err) => {
-      this.connected = false;
-      logger.warn('MQTT client error', { error: err?.message || String(err) });
-    });
+      this.client.on('reconnect', () => {
+        if (!loggedOfflineNotice) {
+          logger.info('Attempting MQTT broker reconnection...');
+        }
+      });
 
-    this.client.on('message', (topic, messageBuffer) => {
-      this.handleIncomingMessage(topic, messageBuffer);
+      this.client.on('close', () => {
+        this.connected = false;
+      });
+
+      this.client.on('offline', () => {
+        this.connected = false;
+      });
+
+      this.client.on('error', (err) => {
+        this.connected = false;
+        const reason = err?.message || String(err);
+        if (!loggedOfflineNotice) {
+          loggedOfflineNotice = true;
+          logger.info('MQTT broker currently unreachable; standing by', {
+            broker_url: this.config.mqttBrokerUrl,
+            reason
+          });
+        }
+      });
+
+      this.client.on('message', (topic, messageBuffer) => {
+        this.handleIncomingMessage(topic, messageBuffer);
+      });
     });
   }
 

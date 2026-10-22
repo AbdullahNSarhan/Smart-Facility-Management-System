@@ -96,29 +96,33 @@ export class SqliteDatabase {
     const effectivePassword = password || (!isProd ? 'LCI-Dev-Admin-2026!' : '');
     if (!effectivePassword) return { bootstrapped: false, reason: 'no_bootstrap_secret_supplied' };
 
+    const existingTargetUser = this.db
+      .prepare('SELECT id, provisioning_status FROM system_users WHERE username = ?')
+      .get(username);
+
     const adminCountRow = this.db
       .prepare("SELECT COUNT(*) AS cnt FROM system_users WHERE role = 'Admin' AND enabled = 1")
       .get();
-    if (adminCountRow && Number(adminCountRow.cnt) > 0) {
+    const activeAdminCount = Number(adminCountRow?.cnt || 0);
+
+    // If an active Admin already exists AND the requested bootstrap username already exists,
+    // only sync password if it is still in its initial 'server_bootstrapped' state.
+    if (activeAdminCount > 0 && existingTargetUser && existingTargetUser.provisioning_status !== 'server_bootstrapped') {
       return { bootstrapped: false, reason: 'admin_already_exists' };
     }
 
     const now = new Date().toISOString();
     const passwordHash = hashSecret(effectivePassword);
 
-    const existingUser = this.db
-      .prepare('SELECT id FROM system_users WHERE username = ?')
-      .get(username);
-
-    if (existingUser) {
+    if (existingTargetUser) {
       this.db
         .prepare(
           `UPDATE system_users
            SET role = 'Admin', password_hash = ?, enabled = 1, updated_at = ?
            WHERE id = ?`
         )
-        .run(passwordHash, now, existingUser.id);
-    } else {
+        .run(passwordHash, now, existingTargetUser.id);
+    } else if (activeAdminCount === 0 || Boolean(password)) {
       this.db
         .prepare(
           `INSERT INTO system_users
@@ -126,6 +130,8 @@ export class SqliteDatabase {
            VALUES (?, 'Admin', ?, NULL, 0, 'A1:00:FF:01', 0, 1, 'server_bootstrapped', ?, ?)`
         )
         .run(username, passwordHash, now, now);
+    } else {
+      return { bootstrapped: false, reason: 'admin_already_exists' };
     }
 
     logger.info('Bootstrapped initial Administrator account', {

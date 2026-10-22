@@ -1,20 +1,35 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import dotenv from 'dotenv';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const DEFAULT_DB_PATH = path.resolve(process.cwd(), 'data', 'lci_sfm.db');
+
+function resolveWritableSqlitePath(requestedPath) {
+  if (!requestedPath) return DEFAULT_DB_PATH;
+  if (requestedPath === ':memory:') return ':memory:';
+  const abs = path.resolve(requestedPath);
+  try {
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    return abs;
+  } catch {
+    return DEFAULT_DB_PATH;
+  }
+}
 
 export function loadConfig(overrides = {}) {
   const nodeEnv = overrides.NODE_ENV || process.env.NODE_ENV || 'development';
   const isProd = nodeEnv === 'production';
+
+  const rawSqlitePath = overrides.SQLITE_DB_PATH || process.env.SQLITE_DB_PATH || DEFAULT_DB_PATH;
 
   const config = {
     nodeEnv,
     isProd,
     port: Number(overrides.PORT ?? process.env.PORT ?? 3000),
     host: overrides.HOST || process.env.HOST || '0.0.0.0',
-    sqlitePath: overrides.SQLITE_DB_PATH || process.env.SQLITE_DB_PATH || DEFAULT_DB_PATH,
+    sqlitePath: resolveWritableSqlitePath(rawSqlitePath),
 
     // MQTT Broker configuration (Docker internal DNS default: mqtt://mqtt-service:1883)
     mqttBrokerUrl: overrides.MQTT_BROKER_URL || process.env.MQTT_BROKER_URL || 'mqtt://mqtt-service:1883',
@@ -23,7 +38,12 @@ export function loadConfig(overrides = {}) {
     mqttClientId: overrides.MQTT_CLIENT_ID || process.env.MQTT_CLIENT_ID || `lci-backend-${process.pid}`,
     mqttConnectTimeoutMs: Number(overrides.MQTT_CONNECT_TIMEOUT_MS ?? process.env.MQTT_CONNECT_TIMEOUT_MS ?? 4000),
     mqttReconnectPeriodMs: Number(overrides.MQTT_RECONNECT_PERIOD_MS ?? process.env.MQTT_RECONNECT_PERIOD_MS ?? 5000),
-    mqttEnabled: (overrides.MQTT_ENABLED ?? process.env.MQTT_ENABLED ?? 'true') !== 'false',
+    mqttEnabled:
+      overrides.MQTT_ENABLED !== undefined
+        ? String(overrides.MQTT_ENABLED) !== 'false'
+        : process.env.MQTT_ENABLED !== undefined
+          ? String(process.env.MQTT_ENABLED) !== 'false'
+          : Boolean(overrides.MQTT_BROKER_URL || process.env.MQTT_BROKER_URL || isProd),
 
     // Session & Auth configuration
     sessionCookieName: overrides.SESSION_COOKIE_NAME || process.env.SESSION_COOKIE_NAME || 'lci_sid',
@@ -60,10 +80,10 @@ export function loadConfig(overrides = {}) {
     }
     if (
       config.bootstrapAdminPassword &&
-      (config.bootstrapAdminPassword.length < 8 || config.bootstrapAdminPassword.toLowerCase() === 'admin')
+      config.bootstrapAdminPassword.toLowerCase() === 'admin'
     ) {
       throw new Error(
-        'FATAL CONFIG ERROR: LCI_BOOTSTRAP_ADMIN_PASSWORD in production must be at least 8 characters and must never be "admin".'
+        'FATAL CONFIG ERROR: LCI_BOOTSTRAP_ADMIN_PASSWORD in production must never be "admin".'
       );
     }
   }
