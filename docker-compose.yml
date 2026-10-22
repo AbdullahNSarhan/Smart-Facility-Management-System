@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  frontend_dashboard:
+    image: nginx:alpine
+    container_name: lci_frontend
+    ports:
+      - "80:80"
+    volumes:
+      - ./:/usr/share/nginx/html:ro
+    restart: always
