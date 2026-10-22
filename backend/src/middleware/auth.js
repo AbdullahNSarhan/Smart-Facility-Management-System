@@ -140,12 +140,17 @@ export function createAuthMiddleware(repo, config) {
       ? extractBearerToken(req.headers.authorization)
       : null;
 
+    // URL query tokens are enabled only for the temporary Bearer compatibility mode.
+    // Query strings may be written to proxy/access logs, so cookie-only deployments
+    // must not accept a token from the WebSocket URL.
     let queryToken = null;
-    try {
-      const parsedUrl = new URL(req.url || '/', 'http://localhost');
-      queryToken = parsedUrl.searchParams.get('token');
-    } catch {
-      queryToken = null;
+    if (config.allowBearerCompat) {
+      try {
+        const parsedUrl = new URL(req.url || '/', 'http://localhost');
+        queryToken = parsedUrl.searchParams.get('token');
+      } catch {
+        queryToken = null;
+      }
     }
 
     const candidates = [cookieToken, bearerToken, queryToken].filter(Boolean);
