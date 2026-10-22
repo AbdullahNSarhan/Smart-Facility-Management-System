@@ -53,7 +53,7 @@ npm run dev
 ### Validation, Testing & Database Operations
 
 ```bash
-npm test           # Run the 15-test backend integration suite (Auth, CSRF, RBAC, SQLite, MQTT, WS, Commands)
+npm test           # Run the 16-test backend integration suite (Auth, CSRF, RBAC, SQLite, MQTT, WS, Commands)
 npm run lint       # Verify syntax across frontend and backend ES modules
 npm run build      # Build production static frontend bundle into dist/
 npm run db:backup  # Perform online SQLite hot backup via VACUUM INTO
@@ -64,7 +64,7 @@ npm run db:restore # Restore SQLite database after PRAGMA integrity_check verifi
 
 The `docker-compose.yml` orchestrates three hardened services on an internal bridge network (`lci_internal_net`):
 1. **`frontend_dashboard` (`nginx:alpine`)**: Mounts **only** compiled `./dist` assets (never the repository root) and reverse-proxies `/api/*` and `/ws/*` to `http://backend:3000`.
-2. **`backend` (`node:24-alpine`)**: Runs as non-root `node` user, applies SQLite migrations on `./data/lci_sfm.db` (`sqlite_data` volume), and connects a singleton MQTT client to `mqtt-service`.
+2. **`backend` (`node:24-alpine`)**: Runs as non-root `node` user, applies SQLite migrations at `/app/data/lci_sfm.db` (persistent `sqlite_data` volume), and connects a singleton MQTT client to `mqtt-service`.
 3. **`mqtt-service` (`eclipse-mosquitto:2.0`)**: Enforces `allow_anonymous false`, password authentication (`mosquitto/passwd`), and per-identity topic ACLs (`mosquitto/acl`).
 
 ```bash
