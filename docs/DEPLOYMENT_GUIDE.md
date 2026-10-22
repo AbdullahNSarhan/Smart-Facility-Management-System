@@ -343,7 +343,18 @@ docker compose logs -f backend mqtt-service frontend_dashboard
 
 Confirm all three containers are running and the backend becomes healthy. Backend SQLite readiness does not automatically prove MQTT is connected; check MQTT separately in the readiness response and backend logs.
 
-## 10. Verify the deployment
+## 10. Safety gate before connecting live hardware
+
+**Do not treat the current telemetry fallbacks as calibrated sensor readings or confirmed hardware state.** During this review, the current `backend/src/mqtt/mqttClient.js` implementation was found to:
+- Map a boolean `smoke` field to fixed numeric values (650 or 120) when an actual `smoke_gas_level`/`smoke_gas_ppm` value is absent. These fallback numbers are not a measured, calibrated PPM concentration.
+- Infer a missing fan-relay state from temperature using a 28 °C threshold, while the current frontend displays a 30 °C fan threshold.
+- Default missing light and door states to `OFF` and `CLOSED`, respectively, which can be mistaken for confirmed physical states.
+
+Before using the interface for real safety/security operations, confirm the deployed firmware schema and calibrated units. Replace these fallbacks with explicit unknown/unavailable state or verified device feedback, align the control thresholds with the approved hardware/engineering requirements, add tests for missing fields, and verify the result with physical devices in a controlled environment. Do not certify fire/smoke alarms, a closed door, or a relay position from an inferred/default value.
+
+Keep the deployment on a private test network and restrict access to trusted operators until this review is complete. The software dashboard must not replace the independent hardwired emergency-egress mechanism or local autonomous protections.
+
+## 11. Verify the deployment
 
 For loopback-only smoke tests on the server:
 
@@ -367,7 +378,7 @@ Then verify manually:
 
 Do not test emergency door unlock against live hardware as an initial smoke test.
 
-## 11. Backup and restore
+## 12. Backup and restore
 
 Back up the database before each upgrade and on a schedule. Copies may contain sensitive logs and operator metadata, so protect them and store a copy outside the server.
 
@@ -401,7 +412,7 @@ docker compose logs --tail=100 backend
 
 Replace `<BACKUP_FILE>.db` with the actual backup filename. Verify readiness, login, expected records, and logs before reopening normal operations. Keep a separate known-good backup; never delete the only copy.
 
-## 12. Updating the deployment
+## 13. Updating the deployment
 
 Before an update, review the working tree and create/copy a database backup:
 
@@ -422,7 +433,7 @@ Inspect changes to `.env.example`, database migrations, Compose, Nginx, MQTT ACL
 
 If an update fails, capture service logs, preserve the database and backups, and roll back to a reviewed Git commit. Avoid destructive reset commands on a host with local configuration/data.
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 | Symptom | Checks |
 |---|---|
@@ -440,7 +451,7 @@ If an update fails, capture service logs, preserve the database and backups, and
 | WebSocket authentication fails | Check the same-origin `/ws/telemetry` and `/ws/mfa` paths, cookie delivery, session validity, and logs. |
 | Data disappeared after recreating services | Confirm you did not run `down -v`, inspect the `sqlite_data` volume, and verify `SQLITE_DB_PATH=/app/data/lci_sfm.db`. |
 
-## 14. Deployment completion checklist
+## 15. Deployment completion checklist
 
 - [ ] Server patched with supported Docker Engine and Compose plugin.
 - [ ] Actual static private server IP and client/device networks documented.
@@ -457,7 +468,7 @@ If an update fails, capture service logs, preserve the database and backups, and
 - [ ] Backup is copied outside the live database volume.
 - [ ] Public access remains disabled unless TLS and network security have been reviewed.
 
-## 15. Scope and limitations
+## 16. Scope and limitations
 
 - The Compose stack includes Nginx, the Node.js backend, and Mosquitto. It does not define a Python/OpenCV container or deploy ESP32 firmware.
 - Physical devices must be configured for this broker, per-device credentials, and compatible topic/payload schemas.
