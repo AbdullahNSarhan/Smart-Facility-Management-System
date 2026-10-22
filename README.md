@@ -89,6 +89,8 @@ These are example defaults, not evidence that the endpoints are reachable on you
 ## Documentation
 
 - [Frontend Documentation](docs/FRONTEND_DOCUMENTATION.md) — views, operator workflows, authentication behavior, endpoint contracts, telemetry fields, deployment, validation, and known limitations.
+- [Backend Architecture](docs/BACKEND_ARCHITECTURE.md) — Node.js, Mosquitto/MQTT, SQLite, WebSockets, authentication, command lifecycle, security, deployment, and open firmware dependencies.
+- [Backend Implementation Prompt](docs/BACKEND_IMPLEMENTATION_PROMPT.md) — detailed coding-agent instructions to implement the backend in validated milestones, with tests and frontend compatibility.
 - [Hardware & Embedded Systems Architecture](hardware_embedded_systems_architecture_reference_lci_sfm.md)
 - [Programming & Software Concepts Guide](lci_sfm_ai_software_development_programming_concepts_guide.md)
 - [System Workflows & Logic](lci_sfm_comprehensive_workflows_system_logic.md)
