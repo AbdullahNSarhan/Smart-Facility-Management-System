@@ -1,18 +1,462 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LCI-SFM Command &amp; Control Dashboard</title>
-    <meta name="description" content="Air-gapped Light Current Infrastructure for Smart Facility Management (LCI-SFM) Web GUI Dashboard with real-time WebSocket telemetry, 2-of-3 MFA tracker, environmental monitoring, and SQLite audit explorer." />
-    <meta property="og:title" content="LCI-SFM Command &amp; Control Dashboard" />
-    <meta property="og:description" content="Air-gapped Light Current Infrastructure for Smart Facility Management (LCI-SFM) Web GUI Dashboard with real-time WebSocket telemetry, 2-of-3 MFA tracker, environmental monitoring, and SQLite audit explorer." />
-    <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary_large_image" />
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LCI-SFM Command &amp; Control Dashboard</title>
+  <meta name="description" content="Air-gapped Light Current Infrastructure for Smart Facility Management (LCI-SFM) Web GUI Dashboard with real-time WebSocket telemetry, 2-of-3 MFA tracker, environmental monitoring, and SQLite audit explorer." />
+  <meta property="og:title" content="LCI-SFM Command &amp; Control Dashboard" />
+  <meta property="og:description" content="Air-gapped Light Current Infrastructure for Smart Facility Management (LCI-SFM) Web GUI Dashboard with real-time WebSocket telemetry, 2-of-3 MFA tracker, environmental monitoring, and SQLite audit explorer." />
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <!-- Strictly Local Relative CSS Path (Air-Gapped, No External CDNs) -->
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <!-- Custom Vanilla Toast Notification Container (Top-Right, Stacked, 3s Auto-Dismiss) -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
+  <!-- Dynamic IP Configuration Startup Modal -->
+  <div id="startup-modal" class="modal-backdrop hidden">
+    <div class="modal-panel glass-card">
+      <div class="modal-header">
+        <span class="kicker-text">Initial Hardware Provisioning</span>
+        <h2>LCI-SFM Node IP Configuration</h2>
+        <p>Configure local air-gapped IPv4 endpoints stored persistently in browser <code>localStorage</code>.</p>
+      </div>
+      <form id="startup-ip-form">
+        <div class="field-group">
+          <label for="modal_ip_node1">Node 1 — Access Control Node (<code>ip_node1</code>)</label>
+          <input type="text" id="modal_ip_node1" placeholder="192.168.43.11" required />
+        </div>
+        <div class="field-group">
+          <label for="modal_ip_node2">Node 2 — Environmental Telemetry Node (<code>ip_node2</code>)</label>
+          <input type="text" id="modal_ip_node2" placeholder="192.168.43.12" required />
+        </div>
+        <div class="field-group">
+          <label for="modal_ip_node3">Node 3 — Biometric Face Recognition Node (<code>ip_node3</code>)</label>
+          <input type="text" id="modal_ip_node3" placeholder="192.168.43.13" required />
+        </div>
+        <div class="modal-actions">
+          <button type="submit" class="btn-mint full-width">Save &amp; Initialize System</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="layout-wrapper">
+    <!-- Fixed & Collapsible Left Sidebar -->
+    <aside id="sidebar" class="sidebar">
+      <div class="brand-header">
+        <div class="brand-row">
+          <div class="brand-logo" title="LCI-SFM Core">LCI</div>
+          <div class="brand-text">
+            <span class="brand-tag">Smart Facility Management</span>
+            <h1>LCI-SFM</h1>
+          </div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav" aria-label="Primary Facility Views">
+        <button class="nav-item active" data-view="view-1" title="01. Command Center">
+          <span class="nav-icon" aria-hidden="true">01</span>
+          <span class="nav-label">Command Center</span>
+        </button>
+        <button class="nav-item" data-view="view-2" title="02. Smart Access &amp; MFA">
+          <span class="nav-icon" aria-hidden="true">02</span>
+          <span class="nav-label">Smart Access &amp; MFA</span>
+        </button>
+        <button class="nav-item" data-view="view-3" title="03. Environment">
+          <span class="nav-icon" aria-hidden="true">03</span>
+          <span class="nav-label">Environment</span>
+        </button>
+        <button class="nav-item" data-view="view-4" title="04. Audit &amp; DB Explorer">
+          <span class="nav-icon" aria-hidden="true">04</span>
+          <span class="nav-label">Audit &amp; DB Explorer</span>
+        </button>
+        <button class="nav-item" data-view="view-5" title="05. Health &amp; Diagnostics">
+          <span class="nav-icon" aria-hidden="true">05</span>
+          <span class="nav-label">Health &amp; Diagnostics</span>
+        </button>
+        <button class="nav-item" data-view="view-6" title="06. Provisioning">
+          <span class="nav-icon" aria-hidden="true">06</span>
+          <span class="nav-label">Provisioning</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="ws-indicator">
+          <span id="ws-telemetry-dot" class="dot dot-red"></span>
+          <span class="ws-text">Telemetry Stream · <strong id="ws-telemetry-status">OFFLINE</strong></span>
+        </div>
+        <div class="ws-indicator">
+          <span id="ws-mfa-dot" class="dot dot-red"></span>
+          <span class="ws-text">Biometric MFA · <strong id="ws-mfa-status">OFFLINE</strong></span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Shell -->
+    <main id="main-shell" class="main-shell">
+      <!-- Top Header with Collapsible Sidebar Button & Light/Dark Theme Switch -->
+      <header class="top-bar">
+        <div class="top-bar-left">
+          <button id="sidebar-toggle-btn" class="icon-btn" title="Collapse or Expand Sidebar" aria-label="Toggle Sidebar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <line x1="3" y1="6" x2="21" y2="6"></line>
+              <line x1="3" y1="12" x2="21" y2="12"></line>
+              <line x1="3" y1="18" x2="21" y2="18"></line>
+            </svg>
+          </button>
+          <div>
+            <span class="sub-label">Node-RED Core · <code>192.168.43.225:1880</code></span>
+            <h2 id="current-view-title">Main Command Center</h2>
+          </div>
+        </div>
+
+        <div class="top-bar-actions">
+          <button id="theme-toggle-btn" class="theme-switch-btn" title="Switch Light / Dark Theme" aria-label="Toggle Theme">
+            <span id="theme-icon-sun" class="theme-icon hidden">☀ Light Mode</span>
+            <span id="theme-icon-moon" class="theme-icon">☾ Dark Mode</span>
+          </button>
+          <button id="open-ip-modal-btn" class="btn-outline">Node IPs</button>
+        </div>
+      </header>
+
+      <!-- VIEW 1: MAIN COMMAND CENTER -->
+      <section id="view-1" class="view-section active">
+        <div id="global-status-banner" class="status-banner normal">
+          <div>
+            <span class="banner-tag">Facility Operating Status</span>
+            <h3 id="global-status-title">Normal Operations — All Thresholds Nominal</h3>
+          </div>
+          <div class="banner-meta">
+            <span>Smoke / Gas Level · <strong id="banner-smoke-val" class="tabular-nums">0 PPM</strong></span>
+          </div>
+        </div>
+
+        <!-- Quick Telemetry Snapshot -->
+        <div class="snapshot-grid">
+          <div class="glass-card stat-card">
+            <span class="card-label">Door State (Reed)</span>
+            <div id="snap-door" class="card-value text-mint tabular-nums">CLOSED</div>
+            <span class="card-var">door_state</span>
+          </div>
+          <div class="glass-card stat-card">
+            <span class="card-label">Aux Light (LDR)</span>
+            <div id="snap-light" class="card-value text-mint tabular-nums">OFF</div>
+            <span class="card-var">light_state</span>
+          </div>
+          <div class="glass-card stat-card">
+            <span class="card-label">HVAC Fan Relay</span>
+            <div id="snap-fan" class="card-value text-cyber tabular-nums">OFF</div>
+            <span class="card-var">fan_relay</span>
+          </div>
+          <div class="glass-card stat-card">
+            <span class="card-label">Temperature</span>
+            <div id="snap-temp" class="card-value text-cyber tabular-nums">0.0 °C</div>
+            <span class="card-var">temperature</span>
+          </div>
+          <div class="glass-card stat-card">
+            <span class="card-label">Humidity</span>
+            <div id="snap-hum" class="card-value text-cyber tabular-nums">0.0 %</div>
+            <span class="card-var">humidity</span>
+          </div>
+        </div>
+
+        <div class="two-col-grid">
+          <!-- Quick Action Panel with 1.5s Anti-Spam Loading State -->
+          <div class="glass-card">
+            <h3 class="section-heading">Quick Action Panel</h3>
+            <p class="helper-note">Direct HTTP POST commands to <code>192.168.43.225:1880</code>. Buttons lock for 1.5 seconds upon click to prevent relay chatter.</p>
+            <div class="action-stack">
+              <button id="cmd-unlock-door" class="btn-rose action-btn">
+                <span class="btn-label">Emergency Door Unlock</span>
+              </button>
+              <button id="cmd-toggle-fan" class="btn-cyber action-btn">
+                <span class="btn-label">Toggle HVAC Fan Relay</span>
+              </button>
+              <button id="cmd-toggle-light" class="btn-mint action-btn">
+                <span class="btn-label">Toggle Auxiliary Light</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Live Activity Feed (Last 5 Events) -->
+          <div class="glass-card">
+            <h3 class="section-heading">Live Activity Feed (Last 5 Events)</h3>
+            <p class="helper-note">Real-time event log captured from telemetry, MFA checkpoints, and operator dispatches.</p>
+            <ul id="live-activity-list" class="activity-list">
+              <li class="activity-empty">Awaiting live telemetry or MFA events from Node-RED (<code>192.168.43.225:1880</code>)...</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 2: SMART ACCESS & BIOMETRICS -->
+      <section id="view-2" class="view-section">
+        <div class="two-col-grid">
+          <div class="glass-card">
+            <h3 class="section-heading">Door &amp; Lock Hardware Visualizer</h3>
+            <div class="hardware-grid">
+              <div class="hw-box">
+                <span class="card-label">Magnetic Reed Switch</span>
+                <strong id="access-reed-state" class="hw-state text-mint">CLOSED (ENGAGED)</strong>
+              </div>
+              <div class="hw-box">
+                <span class="card-label">Solenoid Lock Relay</span>
+                <strong id="access-solenoid-state" class="hw-state text-mint">ENERGIZED (LOCKED)</strong>
+              </div>
+            </div>
+
+            <h3 class="section-heading mt-24">2-out-of-3 MFA Live Tracker</h3>
+            <div class="mfa-status-bar">
+              <span>MFA Status (<code>mfa_status</code>) · <strong id="mfa-status-label" class="text-cyber">IDLE</strong></span>
+              <span>Stage-2 Countdown · <strong id="mfa-timer-label" class="tabular-nums">10s</strong></span>
+            </div>
+            <div class="progress-track">
+              <div id="mfa-progress-fill" class="progress-fill" style="width: 0%"></div>
+            </div>
+
+            <div class="mfa-checkpoints">
+              <div id="cp-face" class="checkpoint">
+                <span class="cp-title">01. Face Biometric</span>
+                <code class="cp-var">isFacePassed: false</code>
+              </div>
+              <div id="cp-card" class="checkpoint">
+                <span class="cp-title">02. RFID Smart Card</span>
+                <code class="cp-var">isCardPassed: false</code>
+              </div>
+              <div id="cp-pin" class="checkpoint">
+                <span class="cp-title">03. Keypad PIN</span>
+                <code class="cp-var">isPinPassed: false</code>
+              </div>
+            </div>
+          </div>
+
+          <div class="glass-card">
+            <div class="flex-between">
+              <h3 class="section-heading">Biometric Camera Snapshot (<code>ip_node3</code>)</h3>
+              <button id="refresh-cam-btn" class="btn-outline">Capture Frame</button>
+            </div>
+            <div class="camera-frame">
+              <div class="camera-viewport">
+                <img id="biometric-camera-img" class="hidden" alt="Node 3 Biometric Snapshot" />
+                <div id="camera-fallback-overlay" class="camera-fallback">
+                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                    <circle cx="12" cy="13" r="4"></circle>
+                  </svg>
+                  <span id="camera-fallback-text">Optical Feed Standby — Click "Capture Frame" to query Node 3</span>
+                </div>
+              </div>
+              <div class="camera-caption">
+                Endpoint · <code id="cam-endpoint-label">http://192.168.43.13/capture.jpg</code>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 3: ENVIRONMENTAL MONITORING -->
+      <section id="view-3" class="view-section">
+        <div class="three-col-grid">
+          <!-- Circular Gauge: Temperature -->
+          <div class="glass-card gauge-card">
+            <span class="card-label">Temperature (0 – 50 °C)</span>
+            <div class="gauge-wrap">
+              <svg viewBox="0 0 120 120" class="gauge-svg">
+                <circle cx="60" cy="60" r="50" class="gauge-bg"></circle>
+                <circle id="gauge-arc-temp" cx="60" cy="60" r="50" class="gauge-arc stroke-cyber" stroke-dasharray="314.16" stroke-dashoffset="314.16"></circle>
+              </svg>
+              <div class="gauge-center">
+                <strong id="env-temp-val" class="gauge-num text-cyber tabular-nums">0.0 °C</strong>
+              </div>
+            </div>
+            <span class="card-var">temperature</span>
+          </div>
+
+          <!-- Circular Gauge: Humidity -->
+          <div class="glass-card gauge-card">
+            <span class="card-label">Humidity (0 – 100 %)</span>
+            <div class="gauge-wrap">
+              <svg viewBox="0 0 120 120" class="gauge-svg">
+                <circle cx="60" cy="60" r="50" class="gauge-bg"></circle>
+                <circle id="gauge-arc-hum" cx="60" cy="60" r="50" class="gauge-arc stroke-mint" stroke-dasharray="314.16" stroke-dashoffset="314.16"></circle>
+              </svg>
+              <div class="gauge-center">
+                <strong id="env-hum-val" class="gauge-num text-mint tabular-nums">0.0 %</strong>
+              </div>
+            </div>
+            <span class="card-var">humidity</span>
+          </div>
+
+          <!-- Circular Gauge: Smoke & Gas Level -->
+          <div class="glass-card gauge-card">
+            <span class="card-label">Smoke &amp; Gas Level (Danger &ge; 400 PPM)</span>
+            <div class="gauge-wrap">
+              <svg viewBox="0 0 120 120" class="gauge-svg">
+                <circle cx="60" cy="60" r="50" class="gauge-bg"></circle>
+                <circle id="gauge-arc-smoke" cx="60" cy="60" r="50" class="gauge-arc stroke-mint" stroke-dasharray="314.16" stroke-dashoffset="314.16"></circle>
+              </svg>
+              <div class="gauge-center">
+                <strong id="env-smoke-val" class="gauge-num text-mint tabular-nums">0 PPM</strong>
+              </div>
+            </div>
+            <span class="card-var">smoke_gas_level</span>
+          </div>
+        </div>
+
+        <div class="two-col-grid mt-24">
+          <div class="glass-card">
+            <h3 class="section-heading">Temperature Sliding Window (30-Point FIFO)</h3>
+            <div class="chart-wrapper">
+              <canvas id="temp-chart-canvas" width="540" height="230"></canvas>
+            </div>
+          </div>
+          <div class="glass-card">
+            <h3 class="section-heading">Humidity Sliding Window (30-Point FIFO)</h3>
+            <div class="chart-wrapper">
+              <canvas id="hum-chart-canvas" width="540" height="230"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <div class="glass-card mt-24 flex-between">
+          <div>
+            <h3 class="section-heading">Actuator Override Mode</h3>
+            <p class="helper-note">Switch between Automated Sensor Threshold Logic and Manual Relay Control on Node-RED.</p>
+          </div>
+          <div class="override-controls">
+            <button id="mode-auto-btn" class="btn-mint">Auto Sensor Logic</button>
+            <button id="mode-manual-btn" class="btn-outline">Manual Override</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 4: AUDIT LOGS & DATABASE EXPLORER -->
+      <section id="view-4" class="view-section">
+        <div class="glass-card">
+          <div class="explorer-toolbar">
+            <div class="tab-group" role="tablist">
+              <button class="tab-btn active" data-table="access_logs">Access Logs (<code>access_logs</code>)</button>
+              <button class="tab-btn" data-table="camera_events">Camera Events (<code>camera_events</code>)</button>
+              <button class="tab-btn" data-table="environmental_telemetry">Environmental History (<code>environmental_telemetry</code>)</button>
+            </div>
+            <div class="search-group">
+              <input type="text" id="db-search-input" placeholder="Filter records by user, event, or status..." />
+              <button id="db-refresh-btn" class="btn-cyber">Fetch SQLite GET</button>
+            </div>
+          </div>
+
+          <div class="table-container">
+            <table class="data-table">
+              <thead id="db-table-head"></thead>
+              <tbody id="db-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 5: SYSTEM HEALTH & DIAGNOSTICS -->
+      <section id="view-5" class="view-section">
+        <div class="four-col-grid">
+          <div class="glass-card">
+            <span class="card-label">Central Server</span>
+            <strong class="node-title">Node-RED Core</strong>
+            <code class="node-ip">192.168.43.225:1880</code>
+            <div id="hb-server" class="hb-pill offline">OFFLINE</div>
+          </div>
+          <div class="glass-card">
+            <span class="card-label">Node 1 (Access)</span>
+            <strong class="node-title">Access Controller</strong>
+            <code id="hb-ip-node1" class="node-ip">192.168.43.11</code>
+            <div id="hb-node1" class="hb-pill offline">OFFLINE</div>
+          </div>
+          <div class="glass-card">
+            <span class="card-label">Node 2 (Environment)</span>
+            <strong class="node-title">Telemetry Sensor Hub</strong>
+            <code id="hb-ip-node2" class="node-ip">192.168.43.12</code>
+            <div id="hb-node2" class="hb-pill offline">OFFLINE</div>
+          </div>
+          <div class="glass-card">
+            <span class="card-label">Node 3 (Biometrics)</span>
+            <strong class="node-title">Optical Face Unit</strong>
+            <code id="hb-ip-node3" class="node-ip">192.168.43.13</code>
+            <div id="hb-node3" class="hb-pill offline">OFFLINE</div>
+          </div>
+        </div>
+
+        <div class="glass-card mt-24">
+          <div class="flex-between">
+            <h3 class="section-heading">System Error Log (<code>system_errors</code>)</h3>
+            <button id="refresh-errors-btn" class="btn-outline">Refresh Errors</button>
+          </div>
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Timestamp</th>
+                  <th>Source Node</th>
+                  <th>Severity</th>
+                  <th>Error Message</th>
+                </tr>
+              </thead>
+              <tbody id="system-errors-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 6: SYSTEM MANAGEMENT & PROVISIONING -->
+      <section id="view-6" class="view-section">
+        <div class="two-col-grid">
+          <div class="glass-card">
+            <h3 class="section-heading">Access Credential Provisioning</h3>
+            <p class="helper-note">Register new facility personnel credentials directly into the Node-RED SQLite store.</p>
+            <form id="user-provision-form">
+              <div class="field-group">
+                <label for="prov_name">Personnel Full Name</label>
+                <input type="text" id="prov_name" placeholder="Eng. Tariq Al-Mansoor" required />
+              </div>
+              <div class="field-group">
+                <label for="prov_rfid">RFID Card UID (Hex)</label>
+                <input type="text" id="prov_rfid" placeholder="A4:9F:21:0B" required />
+              </div>
+              <div class="field-group">
+                <label for="prov_pin">6-Digit Keypad PIN</label>
+                <input type="password" id="prov_pin" maxlength="6" placeholder="••••••" required />
+              </div>
+              <button type="submit" class="btn-mint full-width">Provision User Credential</button>
+            </form>
+          </div>
+
+          <div class="glass-card">
+            <h3 class="section-heading">Dynamic Node IP Configuration (<code>localStorage</code>)</h3>
+            <p class="helper-note">Update local air-gapped IPv4 node addresses used for hardware polling and commands.</p>
+            <form id="settings-ip-form">
+              <div class="field-group">
+                <label for="set_ip_node1">Node 1 — Access Node (<code>ip_node1</code>)</label>
+                <input type="text" id="set_ip_node1" required />
+              </div>
+              <div class="field-group">
+                <label for="set_ip_node2">Node 2 — Environment Node (<code>ip_node2</code>)</label>
+                <input type="text" id="set_ip_node2" required />
+              </div>
+              <div class="field-group">
+                <label for="set_ip_node3">Node 3 — Face Recognition Node (<code>ip_node3</code>)</label>
+                <input type="text" id="set_ip_node3" required />
+              </div>
+              <button type="submit" class="btn-cyber full-width">Update Node Endpoints</button>
+            </form>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Strictly Local Relative ES6 Module Script (Air-Gapped) -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
