@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import mqtt from 'mqtt';
 import dotenv from 'dotenv';
 
@@ -181,10 +182,18 @@ async function main() {
     await pollUntil('actual simulated device command and ACK', async () =>
       ackedCommand === command.command_id
     );
-    await pollUntil('matching MQTT command ACK audit', async () =>
-      (await logs('command_audit')).some((r) =>
-        r.command_id === command.command_id && r.lifecycle_state === 'state_confirmed')
-    );
+    // The command_audit table is intentionally NOT a public /api/logs table.
+    // Inspect it only from the isolated CI host through Docker, read-only.
+    await pollUntil('matching MQTT command ACK audit', async () => {
+      const sql = "const { DatabaseSync } = require('node:sqlite');" +
+        "const db = new DatabaseSync('/app/data/lci_sfm.db', { readOnly: true });" +
+        "const r = db.prepare('SELECT lifecycle_state FROM command_audit WHERE command_id = ?').get(process.argv[1]);" +
+        "console.log(r ? r.lifecycle_state : ''); db.close();";
+      const lifecycle = execFileSync('docker', [
+        'compose', 'exec', '-T', 'backend', 'node', '-e', sql, command.command_id
+      ], { encoding: 'utf8', timeout: 5000 }).trim();
+      return lifecycle === 'state_confirmed';
+    });
     console.log('PASS: Admin CSRF-protected API -> broker -> simulated Node2 -> ACK -> SQLite');
 
     const { response: readyResponse, body: health } = await readJson('/api/health/ready');
