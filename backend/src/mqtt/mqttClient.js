@@ -62,9 +62,20 @@ export class MqttService {
   }
 
   getHealthStatus() {
+    const now = Date.now();
+    const nodeStaleMs = this.config.mqttNodeStaleMs ?? 90000;
     const nodes = {};
     for (const [nodeId, info] of this.nodeHeartbeats.entries()) {
-      nodes[nodeId] = info;
+      const observedAt = Date.parse(info.last_seen_at);
+      const ageMs = Number.isFinite(observedAt) ? Math.max(0, now - observedAt) : null;
+      const fresh = ageMs !== null && ageMs <= nodeStaleMs;
+      nodes[nodeId] = {
+        ...info,
+        reported_status: info.status,
+        status: !this.isConnected() ? 'UNKNOWN' : !fresh ? 'STALE' : info.status,
+        fresh: Boolean(this.isConnected() && fresh),
+        age_ms: ageMs
+      };
     }
     const enabled = Boolean(this.config.mqttEnabled);
     const connected = enabled ? this.isConnected() : false;
@@ -431,7 +442,9 @@ export class MqttService {
       seq: normalized.seq
     });
 
-    if (this.commandCoordinator) {
+    // QoS 1 retransmissions may have the same (node_id, boot_id, seq).
+    // A duplicate must not be treated as fresh evidence for command completion.
+    if (!insertResult.duplicate && this.commandCoordinator) {
       this.commandCoordinator.handleObservedState(nodeId, normalized);
     }
 
@@ -538,7 +551,7 @@ export class MqttService {
       seq: d.seq ?? null
     });
 
-    if (this.commandCoordinator) {
+    if (!logRes.duplicate && this.commandCoordinator) {
       this.commandCoordinator.handleObservedState(nodeId, d);
     }
 
@@ -580,9 +593,10 @@ export class MqttService {
     }
 
     if (this.commandCoordinator) {
-      this.commandCoordinator.handleCommandAck(validation.data);
+      const outcome = this.commandCoordinator.handleCommandAck(validation.data, topic);
+      return { ...outcome, data: validation.data };
     }
-    return { ok: true, data: validation.data };
+    return { ok: false, error: 'COMMAND_COORDINATOR_UNAVAILABLE' };
   }
 
   _handleHeartbeat(topic, raw) {

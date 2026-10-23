@@ -231,9 +231,11 @@ export class CommandCoordinator {
         observed_state: outcome.observed_state || null,
         issued_at: issuedAt,
         expires_at: expiresAt,
-        note: isConfirmed
-          ? 'Edge node confirmed command execution.'
-          : 'Command published to MQTT broker. Physical actuation confirmation awaits device ACK or next telemetry frame.',
+        note: outcome.lifecycle_state === 'state_confirmed'
+          ? 'A matching state was reported by the edge node; confirm physical behavior during hardware acceptance tests.'
+          : outcome.lifecycle_state === 'acknowledged'
+            ? 'Matching device ACK received, but the requested physical state has not yet been independently confirmed.'
+            : 'Command published to MQTT broker. Physical actuation confirmation awaits device ACK or a subsequent state report.',
         request_id: requestId
       }
     };
@@ -248,6 +250,15 @@ export class CommandCoordinator {
     ackTimeoutMs,
     waitForAckMs
   }) {
+    // A very fast device may ACK while publishCommand() is still resolving.
+    // Do not overwrite an already-settled DB state with a fresh timeout timer.
+    const persisted = this.repo.getCommandAudit(commandId);
+    if (persisted && persisted.lifecycle_state !== 'published') {
+      return Promise.resolve({
+        lifecycle_state: persisted.lifecycle_state,
+        observed_state: persisted.lifecycle_state === 'state_confirmed' ? requestedState : null
+      });
+    }
     return new Promise((resolve) => {
       let httpResolved = false;
 
@@ -263,6 +274,12 @@ export class CommandCoordinator {
         if (!entry || entry.settled) return;
         entry.settled = true;
         this.pendingCommands.delete(commandId);
+        // Acceptance ACK arrived, but state telemetry has not confirmed the
+        // outcome. Preserve "acknowledged" rather than converting it to timeout.
+        if (entry.acknowledged) {
+          finishHttp({ lifecycle_state: 'acknowledged', observed_state: null });
+          return;
+        }
 
         this.repo.updateCommandAuditState(commandId, {
           lifecycle_state: 'timed_out',
@@ -296,6 +313,7 @@ export class CommandCoordinator {
         ackTimer,
         fastReturnTimer,
         finishHttp,
+        acknowledged: false,
         settled: false
       });
     });
@@ -305,7 +323,7 @@ export class CommandCoordinator {
    * Called when an explicit MQTT command acknowledgement arrives on
    * lecf/access/command/ack or lecf/env/command/ack.
    */
-  handleCommandAck(ackPayload) {
+  handleCommandAck(ackPayload, sourceTopic = null) {
     const {
       command_id: commandId,
       node_id: nodeId,
@@ -349,7 +367,20 @@ export class CommandCoordinator {
       return { ok: false, reason: 'NODE_MISMATCH' };
     }
 
-    const terminalStates = new Set(['acknowledged', 'state_confirmed', 'rejected', 'failed']);
+    const expectedAckTopic = auditRow ? COMMAND_TARGET_MAP[auditRow.command]?.ackTopic : null;
+    if (sourceTopic && expectedAckTopic && sourceTopic !== expectedAckTopic) {
+      this.repo.insertSystemError({
+        source_node: nodeId,
+        error_code: 'COMMAND_ACK_TOPIC_MISMATCH',
+        severity: 'WARN',
+        error_description: `ACK for "${commandId}" arrived on "${sourceTopic}" instead of "${expectedAckTopic}"`
+      });
+      return { ok: false, reason: 'TOPIC_MISMATCH' };
+    }
+
+    // Never accept an ACK after its expiry or after the command was rejected,
+    // timed out or failed. A delayed QoS delivery is not proof of fresh actuation.
+    const terminalStates = new Set(['state_confirmed', 'rejected', 'failed', 'timed_out', 'unavailable']);
     if (auditRow && terminalStates.has(auditRow.lifecycle_state)) {
       logger.info('Ignored duplicate MQTT command ACK for already-settled command', {
         command_id: commandId,
@@ -358,32 +389,49 @@ export class CommandCoordinator {
       return { ok: true, duplicate: true, lifecycle_state: auditRow.lifecycle_state };
     }
 
+    if (auditRow?.expires_at && Date.now() > Date.parse(auditRow.expires_at)) {
+      return { ok: false, reason: 'EXPIRED_ACK' };
+    }
+
+    if (auditRow?.lifecycle_state === 'acknowledged') {
+      return { ok: true, duplicate: true, lifecycle_state: 'acknowledged' };
+    }
+
+    const requestedState = pending?.requestedState ?? auditRow?.requested_state;
+    const stateMismatch = status === 'executed' && observedState !== undefined && observedState !== requestedState;
     const lifecycleState =
-      status === 'executed' || status === 'acknowledged'
-        ? observedState
-          ? 'state_confirmed'
-          : 'acknowledged'
-        : status === 'rejected'
-          ? 'rejected'
-          : 'failed';
+      status === 'rejected' ? 'rejected'
+        : status === 'failed' || stateMismatch ? 'failed'
+          : status === 'executed' && observedState === requestedState
+            ? 'state_confirmed'
+            : 'acknowledged';
 
     this.repo.updateCommandAuditState(commandId, {
       lifecycle_state: lifecycleState,
       acknowledged_at: nowIso,
       confirmed_at: lifecycleState === 'state_confirmed' ? nowIso : null,
-      error_code: errorCode || null,
-      details: message || `Device ${nodeId} reported status=${status}`
+      error_code: stateMismatch ? 'STATE_MISMATCH' : (errorCode || null),
+      details: stateMismatch
+        ? `Device ${nodeId} reported observed_state=${observedState}, expected ${requestedState}`
+        : message || `Device ${nodeId} reported status=${status}`
     });
 
     if (pending && !pending.settled) {
-      pending.settled = true;
-      clearTimeout(pending.ackTimer);
       clearTimeout(pending.fastReturnTimer);
-      this.pendingCommands.delete(commandId);
-      pending.finishHttp({
-        lifecycle_state: lifecycleState,
-        observed_state: observedState || pending.requestedState
-      });
+      if (lifecycleState === 'acknowledged') {
+        // Keep pending until expiry to allow later matching state telemetry to
+        // advance acknowledged -> state_confirmed without losing the HTTP ACK.
+        pending.acknowledged = true;
+        pending.finishHttp({ lifecycle_state: 'acknowledged', observed_state: null });
+      } else {
+        pending.settled = true;
+        clearTimeout(pending.ackTimer);
+        this.pendingCommands.delete(commandId);
+        pending.finishHttp({
+          lifecycle_state: lifecycleState,
+          observed_state: observedState ?? null
+        });
+      }
     }
 
     if (this.wsGateway) {

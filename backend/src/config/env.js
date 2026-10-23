@@ -135,6 +135,9 @@ export function loadConfig(overrides = {}) {
     mqttReconnectPeriodMs: Number(overrides.MQTT_RECONNECT_PERIOD_MS ?? process.env.MQTT_RECONNECT_PERIOD_MS ?? 5000),
     mqttDnsRetryBaseMs: Number(overrides.MQTT_DNS_RETRY_BASE_MS ?? process.env.MQTT_DNS_RETRY_BASE_MS ?? 1000),
     mqttDnsRetryMaxMs: Number(overrides.MQTT_DNS_RETRY_MAX_MS ?? process.env.MQTT_DNS_RETRY_MAX_MS ?? 30000),
+    // Device activity is independent of broker readiness. Missing/stale devices must
+    // never make the central service unhealthy before hardware is provisioned.
+    mqttNodeStaleMs: Number(overrides.MQTT_NODE_STALE_MS ?? process.env.MQTT_NODE_STALE_MS ?? 90000),
     mqttEnabled:
       overrides.MQTT_ENABLED !== undefined
         ? String(overrides.MQTT_ENABLED) !== 'false'
@@ -168,6 +171,10 @@ export function loadConfig(overrides = {}) {
     // Command Coordinator timeouts
     commandAckTimeoutMs: Number(overrides.COMMAND_ACK_TIMEOUT_MS ?? process.env.COMMAND_ACK_TIMEOUT_MS ?? 5000)
   };
+
+  if (!Number.isInteger(config.mqttNodeStaleMs) || config.mqttNodeStaleMs < 1000 || config.mqttNodeStaleMs > 3600000) {
+    throw new Error('FATAL CONFIG ERROR: MQTT_NODE_STALE_MS must be an integer between 1000 and 3600000 milliseconds.');
+  }
 
   if (config.mqttEnabled) {
     validateMqttBrokerUrl(config.mqttBrokerUrl);
