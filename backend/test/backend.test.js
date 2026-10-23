@@ -1359,11 +1359,13 @@ exit 0
       fs.mkdirSync(path.join(deployedCheckout, 'mosquitto'), { recursive: true });
       fs.mkdirSync(path.join(deployedCheckout, 'nginx'), { recursive: true });
       fs.mkdirSync(path.join(deployedCheckout, 'backend'), { recursive: true });
+      fs.mkdirSync(path.join(deployedCheckout, 'deployment'), { recursive: true });
       fs.copyFileSync(path.join(repoRoot, 'update.sh'), path.join(deployedCheckout, 'update.sh'));
       fs.chmodSync(path.join(deployedCheckout, 'update.sh'), 0o755);
       fs.copyFileSync(path.join(repoRoot, 'docker-compose.yml'), path.join(deployedCheckout, 'docker-compose.yml'));
       fs.copyFileSync(path.join(repoRoot, 'nginx', 'nginx.conf'), path.join(deployedCheckout, 'nginx', 'nginx.conf'));
       fs.copyFileSync(path.join(repoRoot, 'backend', 'Dockerfile'), path.join(deployedCheckout, 'backend', 'Dockerfile'));
+      fs.copyFileSync(path.join(repoRoot, 'deployment', 'validation.Dockerfile'), path.join(deployedCheckout, 'deployment', 'validation.Dockerfile'));
       fs.copyFileSync(path.join(repoRoot, 'mosquitto', 'acl'), path.join(deployedCheckout, 'mosquitto', 'acl'));
       fs.copyFileSync(path.join(repoRoot, 'mosquitto', 'mosquitto.conf'), path.join(deployedCheckout, 'mosquitto', 'mosquitto.conf'));
       fs.writeFileSync(path.join(deployedCheckout, 'README.md'), '# V1 Initial Release\n');
