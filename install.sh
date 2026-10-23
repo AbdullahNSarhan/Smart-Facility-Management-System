@@ -129,10 +129,11 @@ else
   fi
 fi
 
-# Ensure private runtime files cannot be committed accidentally.
-touch .gitignore
-for entry in ".env" "DEPLOYMENT-CREDENTIALS.txt" "mosquitto/passwd" "mosquitto/device-credentials.txt" "backups/"; do
-  grep -Fxq "$entry" .gitignore || printf '%s\n' "$entry" >> .gitignore
+# Keep host-specific secrets out of Git without modifying tracked repository files.
+EXCLUDE_FILE=".git/info/exclude"
+touch "$EXCLUDE_FILE"
+for entry in "/.env" "/DEPLOYMENT-CREDENTIALS.txt" "/mosquitto/passwd" "/mosquitto/device-credentials.txt" "/backups/"; do
+  grep -Fxq "$entry" "$EXCLUDE_FILE" || printf '%s\\n' "$entry" >> "$EXCLUDE_FILE"
 done
 chmod 600 .env
 
