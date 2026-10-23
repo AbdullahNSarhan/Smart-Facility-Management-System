@@ -1,0 +1,37 @@
+name: Validate deployment scripts and application
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, "fix/deployment-scripts-health-credentials"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Validate shell syntax
+        run: bash -n install.sh update.sh
+
+      - name: Install dependencies
+        run: npm install --no-package-lock
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build
