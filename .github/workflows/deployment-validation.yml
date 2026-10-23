@@ -19,39 +19,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  bootstrap-lockfiles:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/deployment-readiness-hardening'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    steps:
-      - name: Check out the deployment-readiness branch
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Node.js 24
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Generate and commit the initial npm lockfiles
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-          npm install --prefix backend --package-lock-only --ignore-scripts --no-audit --no-fund
-          git add package-lock.json backend/package-lock.json
-          if git diff --cached --quiet; then
-            echo "Lockfiles are already present and unchanged."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Add npm lockfiles for reproducible builds"
-          git push origin HEAD:fix/deployment-readiness-hardening
-
   validate-and-smoke-test:
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -74,6 +41,8 @@ jobs:
           test "$(git ls-files -s -- update.sh | awk '{print $1}')" = "100755"
           bash -n install.sh update.sh
           test -f .env.example
+          test -f package-lock.json
+          test -f backend/package-lock.json
           test -f docker-compose.yml
           test -f backend/Dockerfile
           test -f nginx/nginx.conf
@@ -87,22 +56,7 @@ jobs:
           done
 
       - name: Install frontend dependencies
-        run: npm install --no-package-lock --no-audit --no-fund
-
-      - name: Generate lockfiles for a reproducible deployment
-        run: |
-          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-          npm install --prefix backend --package-lock-only --ignore-scripts --no-audit --no-fund
-
-      - name: Upload generated lockfiles for review
-        uses: actions/upload-artifact@v4
-        with:
-          name: candidate-lockfiles
-          path: |
-            package-lock.json
-            backend/package-lock.json
-          if-no-files-found: error
-          retention-days: 1
+        run: npm ci --no-audit --no-fund
 
       - name: Run lint
         run: npm run lint
