@@ -41,10 +41,12 @@ jobs:
           test -f nginx/nginx.conf
           test -f mosquitto/acl
           test -f mosquitto/mosquitto.conf
-          if git ls-files --error-unmatch .env mosquitto/passwd DEPLOYMENT-CREDENTIALS.txt >/dev/null 2>&1; then
-            echo "A host-specific secret file is tracked by Git." >&2
-            exit 1
-          fi
+          for secret_file in .env mosquitto/passwd DEPLOYMENT-CREDENTIALS.txt mosquitto/device-credentials.txt; do
+            if git ls-files --error-unmatch "$secret_file" >/dev/null 2>&1; then
+              echo "A host-specific secret file is tracked by Git: $secret_file" >&2
+              exit 1
+            fi
+          done
 
       - name: Install frontend dependencies
         run: npm install --no-package-lock --no-audit --no-fund
