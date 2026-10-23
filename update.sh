@@ -164,8 +164,7 @@ for artifact in "$TEST_TREE/dist"/*; do
   cp -a -- "$artifact" "$PROJECT_DIR/dist/"
 done
 shopt -u dotglob nullglob
-install -m 0644 "$TEST_TREE/dist/index.html" "$PROJECT_DIR/dist/index.html" \\
-  || die "Could not publish the tested frontend index. Database backup: $BACKUP_PATH"
+install -m 0644 "$TEST_TREE/dist/index.html" "$PROJECT_DIR/dist/index.html" || die "Could not publish the tested frontend index. Database backup: $BACKUP_PATH"
 FRONTEND_ARTIFACT_PUBLISHED=1
 
 log "Rebuilding and recreating services. Persistent Docker volumes will not be removed."
