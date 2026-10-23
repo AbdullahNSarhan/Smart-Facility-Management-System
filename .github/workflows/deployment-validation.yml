@@ -47,6 +47,7 @@ jobs:
           test -f backend/package-lock.json
           test -f docker-compose.yml
           test -f backend/Dockerfile
+          test -f deployment/validation.Dockerfile
           test -f nginx/nginx.conf
           test -f mosquitto/acl
           test -f mosquitto/mosquitto.conf
@@ -72,6 +73,17 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+      # Reproduce the exact Linux container validation environment used by
+      # install.sh and update.sh, not just the GitHub runner's toolchain.
+      - name: Validate inside installer Docker image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker build -t lci-sfm-validator:node24 -f deployment/validation.Dockerfile deployment
+          docker run --rm -e HOME=/tmp -e npm_config_cache=/tmp/npm-cache \
+            -v "$PWD:/workspace" -w /workspace lci-sfm-validator:node24 sh -lc \
+            'command -v git && command -v bash && command -v flock && npm ci --no-audit --no-fund && npm run lint && npm test && npm run build'
 
       - name: Generate isolated integration-test secrets
         shell: bash
