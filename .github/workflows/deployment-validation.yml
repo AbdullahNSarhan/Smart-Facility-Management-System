@@ -243,6 +243,9 @@ jobs:
 
           sudo install -m 600 .env "$GUARD_DIR/.env"
           sudo install -m 600 mosquitto/passwd "$GUARD_DIR/mosquitto/passwd"
+          # Production installations are root-owned; mirror that in this fixture so
+          # sudo-running Git does not trip Git's dubious-ownership safety check.
+          sudo chown -R root:root "$GUARD_DIR"
 
           if sudo "$GUARD_DIR/update.sh" >"$GUARD_LOG" 2>&1; then
             cat "$GUARD_LOG"
