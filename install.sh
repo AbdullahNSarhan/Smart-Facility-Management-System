@@ -183,7 +183,7 @@ chmod 600 mosquitto/passwd mosquitto/acl
 log "Building frontend and running lint/tests inside Node.js 24 container"
 docker run --rm -e HOME=/tmp -e npm_config_cache=/tmp/npm-cache \
   -v "$PROJECT_DIR:/workspace" -w /workspace node:24-alpine sh -lc \
-  'npm install --no-package-lock && npm run lint && npm test && npm run build'
+  'npm ci --no-audit --no-fund && npm run lint && npm test && npm run build'
 
 [[ -s dist/index.html ]] || die "Frontend build did not create dist/index.html."
 [[ -f nginx/nginx.conf ]] || die "nginx/nginx.conf is missing."
