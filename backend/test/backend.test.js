@@ -1219,6 +1219,100 @@ describe('LCI-SFM Production Node.js Backend Integration Suite', () => {
   });
 
   // --------------------------------------------------------------------------
+  // 12B. PRE-HARDWARE SAFETY: NODE FRESHNESS & TRUTHFUL ACK LIFECYCLE
+  // --------------------------------------------------------------------------
+  it('does not call a stale edge node online simply because the broker is connected', () => {
+    ctx.mqttService.config.mqttEnabled = true;
+    ctx.mqttService.connected = true;
+    ctx.mqttService.client = { connected: true };
+    ctx.mqttService.config.mqttNodeStaleMs = 1500;
+    ctx.mqttService.nodeHeartbeats.set('test-stale-node', {
+      status: 'ONLINE',
+      last_seen_at: new Date(Date.now() - 60_000).toISOString()
+    });
+    const healthyBroker = ctx.mqttService.getHealthStatus();
+    assert.equal(healthyBroker.connected, true);
+    assert.equal(healthyBroker.observed_nodes['test-stale-node'].status, 'STALE');
+    assert.equal(healthyBroker.observed_nodes['test-stale-node'].fresh, false);
+
+    ctx.mqttService.connected = false;
+    assert.equal(ctx.mqttService.getHealthStatus().observed_nodes['test-stale-node'].status, 'UNKNOWN');
+    ctx.mqttService.connected = true;
+    ctx.mqttService.config.mqttNodeStaleMs = 90000;
+  });
+
+  it('rejects wrong-topic ACKs and mismatched state without claiming physical confirmation', async () => {
+    ctx.mqttService.config.mqttEnabled = true;
+    ctx.mqttService.connected = true;
+    ctx.mqttService.client = { connected: true };
+    ctx.mqttService.publishCommand = async () => true;
+    const adminUser = ctx.repo.findUserByUsername('sfm_chief_admin');
+
+    const dispatch = (state, requestId) => ctx.commandCoordinator.dispatchCommand({
+      command: 'TOGGLE_AUX_LIGHT', state,
+      actor: { id: adminUser.id, username: adminUser.username },
+      requestId, waitForAckMs: 10
+    });
+
+    const first = await dispatch('ON', 'ack-source-check');
+    assert.equal(first.body.lifecycle_state, 'published');
+    const wrong = ctx.mqttService.handleIncomingMessage('lecf/access/command/ack', JSON.stringify({
+      command_id: first.body.command_id, node_id: 'env_02', status: 'executed', observed_state: 'ON'
+    }));
+    assert.equal(wrong.ok, false);
+    assert.equal(wrong.reason, 'TOPIC_MISMATCH');
+    assert.equal(ctx.repo.getCommandAudit(first.body.command_id).lifecycle_state, 'published');
+    const mismatched = ctx.mqttService.handleIncomingMessage('lecf/env/command/ack', JSON.stringify({
+      command_id: first.body.command_id, node_id: 'env_02', status: 'executed', observed_state: 'OFF'
+    }));
+    assert.equal(mismatched.ok, true);
+    assert.equal(ctx.repo.getCommandAudit(first.body.command_id).lifecycle_state, 'failed');
+
+    const second = await dispatch('ON', 'ack-accepted-then-sensed');
+    const accepted = ctx.mqttService.handleIncomingMessage('lecf/env/command/ack', JSON.stringify({
+      command_id: second.body.command_id, node_id: 'env_02', status: 'acknowledged', observed_state: 'ON'
+    }));
+    assert.equal(accepted.ok, true);
+    assert.equal(ctx.repo.getCommandAudit(second.body.command_id).lifecycle_state, 'acknowledged');
+    // Only subsequent matching telemetry may advance an acceptance ACK.
+    ctx.commandCoordinator.handleObservedState('env_02', { light_state: 'ON' });
+    assert.equal(ctx.repo.getCommandAudit(second.body.command_id).lifecycle_state, 'state_confirmed');
+
+    const third = await dispatch('OFF', 'ack-expiry-check');
+    const audit = ctx.repo.getCommandAudit(third.body.command_id);
+    assert.equal(audit.lifecycle_state, 'published');
+    const late = ctx.commandCoordinator.handleCommandAck({
+      command_id: third.body.command_id, node_id: 'env_02',
+      status: 'executed', observed_state: 'OFF'
+    }, 'lecf/env/command/ack');
+    assert.equal(late.ok, true);
+    assert.equal(ctx.repo.getCommandAudit(third.body.command_id).lifecycle_state, 'state_confirmed');
+  });
+
+  it('preserves an ACK received before MQTT publish resolves', async () => {
+    ctx.mqttService.config.mqttEnabled = true;
+    ctx.mqttService.connected = true;
+    ctx.mqttService.client = { connected: true };
+    ctx.mqttService.publishCommand = async (topic, payload) => {
+      const ack = ctx.mqttService.handleIncomingMessage('lecf/env/command/ack', JSON.stringify({
+        command_id: payload.command_id, node_id: 'env_02',
+        status: 'executed', observed_state: payload.state
+      }));
+      assert.equal(ack.ok, true);
+      return true;
+    };
+    const adminUser = ctx.repo.findUserByUsername('sfm_chief_admin');
+    const r = await ctx.commandCoordinator.dispatchCommand({
+      command: 'TOGGLE_HVAC_FAN', state: 'OFF',
+      actor: { id: adminUser.id, username: adminUser.username },
+      requestId: 'ack-before-publish-return', waitForAckMs: 10
+    });
+    assert.equal(r.body.lifecycle_state, 'state_confirmed');
+    assert.equal(r.body.verified_hardware_ack, true);
+    assert.equal(ctx.repo.getCommandAudit(r.body.command_id).lifecycle_state, 'state_confirmed');
+  });
+
+  // --------------------------------------------------------------------------
   // 13. DEPLOYMENT & UPDATE SCRIPT RECOVERY, ROLLBACK & LOCK CONTENTION TESTS
   // --------------------------------------------------------------------------
   it('rolls back dist/ and Git HEAD to PREV_COMMIT when update.sh fails post-merge readiness and enforces shared lockfile', async () => {
