@@ -90,6 +90,26 @@ docker compose ps
 
 For the complete server preparation, private-LAN binding, firewall, verification, backup/restore, and update process, follow [Deployment Guide](docs/DEPLOYMENT_GUIDE.md). The example bind IPs default to `127.0.0.1`; change them to the server's actual static private LAN IP only when LAN access is required and firewall rules are in place.
 
+## Automated Ubuntu Server Deployment
+
+For a fresh Ubuntu Server on a trusted private LAN, the repository includes `install.sh` and `update.sh`. The installer installs missing host prerequisites, clones this repository to `/opt/lci-sfm`, generates local production secrets and Mosquitto credentials, runs frontend lint/tests/build inside Node.js 24, validates Compose, and starts the services. It preserves an existing `.env` and Mosquitto password file on reruns.
+
+Run the installer from the server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AbdullahNSarhan/Smart-Facility-Management-System/main/install.sh | sudo bash
+```
+
+The generated administrator and MQTT credentials are stored in root-protected local files under `/opt/lci-sfm`; keep them private and provision device credentials securely. The dashboard URL is printed at the end of installation. MQTT remains bound to loopback by default until LAN device access is deliberately configured.
+
+Update later with:
+
+```bash
+sudo /opt/lci-sfm/update.sh
+```
+
+The update script refuses a dirty Git checkout, backs up SQLite when the backend is running, fast-forwards the current branch, reruns validation/build, and rebuilds the Compose stack without deleting persistent volumes. Review `docs/DEPLOYMENT_GUIDE.md` before connecting physical hardware. The current HTTP/MQTT configuration is intended only for a trusted private network, not public internet exposure.
+
 ## Default endpoints
 
 When served behind Nginx or `npm run dev`, the frontend automatically targets the same-origin host (`window.location.host`) while allowing field engineers to override the target gateway or edge node IPs in the UI.
