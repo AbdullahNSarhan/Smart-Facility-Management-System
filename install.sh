@@ -5,9 +5,12 @@ umask 077
 REPO_URL="https://github.com/AbdullahNSarhan/Smart-Facility-Management-System.git"
 INSTALL_DIR="/opt/lci-sfm"
 BRANCH="${LCI_BRANCH:-main}"
+FIRST_INSTALL=0
+INITIAL_ADMIN_PASSWORD=""
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '\n[LCI-SFM] %s\n' "$*"; }
+warn() { printf '[LCI-SFM] WARNING: %s\n' "$*" >&2; }
 
 # Supports: curl -fsSL <raw-install-url> | sudo bash
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P || true)"
@@ -63,6 +66,8 @@ if [[ ! -f .env ]]; then
   chmod 600 .env
   ADMIN_PASSWORD="$(openssl rand -hex 24)"
   MQTT_PASSWORD="$(openssl rand -hex 24)"
+  INITIAL_ADMIN_PASSWORD="$ADMIN_PASSWORD"
+  FIRST_INSTALL=1
   export SERVER_IP ADMIN_PASSWORD MQTT_PASSWORD
   python3 - <<'PY'
 import os
@@ -75,8 +80,7 @@ values = {
     "MQTT_USERNAME": "lci_backend",
     "MQTT_PASSWORD": os.environ["MQTT_PASSWORD"],
     "FRONTEND_BIND_IP": os.environ["SERVER_IP"],
-    # MQTT stays loopback-only by default. Enable LAN binding only when edge
-    # devices are ready and firewall restrictions have been reviewed.
+    # Keep MQTT loopback-only until LAN device access is deliberately configured.
     "MQTT_BIND_IP": "127.0.0.1",
     "ALLOWED_ORIGINS": "http://" + os.environ["SERVER_IP"],
     "SESSION_SECURE_COOKIE": "false",
@@ -117,8 +121,7 @@ EOF
 else
   chmod 600 .env
   log "Existing .env detected; preserved it without overwriting secrets."
-  # Make sure the frontend bind and allowed origin match the current server IP
-  # only when they still contain the example value. Do not override user choices.
+  # Repair example-only defaults without replacing deliberate user choices.
   if grep -q '^FRONTEND_BIND_IP=127\.0\.0\.1$' .env; then
     sed -i "s/^FRONTEND_BIND_IP=127\.0\.0\.1$/FRONTEND_BIND_IP=$SERVER_IP/" .env
     log "Changed FRONTEND_BIND_IP from loopback to the detected LAN IP."
@@ -133,11 +136,14 @@ fi
 EXCLUDE_FILE=".git/info/exclude"
 touch "$EXCLUDE_FILE"
 for entry in "/.env" "/DEPLOYMENT-CREDENTIALS.txt" "/mosquitto/passwd" "/mosquitto/device-credentials.txt" "/backups/"; do
-  grep -Fxq "$entry" "$EXCLUDE_FILE" || printf '%s\\n' "$entry" >> "$EXCLUDE_FILE"
+  grep -Fxq "$entry" "$EXCLUDE_FILE" || printf '%s\n' "$entry" >> "$EXCLUDE_FILE"
 done
 chmod 600 .env
 
-# Create Mosquitto password file only when absent/empty. Existing credentials are preserved.
+# Set Mosquitto bind-mounted secret/ACL files to the broker's UID and restrictive
+# permissions. The tracked ACL's executable bit is not changed, so Git stays clean.
+[[ -f mosquitto/acl ]] || die "mosquitto/acl is missing."
+[[ -f mosquitto/mosquitto.conf ]] || die "mosquitto/mosquitto.conf is missing."
 if [[ ! -s mosquitto/passwd ]]; then
   log "Generating unique MQTT credentials for backend and edge identities."
   MQTT_BACKEND_PASSWORD="$(sed -n 's/^MQTT_PASSWORD=//p' .env | head -n1)"
@@ -158,7 +164,6 @@ Do not commit or share this file publicly.
 EOF
   chmod 600 "$CREDENTIALS_FILE"
   docker pull eclipse-mosquitto:2.0
-  # The temporary container is removed after writing the password hashes.
   docker run --rm --user 0:0 --entrypoint sh -v "$PROJECT_DIR/mosquitto:/mosquitto/config" \
     eclipse-mosquitto:2.0 -ec '
       mosquitto_passwd -c -b /mosquitto/config/passwd lci_backend "$1"
@@ -167,12 +172,13 @@ EOF
       mosquitto_passwd -b /mosquitto/config/passwd vision_service "$4"
     ' sh "$MQTT_BACKEND_PASSWORD" "$NODE1_PASSWORD" "$NODE2_PASSWORD" "$VISION_PASSWORD"
   unset MQTT_BACKEND_PASSWORD NODE1_PASSWORD NODE2_PASSWORD VISION_PASSWORD
-  chown 1883:1883 mosquitto/passwd
-  chmod 600 mosquitto/passwd
 else
-  log "Existing Mosquitto password file detected; preserving it."
-  chmod 600 mosquitto/passwd
+  log "Existing Mosquitto password file detected; preserving its credentials."
 fi
+
+# Mosquitto runs as UID/GID 1883. The files are bind-mounted read-only by Compose.
+chown 1883:1883 mosquitto/passwd mosquitto/acl
+chmod 600 mosquitto/passwd mosquitto/acl
 
 log "Building frontend and running lint/tests inside Node.js 24 container"
 docker run --rm -e HOME=/tmp -e npm_config_cache=/tmp/npm-cache \
@@ -181,7 +187,6 @@ docker run --rm -e HOME=/tmp -e npm_config_cache=/tmp/npm-cache \
 
 [[ -s dist/index.html ]] || die "Frontend build did not create dist/index.html."
 [[ -f nginx/nginx.conf ]] || die "nginx/nginx.conf is missing."
-[[ -f mosquitto/acl && -f mosquitto/mosquitto.conf ]] || die "Mosquitto config/ACL files are missing."
 docker compose config -q
 
 log "Starting the stack (MQTT broker, backend, then frontend)"
@@ -193,25 +198,62 @@ if ! docker compose ps --status running --services | grep -Fxq mqtt-service; the
 fi
 
 docker compose up -d --build backend
-sleep 5
+sleep 3
+if ! docker compose ps --status running --services | grep -Fxq backend; then
+  docker compose logs --tail=100 backend
+  die "Backend did not remain running. Review the logs above."
+fi
+
 docker compose up -d --build frontend_dashboard
 docker compose ps
 
-log "Checking backend liveness"
-if ! curl --connect-timeout 3 --max-time 10 -fsS "http://127.0.0.1/api/health/live"; then
-  printf '\nBackend health check did not succeed yet. Recent logs:\n' >&2
+log "Checking backend liveness inside its container"
+if ! docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"; then
+  printf '\nBackend health check failed. Recent logs:\n' >&2
   docker compose logs --tail=100 backend >&2
-  die "Deployment started but backend liveness check failed. Fix the reported issue and rerun ./update.sh."
+  die "Backend liveness check failed. Fix the reported issue and rerun install.sh or update.sh."
 fi
+
+FRONTEND_BIND_IP="$(sed -n 's/^FRONTEND_BIND_IP=//p' .env | tail -n1)"
+FRONTEND_BIND_IP="${FRONTEND_BIND_IP:-127.0.0.1}"
+log "Checking frontend through http://$FRONTEND_BIND_IP/"
+if ! curl --connect-timeout 3 --max-time 10 -fsS "http://$FRONTEND_BIND_IP/" -o /dev/null; then
+  docker compose logs --tail=100 frontend_dashboard >&2
+  die "Frontend HTTP health check failed at http://$FRONTEND_BIND_IP/."
+fi
+
+for service in mqtt-service backend frontend_dashboard; do
+  if ! docker compose ps --status running --services | grep -Fxq "$service"; then
+    docker compose logs --tail=80 "$service" >&2
+    die "Required service '$service' is not running."
+  fi
+done
 
 cat <<EOF
 
-LCI-SFM installation finished.
-Web dashboard: http://$SERVER_IP
-Credentials file: $PROJECT_DIR/DEPLOYMENT-CREDENTIALS.txt (root-only; keep private)
-Project directory: $PROJECT_DIR
+============================================================
+LCI-SFM installation finished successfully
+============================================================
+Dashboard URL : http://$FRONTEND_BIND_IP/
+Admin username: sfm_admin
+Project path  : $PROJECT_DIR
+Credentials   : $PROJECT_DIR/DEPLOYMENT-CREDENTIALS.txt (mode 600)
+Update command: sudo $PROJECT_DIR/update.sh
 
-MQTT is bound to 127.0.0.1 by default and is not exposed to the LAN.
-Before connecting real hardware, review docs/DEPLOYMENT_GUIDE.md and the project's safety/integration limitations.
-To update later: sudo $PROJECT_DIR/update.sh
+Service status:
 EOF
+docker compose ps
+
+if [[ $FIRST_INSTALL -eq 1 && -n "$INITIAL_ADMIN_PASSWORD" ]]; then
+  printf '\nIMPORTANT — initial administrator password (shown only on first install):\n'
+  printf 'Admin password: %s\n' "$INITIAL_ADMIN_PASSWORD"
+  printf 'Change it after your first login. The protected credentials file remains available locally.\n'
+else
+  printf '\nExisting installation detected: no password was generated or printed.\n'
+  printf 'If you need the original credentials, inspect the root-protected credentials file locally.\n'
+fi
+unset INITIAL_ADMIN_PASSWORD
+
+printf '\nMQTT bind setting: %s\n' "$(sed -n 's/^MQTT_BIND_IP=//p' .env | tail -n1)"
+printf 'MQTT is not exposed to the LAN unless MQTT_BIND_IP is explicitly configured for it.\n'
+printf 'Review docs/DEPLOYMENT_GUIDE.md before connecting physical hardware.\n\n'
