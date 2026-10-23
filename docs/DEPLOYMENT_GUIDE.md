@@ -258,7 +258,7 @@ npm --version
 From the repository root:
 
 ```bash
-npm install --no-package-lock
+npm ci --no-audit --no-fund
 npm run lint
 npm test
 npm run build
@@ -276,7 +276,7 @@ docker run --rm \
   -v "$PWD:/workspace" \
   -w /workspace \
   node:24-alpine \
-  sh -lc 'npm install --no-package-lock && npm run lint && npm test && npm run build'
+  sh -lc 'npm ci --no-audit --no-fund && npm run lint && npm test && npm run build'
 ```
 
 This mounts the repository into a temporary build container and writes `dist/` and `node_modules/` into the checkout. Ensure the checkout directory is writable by the current deployment user.

@@ -6,8 +6,21 @@ import os from 'node:os';
 import request from 'supertest';
 import { WebSocket } from 'ws';
 import { createBackendContext } from '../src/app.js';
+import { loadConfig } from '../src/config/env.js';
 import { createAuthMiddleware } from '../src/middleware/auth.js';
 import { createDatabaseBackup, restoreDatabaseBackup } from '../src/db/backup.js';
+import {
+  LocalFIFOChart,
+  sanitizeInput,
+  escapeHTML,
+  isValidIPv4,
+  isValidHostPort,
+  isValidHexRFID,
+  isValidSixDigitPin,
+  resolveInitialServerHost,
+  formatReadinessSummary,
+  LEGACY_NODE_RED_HOST
+} from '../../app.js';
 
 const TEST_ADMIN_USER = 'admin';
 const TEST_ADMIN_PASS = 'Str0ng-AirGap-Admin#2026';
@@ -550,4 +563,143 @@ describe('LCI-SFM Production Node.js Backend Integration Suite', () => {
       .set('Authorization', `Bearer ${viewerToken}`);
     assert.equal(afterLogoutRes.status, 401);
   });
+
+  // --------------------------------------------------------------------------
+  // 8. PRODUCTION CONFIG HARDENING, ADMIN PROFILE ROTATION & FRONTEND CONTRACTS
+  // --------------------------------------------------------------------------
+  it('enforces strict production secret validation at startup in loadConfig', () => {
+    assert.throws(
+      () =>
+        loadConfig({
+          NODE_ENV: 'production',
+          LCI_BOOTSTRAP_ADMIN_USERNAME: 'admin',
+          LCI_BOOTSTRAP_ADMIN_PASSWORD: 'a'.repeat(32),
+          MQTT_ENABLED: 'false'
+        }),
+      /LCI_BOOTSTRAP_ADMIN_USERNAME/
+    );
+
+    assert.throws(
+      () =>
+        loadConfig({
+          NODE_ENV: 'production',
+          LCI_BOOTSTRAP_ADMIN_USERNAME: 'sfm_admin',
+          LCI_BOOTSTRAP_ADMIN_PASSWORD: 'REPLACE_WITH_A_UNIQUE_RANDOM_PASSWORD_32_CHARS_MINIMUM',
+          MQTT_ENABLED: 'false'
+        }),
+      /LCI_BOOTSTRAP_ADMIN_PASSWORD/
+    );
+
+    assert.throws(
+      () =>
+        loadConfig({
+          NODE_ENV: 'production',
+          LCI_BOOTSTRAP_ADMIN_USERNAME: 'sfm_admin',
+          LCI_BOOTSTRAP_ADMIN_PASSWORD: 'V3ryLongRandomBootstrapSecretValue_2026!',
+          MQTT_ENABLED: 'true',
+          MQTT_PASSWORD: 'replace_with_mosquitto_backend_secret'
+        }),
+      /MQTT_PASSWORD/
+    );
+  });
+
+  it('rotates Administrator credentials via POST /api/auth/admin-profile and invalidates old password', async () => {
+    const rotateRes = await request(ctx.app)
+      .post('/api/auth/admin-profile')
+      .set('Cookie', adminCookie)
+      .set('X-CSRF-Token', adminCsrf)
+      .send({
+        currentUsername: TEST_ADMIN_USER,
+        newUsername: 'sfm_chief_admin',
+        newPassword: 'Updated-Str0ng-Pass#2026'
+      });
+
+    assert.equal(rotateRes.status, 200);
+    assert.equal(rotateRes.body.ok, true);
+    assert.equal(rotateRes.body.username, 'sfm_chief_admin');
+
+    const oldLoginRes = await request(ctx.app)
+      .post('/api/auth/login')
+      .send({ username: TEST_ADMIN_USER, password: TEST_ADMIN_PASS });
+    assert.equal(oldLoginRes.status, 401);
+
+    const newLoginRes = await request(ctx.app)
+      .post('/api/auth/login')
+      .send({ username: 'sfm_chief_admin', password: 'Updated-Str0ng-Pass#2026' });
+    assert.equal(newLoginRes.status, 200);
+    assert.equal(newLoginRes.body.role, 'Admin');
+  });
+
+  it('auto-migrates only the legacy 192.168.43.225:1880 host while preserving custom hosts and formats readiness status', async () => {
+    // 1. Legacy 192.168.43.225:1880 stored host auto-migrates when served from a different browser origin
+    const migrated = resolveInitialServerHost(LEGACY_NODE_RED_HOST, 'localhost:3000');
+    assert.equal(migrated.host, 'localhost:3000');
+    assert.equal(migrated.migrated, true);
+
+    // 2. Intentional custom host is preserved untouched
+    const custom = resolveInitialServerHost('10.20.30.40:3000', 'localhost:3000');
+    assert.equal(custom.host, '10.20.30.40:3000');
+    assert.equal(custom.migrated, false);
+
+    // 3. Empty/missing stored host defaults to current browser origin
+    const empty = resolveInitialServerHost('', '192.168.1.50:8080');
+    assert.equal(empty.host, '192.168.1.50:8080');
+    assert.equal(empty.migrated, false);
+
+    // 4. Readiness formatter matches real GET /api/health/ready response payload
+    const readyRes = await request(ctx.app).get('/api/health/ready');
+    const summary = formatReadinessSummary(readyRes.body);
+    assert.equal(summary, 'SQLite: OK (WAL) · MQTT: Connected');
+    assert.equal(
+      formatReadinessSummary({
+        sqlite: { ok: true, journal_mode: 'wal' },
+        mqtt: { enabled: false, connected: false }
+      }),
+      'SQLite: OK (WAL) · MQTT: Standby'
+    );
+  });
+
+  it('validates frontend sanitization, strict data types, LocalFIFOChart sliding window, and DOM ID parity', () => {
+    const sanitized = sanitizeInput('<script>alert(1)</script>DROP TABLE users;--admin');
+    assert.equal(sanitized, 'TABLE usersadmin');
+    assert.ok(!sanitized.includes('<script>') && !sanitized.includes('DROP') && !sanitized.includes(';') && !sanitized.includes('--'));
+    assert.equal(escapeHTML('<div class="x">&\'</div>'), '&lt;div class=&quot;x&quot;&gt;&amp;&#39;&lt;/div&gt;');
+    assert.equal(isValidIPv4('192.168.43.11'), true);
+    assert.equal(isValidIPv4('999.168.43.11'), false);
+    assert.equal(isValidHostPort('localhost:3000'), true);
+    assert.equal(isValidHostPort('192.168.43.225:1880'), true);
+    assert.equal(isValidHexRFID('A4:9F:21:0B'), true);
+    assert.equal(isValidHexRFID('ZZZZ'), false);
+    assert.equal(isValidSixDigitPin('042819'), true);
+    assert.equal(isValidSixDigitPin('12345'), false);
+
+    const chart = new LocalFIFOChart(null, { maxPoints: 30, unit: '°C' });
+    for (let i = 1; i <= 35; i++) {
+      chart.pushValue(`12:00:${String(i).padStart(2, '0')}`, 20 + i * 0.5);
+    }
+    assert.equal(chart.data.length, 30);
+    assert.equal(chart.labels.length, 30);
+    assert.equal(chart.data[0], 23.0);
+    chart.reset();
+    assert.equal(chart.data.length, 0);
+
+    // Verify index.html has zero duplicate IDs and satisfies every getElementById reference in app.js
+    const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
+    const html = fs.readFileSync(path.join(repoRoot, 'index.html'), 'utf8');
+    const js = fs.readFileSync(path.join(repoRoot, 'app.js'), 'utf8');
+
+    const htmlIds = [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
+    const seen = new Set();
+    const duplicates = [];
+    for (const id of htmlIds) {
+      if (seen.has(id)) duplicates.push(id);
+      seen.add(id);
+    }
+    assert.deepEqual(duplicates, [], `Duplicate DOM IDs found in index.html: ${duplicates.join(', ')}`);
+
+    const jsIds = [...new Set([...js.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]))];
+    const missingIds = jsIds.filter((id) => !seen.has(id));
+    assert.deepEqual(missingIds, [], `Missing DOM IDs referenced by app.js: ${missingIds.join(', ')}`);
+  });
 });
+

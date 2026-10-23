@@ -24,10 +24,25 @@ async function main() {
         app.use(vite.middlewares);
         logger.info('Mounted Vite development middleware for same-origin frontend console');
       } catch (err) {
-        logger.warn('Vite dev middleware unavailable; falling back to static file serving', {
+        logger.warn('Vite dev middleware unavailable; falling back to compiled dist/ or explicit static frontend files', {
           error: err?.message
         });
-        app.use(express.static(process.cwd()));
+        if (fs.existsSync(distPath)) {
+          app.use(express.static(distPath));
+        } else {
+          const allowedRootFiles = new Map([
+            ['/', path.join(process.cwd(), 'index.html')],
+            ['/index.html', path.join(process.cwd(), 'index.html')],
+            ['/styles.css', path.join(process.cwd(), 'styles.css')],
+            ['/app.js', path.join(process.cwd(), 'app.js')]
+          ]);
+          app.use('/public', express.static(path.join(process.cwd(), 'public')));
+          app.get(['/', '/index.html', '/styles.css', '/app.js'], (req, res, next) => {
+            const target = allowedRootFiles.get(req.path);
+            if (target && fs.existsSync(target)) return res.sendFile(target);
+            return next();
+          });
+        }
       }
     } else if (fs.existsSync(distPath)) {
       app.use(express.static(distPath));

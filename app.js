@@ -350,30 +350,59 @@ export let system_users = [];
 // Defaults to same-origin host when served by Nginx / Node.js backend.
 // Auto-migrates only the known legacy Node-RED host (192.168.43.225:1880) when served from another origin,
 // while preserving any intentional custom host and independent edge node IPs.
-const LEGACY_NODE_RED_HOST = '192.168.43.225:1880';
+export const LEGACY_NODE_RED_HOST = '192.168.43.225:1880';
+
+export function resolveInitialServerHost(rawStoredHost, currentBrowserHost = LEGACY_NODE_RED_HOST) {
+  const effectiveBrowserHost = isValidHostPort(currentBrowserHost)
+    ? String(currentBrowserHost).trim()
+    : LEGACY_NODE_RED_HOST;
+  const cleanedStored = sanitizeInput(String(rawStoredHost || ''));
+
+  if (
+    cleanedStored === LEGACY_NODE_RED_HOST &&
+    effectiveBrowserHost !== LEGACY_NODE_RED_HOST
+  ) {
+    return { host: effectiveBrowserHost, migrated: true };
+  }
+
+  if (isValidHostPort(cleanedStored)) {
+    return { host: cleanedStored, migrated: false };
+  }
+
+  return { host: effectiveBrowserHost, migrated: false };
+}
+
 const defaultBrowserHost =
   typeof window !== 'undefined' && window.location?.host
     ? window.location.host
     : LEGACY_NODE_RED_HOST;
 
-let storedServerHost = sanitizeInput(localStorage.getItem('lci_server_host') || '');
-if (
-  storedServerHost === LEGACY_NODE_RED_HOST &&
-  defaultBrowserHost &&
-  defaultBrowserHost !== LEGACY_NODE_RED_HOST
-) {
-  storedServerHost = defaultBrowserHost;
+const safeStorageGet = (key) => {
   try {
-    localStorage.setItem('lci_server_host', storedServerHost);
+    return typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
+  } catch {
+    return null;
+  }
+};
+
+const safeStorageSet = (key, val) => {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(key, val);
   } catch {}
+};
+
+const initialHostResolution = resolveInitialServerHost(
+  safeStorageGet('lci_server_host'),
+  defaultBrowserHost
+);
+if (initialHostResolution.migrated) {
+  safeStorageSet('lci_server_host', initialHostResolution.host);
 }
 
-export let server_host = isValidHostPort(storedServerHost)
-  ? storedServerHost
-  : defaultBrowserHost;
-export let ip_node1 = sanitizeInput(localStorage.getItem('ip_node1') || '192.168.43.11');
-export let ip_node2 = sanitizeInput(localStorage.getItem('ip_node2') || '192.168.43.12');
-export let ip_node3 = sanitizeInput(localStorage.getItem('ip_node3') || '192.168.43.13');
+export let server_host = initialHostResolution.host;
+export let ip_node1 = sanitizeInput(safeStorageGet('ip_node1') || '192.168.43.11');
+export let ip_node2 = sanitizeInput(safeStorageGet('ip_node2') || '192.168.43.12');
+export let ip_node3 = sanitizeInput(safeStorageGet('ip_node3') || '192.168.43.13');
 
 function getNodeRedHttp() {
   const proto =
@@ -394,7 +423,10 @@ function getWsProtocol() {
 }
 
 function getWsAuthQuery() {
-  const token = sessionStorage.getItem('lci_session_token') || '';
+  const token =
+    typeof sessionStorage !== 'undefined'
+      ? sessionStorage.getItem('lci_session_token') || ''
+      : '';
   if (token && !token.startsWith('UNVERIFIED-') && token !== 'COOKIE_SESSION') {
     return `?token=${encodeURIComponent(token)}`;
   }
@@ -409,28 +441,30 @@ function getWsMfaUrl() {
   return `${getWsProtocol()}//${server_host}/ws/mfa${getWsAuthQuery()}`;
 }
 
-// Expose variables globally on window for direct Node-RED / browser inspection
-window.LCI_STATE = {
-  get temperature() { return temperature; },
-  get humidity() { return humidity; },
-  get smoke_gas_level() { return smoke_gas_level; },
-  get light_state() { return light_state; },
-  get door_state() { return door_state; },
-  get fan_relay() { return fan_relay; },
-  get isFacePassed() { return isFacePassed; },
-  get isCardPassed() { return isCardPassed; },
-  get isPinPassed() { return isPinPassed; },
-  get mfa_status() { return mfa_status; },
-  get access_logs() { return access_logs; },
-  get environmental_telemetry() { return environmental_telemetry; },
-  get camera_events() { return camera_events; },
-  get system_errors() { return system_errors; },
-  get system_users() { return system_users; },
-  get server_host() { return server_host; },
-  get ip_node1() { return ip_node1; },
-  get ip_node2() { return ip_node2; },
-  get ip_node3() { return ip_node3; }
-};
+// Expose variables globally on window for direct browser inspection
+if (typeof window !== 'undefined') {
+  window.LCI_STATE = {
+    get temperature() { return temperature; },
+    get humidity() { return humidity; },
+    get smoke_gas_level() { return smoke_gas_level; },
+    get light_state() { return light_state; },
+    get door_state() { return door_state; },
+    get fan_relay() { return fan_relay; },
+    get isFacePassed() { return isFacePassed; },
+    get isCardPassed() { return isCardPassed; },
+    get isPinPassed() { return isPinPassed; },
+    get mfa_status() { return mfa_status; },
+    get access_logs() { return access_logs; },
+    get environmental_telemetry() { return environmental_telemetry; },
+    get camera_events() { return camera_events; },
+    get system_errors() { return system_errors; },
+    get system_users() { return system_users; },
+    get server_host() { return server_host; },
+    get ip_node1() { return ip_node1; },
+    get ip_node2() { return ip_node2; },
+    get ip_node3() { return ip_node3; }
+  };
+}
 
 // Independent Evidence & Freshness Tracking per Subsystem
 let hasReceivedTelemetry = false;
@@ -2837,6 +2871,25 @@ function updateFacilityStatusAndFreshness() {
   }
 }
 
+export function formatReadinessSummary(data) {
+  if (!data || typeof data !== 'object') {
+    return 'SQLite: unknown · MQTT: unknown';
+  }
+  const sqliteStatus =
+    data?.sqlite?.ok === true
+      ? `OK (${String(data.sqlite.journal_mode || 'WAL').toUpperCase()})`
+      : data?.sqlite?.ok === false
+        ? 'DEGRADED'
+        : (data?.checks?.sqlite || 'unknown');
+  const mqttStatus =
+    typeof data?.mqtt?.connected === 'boolean'
+      ? (data.mqtt.connected
+          ? 'Connected'
+          : (data.mqtt.enabled === false ? 'Standby' : 'Disconnected'))
+      : (data?.checks?.mqtt || 'unknown');
+  return `SQLite: ${sqliteStatus} · MQTT: ${mqttStatus}`;
+}
+
 async function probeBackendReadiness() {
   try {
     const res = await fetchWithTimeout(`${getNodeRedHttp()}/api/health/ready`, {
@@ -2846,9 +2899,7 @@ async function probeBackendReadiness() {
     if (res.ok || res.status === 503) {
       httpApiReachable = true;
       lastHttpApiSuccessTimestamp = Date.now();
-      const sqliteStatus = data?.checks?.sqlite || 'unknown';
-      const mqttStatus = data?.checks?.mqtt || 'unknown';
-      lastBackendReadySummary = `SQLite: ${sqliteStatus} · MQTT: ${mqttStatus}`;
+      lastBackendReadySummary = formatReadinessSummary(data);
     } else {
       lastBackendReadySummary = `HTTP ${res.status}`;
     }
@@ -2981,8 +3032,9 @@ function bootAuthenticatedSession() {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  const tempCanvas = document.getElementById('temp-chart-canvas');
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('DOMContentLoaded', () => {
+    const tempCanvas = document.getElementById('temp-chart-canvas');
   const humCanvas = document.getElementById('hum-chart-canvas');
   if (tempCanvas) {
     tempChart = new LocalFIFOChart(tempCanvas, {
@@ -3218,4 +3270,6 @@ window.addEventListener('DOMContentLoaded', () => {
       })
       .catch(() => {});
   }
-});
+  });
+}
+

@@ -2,7 +2,7 @@
 
 LCI-SFM (Light Current Infrastructure for Smart Facility Management) is an edge-first facility monitoring and access-control project. Its operator dashboard brings together environmental telemetry, smart access, biometric camera status, event logs, endpoint configuration, and diagnostics for a local wired network.
 
-The frontend is an air-gapped-friendly static web application built with HTML, CSS, and vanilla JavaScript ES modules. It communicates with a Node-RED HTTP API and WebSocket streams; the frontend does not replace the backend, database, or edge-controller firmware.
+The frontend is an air-gapped-friendly static web application built with HTML, CSS, and vanilla JavaScript ES modules. It communicates with the Node.js Central Backend HTTP API (`/api/*`) and WebSocket streams (`/ws/telemetry`, `/ws/mfa`), backed by SQLite (WAL) and Eclipse Mosquitto MQTT; the frontend does not replace the backend, database, or edge-controller firmware.
 
 ## Main capabilities
 
@@ -10,9 +10,9 @@ The frontend is an air-gapped-friendly static web application built with HTML, C
 - **Smart access:** door and lock state, three-factor checkpoints for the documented 2-out-of-3 MFA flow, and biometric snapshot status.
 - **Environment:** temperature, humidity, smoke/gas readings, live trend charts, stored telemetry history, and fan/light control.
 - **Events and audit:** SQLite-backed access, camera, environment, and system-error tables with client-side search, time/severity filters, sorting, pagination, record inspection, and CSV export.
-- **Diagnostics:** separate evidence-based status for the central service and individual edge nodes.
+- **Diagnostics:** separate evidence-based status for the central service (`/api/health/ready` SQLite/MQTT readiness) and individual edge nodes.
 - **Administration:** user provisioning and role management, administrator credential changes, and server/node endpoint configuration, subject to a verified Admin session.
-- **Operator experience:** dark/light themes, responsive navigation, confirmation dialogs for consequential actions, and accessible status messaging.
+- **Operator experience:** dark/light themes, responsive navigation, confirmation dialogs for consequential actions, progressive disclosure of technical metadata, and accessible status messaging.
 
 ## Architecture at a glance
 
@@ -44,7 +44,7 @@ Requirements: Node.js 22.5+ / 24 LTS (uses built-in `node:sqlite` and `crypto.sc
 ```bash
 git clone https://github.com/AbdullahNSarhan/Smart-Facility-Management-System.git
 cd Smart-Facility-Management-System
-npm install --no-package-lock
+npm ci
 npm run dev
 ```
 
@@ -53,7 +53,7 @@ npm run dev
 ### Validation, Testing & Database Operations
 
 ```bash
-npm test           # Run the 16-test backend integration suite (Auth, CSRF, RBAC, SQLite, MQTT, WS, Commands)
+npm test           # Run the 20-test full-stack & backend integration suite (Auth, CSRF, RBAC, SQLite, MQTT, WS, Commands, DOM & Contracts)
 npm run lint       # Verify syntax across frontend and backend ES modules
 npm run build      # Build production static frontend bundle into dist/
 npm run db:backup  # Perform online SQLite hot backup via VACUUM INTO
