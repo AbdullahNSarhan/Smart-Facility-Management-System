@@ -94,7 +94,7 @@ install -m 600 mosquitto/acl "$TEST_TREE/mosquitto/acl"
 docker run --rm \
   -e HOME=/tmp -e npm_config_cache=/tmp/npm-cache \
   -v "$TEST_TREE:/workspace" -w /workspace node:24-alpine sh -lc \
-  'npm install --no-package-lock --no-audit --no-fund && npm run lint && npm test && npm run build' \
+  'npm ci --no-audit --no-fund && npm run lint && npm test && npm run build' \
   || die "Candidate lint, tests, dependency installation, or frontend build failed. Live containers have not been redeployed."
 
 [[ -s "$TEST_TREE/dist/index.html" ]] || die "Candidate build did not produce dist/index.html."
