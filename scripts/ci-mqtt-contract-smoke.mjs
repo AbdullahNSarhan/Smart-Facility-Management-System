@@ -151,7 +151,7 @@ async function main() {
     };
     await publish(node, 'lecf/env/telemetry', sample);
     const inserted = await pollUntil('valid telemetry persistence via MQTT', async () =>
-      (await logs('environmental_telemetry')).find((r) => r.boot_id === bootId && r.seq === 1)
+      (await logs('environmental_telemetry')).find((r) => r.node_id === nodeId && r.seq === 1 && r.temperature === 24.5)
     );
     assert.equal(inserted.temperature, 24.5);
     assert.equal(inserted.node_id, nodeId);
@@ -159,7 +159,7 @@ async function main() {
 
     await publish(node, 'lecf/env/telemetry', sample);
     await sleep(350);
-    const copies = (await logs('environmental_telemetry')).filter((r) => r.boot_id === bootId && r.seq === 1);
+    const copies = (await logs('environmental_telemetry')).filter((r) => r.node_id === nodeId && r.seq === 1);
     assert.equal(copies.length, 1, 'Duplicate QoS telemetry was inserted again');
     console.log('PASS: duplicate telemetry is idempotent');
 
