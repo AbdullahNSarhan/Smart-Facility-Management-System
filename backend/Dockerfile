@@ -6,8 +6,8 @@ WORKDIR /app
 
 RUN mkdir -p /app/data && chown -R node:node /app
 
-COPY backend/package.json ./package.json
-RUN npm install --omit=dev --ignore-scripts && npm cache clean --force
+COPY backend/package.json backend/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
 
 COPY backend ./backend
 
