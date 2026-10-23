@@ -158,12 +158,17 @@ git merge --ff-only "$REMOTE_FULL" || die "Fast-forward failed. No reset was att
 # so users continue to receive the previous entry point until all new assets are present.
 log "Publishing the tested frontend build artifact."
 mkdir -p "$PROJECT_DIR/dist"
+# umask 077 is intentional for secrets, but the static asset tree must be
+# traversable/readable by the unprivileged Nginx worker.
+chmod 755 "$PROJECT_DIR/dist"
 shopt -s dotglob nullglob
 for artifact in "$TEST_TREE/dist"/*; do
   [[ "${artifact##*/}" == "index.html" ]] && continue
   cp -a -- "$artifact" "$PROJECT_DIR/dist/"
 done
 shopt -u dotglob nullglob
+find "$PROJECT_DIR/dist" -type d -exec chmod 755 {} +
+find "$PROJECT_DIR/dist" -type f -exec chmod 644 {} +
 install -m 0644 "$TEST_TREE/dist/index.html" "$PROJECT_DIR/dist/index.html" || die "Could not publish the tested frontend index. Database backup: $BACKUP_PATH"
 FRONTEND_ARTIFACT_PUBLISHED=1
 
