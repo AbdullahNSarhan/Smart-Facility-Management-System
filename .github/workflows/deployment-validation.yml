@@ -137,11 +137,17 @@ jobs:
           test -s mosquitto/passwd
           docker compose config -q
 
-      - name: Start the complete Docker Compose stack
+      - name: Run the real install.sh and start the complete stack
         shell: bash
         run: |
           set -Eeuo pipefail
-          docker compose up -d --build
+          # Secret files were generated only inside this isolated CI runner.
+          # Exercise the actual installer ordering, validator, Compose startup,
+          # health checks and Nginx proxy instead of bypassing install.sh.
+          sudo env LCI_SKIP_APT=1 LCI_SERVER_IP=127.0.0.1 \
+            COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
+            LCI_READINESS_TIMEOUT_SEC=90 \
+            bash ./install.sh
 
       - name: Wait for service readiness and test login
         shell: bash
