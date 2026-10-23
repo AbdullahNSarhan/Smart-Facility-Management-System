@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# Give CI's first stack and the updater's second checkout the same isolated
+# Compose project so the successful update test exercises the same volumes.
+env:
+  COMPOSE_PROJECT_NAME: lci-sfm-ci
+
 concurrency:
   group: deployment-validation-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -257,6 +262,41 @@ jobs:
           test "$(git -C "$GUARD_DIR" rev-parse HEAD)" = "$BASE_COMMIT"
           curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1/api/health/ready >/dev/null
           echo "Expected failure confirmed: candidate rejected; deployment checkout and running stack stayed unchanged."
+
+          # Now push a valid follow-up commit (restores the known-good package.json
+          # and changes only a documentation marker) and exercise the real updater path.
+          GOOD_TREE="$RUNNER_TEMP/update-guard-good"
+          SUCCESS_LOG="$RUNNER_TEMP/update-guard-success.log"
+          git -C "$GUARD_DIR" fetch --quiet origin updater-guard-test
+          git -C "$GUARD_DIR" worktree add -b updater-guard-good "$GOOD_TREE" origin/updater-guard-test
+          git -C "$GOOD_TREE" checkout "$BASE_COMMIT" -- package.json
+          printf '\n<!-- Successful updater smoke test; only exists in the temporary CI repository. -->\n' >> "$GOOD_TREE/README.md"
+          git -C "$GOOD_TREE" add package.json README.md
+          git -C "$GOOD_TREE" commit --quiet -m "test: add a valid candidate for updater smoke test"
+          git -C "$GOOD_TREE" push --quiet origin HEAD:refs/heads/updater-guard-test
+          git -C "$GUARD_DIR" worktree remove --force "$GOOD_TREE"
+
+          if ! sudo env COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" "$GUARD_DIR/update.sh" >"$SUCCESS_LOG" 2>&1; then
+            cat "$SUCCESS_LOG"
+            echo "Updater failed to deploy the valid candidate." >&2
+            exit 1
+          fi
+          grep -Fq 'Deployment checks passed.' "$SUCCESS_LOG" || {
+            cat "$SUCCESS_LOG"
+            echo "Updater did not report passing post-deployment checks." >&2
+            exit 1
+          }
+          grep -Fq 'Database backup:' "$SUCCESS_LOG" || {
+            cat "$SUCCESS_LOG"
+            echo "Updater did not report the verified database backup." >&2
+            exit 1
+          }
+          sudo find "$GUARD_DIR/backups" -maxdepth 1 -type f -name 'lci_sfm_pre_update_*.db' -size +0c | grep -q .
+          test "$(git -C "$GUARD_DIR" rev-parse HEAD)" = "$(git -C "$GUARD_DIR" rev-parse origin/updater-guard-test)"
+          curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1/api/health/ready >/dev/null
+          curl --connect-timeout 3 --max-time 10 -fsS http://127.0.0.1/ -o "$RUNNER_TEMP/dashboard-after-update.html"
+          test -s "$RUNNER_TEMP/dashboard-after-update.html"
+          echo "Successful updater smoke test passed: source advanced, tested frontend was published, DB backup verified, and services stayed healthy."
 
       - name: Print service logs on failure
         if: failure()
