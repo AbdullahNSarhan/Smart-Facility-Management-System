@@ -63,10 +63,10 @@ Node.js Central Backend (Express + ws) <----> SQLite (WAL)
 | `index.html` | Application shell, login overlay, six views, tables, chart canvases, modals, and form controls |
 | `styles.css` | Dark/light design tokens, status styles, panels, layout, responsive behavior, focus styles, reduced motion |
 | `app.js` | Authentication flow, browser state, WebSocket consumers, API calls, charts, table filters, commands, and diagnostics |
-| `package.json` | npm scripts and project dependency metadata |
-| `docker-compose.yml` | Current Nginx frontend container configuration |
+| `package.json` | npm scripts (`dev`, `build`, `lint`, `test`, `db:backup`, `db:restore`) and required runtime/build/test dependencies |
+| `docker-compose.yml` | Production 3-service orchestration (`frontend_dashboard` Nginx, `backend` Node.js/SQLite, and `mqtt-service` Mosquitto) |
 
-The main frontend uses native HTML/CSS and JavaScript modules. Although `package.json` contains React, Vite, Tailwind, and other dependencies, the current dashboard is not implemented as a React application.
+The frontend uses native HTML, CSS, and vanilla JavaScript ES modules with zero external CDNs or UI framework dependencies. Unused template packages (`react`, `lucide-react`, `tailwindcss`) have been removed so `package.json` and `package-lock.json` contain only the dependencies used by the Vite static build, the Node.js backend, and the integration test suite.
 
 ### Design system
 
@@ -94,7 +94,7 @@ Requirements: Node.js/npm compatible with the versions in `package.json`.
 ```bash
 git clone https://github.com/AbdullahNSarhan/Smart-Facility-Management-System.git
 cd Smart-Facility-Management-System
-npm install
+npm ci
 npm run dev
 ```
 
@@ -110,15 +110,16 @@ npm run preview
 ```
 
 - `npm run lint` runs `node --check` on `app.js` and the backend modules.
-- `npm test` runs the Node.js integration test suite (`backend/test/backend.test.js`).
+- `npm test` runs the 21-test Node.js integration and contract suite (`backend/test/backend.test.js`).
 - `npm run build` generates the production static bundle in `dist/`.
 - `npm run preview` serves the production build locally.
 
 ### Docker / Nginx
 
-The root `docker-compose.yml` builds the multi-stage `Dockerfile`:
-- `backend`: runs the Node.js/Express + SQLite service on internal port 3000.
-- `frontend`: runs Nginx on port 8080 (`${FRONTEND_PORT:-8080}:80`), serving only the built `dist/` static bundle and reverse-proxying same-origin `/api/` and `/ws/` requests to `backend:3000`.
+The root `docker-compose.yml` orchestrates three services on an internal bridge network (`lci_internal_net`):
+- `frontend_dashboard` (`nginx:alpine`): binds to `${FRONTEND_BIND_IP:-127.0.0.1}:80:80`, mounts **only** the compiled `./dist` static bundle and `./nginx/nginx.conf` read-only, and reverse-proxies same-origin `/api/*` and `/ws/*` requests to `http://backend:3000`.
+- `backend` (built from `backend/Dockerfile` on `node:24-alpine`): runs the Node.js/Express + SQLite WAL + WebSocket + MQTT service on internal port 3000 with a container health check on `GET /api/health/live`.
+- `mqtt-service` (`eclipse-mosquitto:2.0`): binds to `${MQTT_BIND_IP:-127.0.0.1}:1883:1883` with anonymous access disabled, hashed credentials (`mosquitto/passwd`), and topic ACLs (`mosquitto/acl`).
 
 ```bash
 docker compose up -d --build
@@ -177,8 +178,8 @@ Includes:
 - Environmental gauges and numeric readings.
 - Temperature and humidity history charts.
 - A live 30-sample FIFO source.
-- A source that loads up to the latest 30 records from the `environmental_telemetry` API response.
-- A visible dependency notice for the 24-hour/7-day aggregation option.
+- A source that loads up to the latest 30 records from the `environmental_telemetry` API response (`GET /api/logs/environmental_telemetry`).
+- A server-computed 24-hour / 7-day aggregation option (`GET /api/telemetry/aggregate?range=24h&bucket=15m` or `range=7d&bucket=1h`) with a visible fallback notice when no buckets are returned or the endpoint is unreachable.
 - AUTO/MANUAL mode controls and fan/light overrides.
 
 The temperature chart marks the documented 30 °C fan threshold. The status evaluation treats temperature above 30 °C as an elevated condition. Smoke/gas values from 250 PPM to below 400 PPM are shown as elevated and values at or above 400 PPM as critical in the frontend logic. Confirm the calibration, units, environmental sensor validity, and operating thresholds with the actual hardware/backend before using these values as a safety instrument.
@@ -259,32 +260,37 @@ The server should expose explicit last-seen timestamps/heartbeat payloads if acc
 ### Charts
 
 - Live mode stores up to 30 temperature samples and up to 30 humidity samples in browser memory.
-- SQLite-history mode fetches the `environmental_telemetry` table and plots up to its latest 30 records.
-- The 24h/7d rollup option currently shows a dependency notice; it does not fetch an aggregate endpoint or produce time-bucketed data.
+- SQLite-history mode fetches the `environmental_telemetry` table (`GET /api/logs/environmental_telemetry`) and plots up to its latest 30 records.
+- The 24h/7d rollup mode queries `GET /api/telemetry/aggregate` (`range=24h&bucket=15m` or `range=7d&bucket=1h`) and plots server-computed time-bucket averages alongside min/max bounds and sample counts. If the backend returns zero buckets or is unreachable, the UI surfaces `#agg-dependency-notice` without fabricating data points.
 
-Refreshing the page resets the in-memory live FIFO. Historical availability depends on what the backend table endpoint returns.
+Refreshing the page resets the in-memory live FIFO. Historical availability depends on the records persisted in SQLite.
 
 ## 7. API and WebSocket contract
 
-The following table documents the interface the frontend expects. The route names are taken from the current frontend code, not independently verified against a running Node-RED server.
+The following table documents the verified HTTP and WebSocket interface between `app.js` and the Node.js backend (`backend/src/routes/apiRoutes.js`). *(Historical note: earlier project iterations targeted a Node-RED prototype on port `1880`; the Node.js/Express backend is now the sole owner of these routes.)*
 
 ### HTTP API
 
-| Method | Route | Expected purpose / request |
+| Method | Route | Purpose & contract |
 |---|---|---|
-| `POST` | `/api/auth/login` | Body: `{ "username": "...", "password": "..." }`. Successful JSON must include a non-empty `token`; the UI reads `role` and `username`. HTTP 401/403 means credentials are rejected. |
-| `GET` | `/api/logs/access_logs` | Returns access log rows |
-| `GET` | `/api/logs/camera_events` | Returns camera-event rows |
-| `GET` | `/api/logs/environmental_telemetry` | Returns persisted environmental telemetry rows |
-| `GET` | `/api/logs/system_errors` | Returns system error/fault rows |
-| `GET` | `/api/logs/system_users` | Returns operator-directory data; should omit secrets entirely |
-| `POST` | `/api/command` | Body includes `command`, `state`, `ip_node1`, `ip_node2`, `ip_node3` |
-| `POST` | `/api/provision/user` | Provisions an operator. The current UI sends `username`, `password`, `role`, `rfid`, `pin`, and `face_linked`; validate and transform this input securely on the server. |
-| `POST` | `/api/auth/admin-profile` | Updates administrator identity/credential data |
-| `POST` | `/api/users/role` | Body includes the target user ID and the requested role (`Admin` or `Viewer`). |
-| `POST` | `/api/users/delete` | Body: `{ "id": <userId> }` |
+| `GET` | `/api/health/live` | Process liveness probe. Returns HTTP `200` (`{ ok: true, status: "live" }`) while the Node.js process is alive, independent of MQTT connectivity. Used by the Docker `backend` container healthcheck. |
+| `GET` | `/api/health/ready` | Operational readiness probe. Evaluates SQLite health (`sqlite.ok`, `sqlite.journal_mode`) and MQTT state (`mqtt.enabled`, `mqtt.connected`, `mqtt.state`). Returns HTTP `200` (`status: "ready"`) when SQLite is healthy and MQTT is either connected (`state: "connected"`) or intentionally disabled via `MQTT_ENABLED=false` (`state: "standby"`). Returns HTTP `503` (`status: "degraded"`) if SQLite fails or if MQTT is enabled (`MQTT_ENABLED=true`) while disconnected (`state: "disconnected"`). |
+| `POST` | `/api/auth/login` | Body: `{ "username": "...", "password": "..." }`. Sets an `HttpOnly; SameSite=Strict` session cookie (`lci_sid`), returns `csrfToken`, `role`, `username`, and (when `ALLOW_BEARER_COMPAT=true`) `token`. HTTP 401/403 means credentials are rejected. |
+| `POST` | `/api/auth/logout` | Revokes the active server-side session in SQLite, clears the session cookie, and terminates associated WebSocket streams. |
+| `GET` | `/api/auth/session` | Validates the active cookie or Bearer session and returns operator identity, `role`, and `csrfToken`. |
+| `GET` | `/api/logs/access_logs` | Returns access log rows (requires authenticated Viewer or Admin session). |
+| `GET` | `/api/logs/camera_events` | Returns camera-event rows (requires authenticated Viewer or Admin session). |
+| `GET` | `/api/logs/environmental_telemetry` | Returns persisted environmental telemetry rows (requires authenticated Viewer or Admin session). |
+| `GET` | `/api/logs/system_errors` | Returns system error/fault rows (requires authenticated Viewer or Admin session). |
+| `GET` | `/api/logs/system_users` | Returns sanitized operator directory rows (requires verified Admin session; password and PIN hashes are omitted). |
+| `GET` | `/api/telemetry/aggregate` | Query params: `range` (`1h`, `6h`, `24h`, `7d`) and `bucket` (`1m`, `5m`, `15m`, `1h`). Returns server-aggregated temperature, humidity, and smoke/gas buckets. |
+| `POST` | `/api/command` | Body includes `command`, `state`, and optional client metadata (`ip_node1`, `ip_node2`, `ip_node3`). Requires verified Admin session + `X-CSRF-Token`. Routes strictly to server-authoritative MQTT topics. |
+| `POST` | `/api/provision/user` | Provisions an operator (`username`, `password`, `role`, `rfid`, `pin`, `face_linked`). Hashes password and PIN with `crypto.scryptSync`. |
+| `POST` | `/api/auth/admin-profile` | Rotates the authenticated administrator's username and password (`scrypt`). |
+| `POST` | `/api/users/role` | Updates target user role (`Admin` or `Viewer`) and revokes existing sessions for that user. |
+| `POST` | `/api/users/delete` | Body: `{ "id": <userId> }`. Deletes the target operator (preventing self-deletion or deleting the last Admin) and revokes their sessions. |
 
-Authenticated requests send the browser-held session value as `Authorization: Bearer <token>`. The backend must validate the token and independently authorize each protected operation. Frontend checks are not an authorization boundary.
+Authenticated requests use the `HttpOnly` session cookie (`lci_sid`) in same-origin deployments and include `X-CSRF-Token` on all state-changing requests (`POST`/`PUT`/`PATCH`/`DELETE`), with optional `Authorization: Bearer <token>` support when `ALLOW_BEARER_COMPAT=true`. The Node.js backend validates the session and independently authorizes every protected operation. Frontend checks are not an authorization boundary.
 
 ### Hardware command values
 
@@ -330,72 +336,64 @@ This is intended for inspection only; it does not make cached data current or tr
 
 ### Important boundary
 
-The browser's role flag only controls what the interface presents. Node-RED/backend handlers must check the authentication token, role, permissions, allowed command values, input types, and applicable operating rules on every sensitive request.
-
-The frontend submits credentials for server-side validation; it does not itself prove that the backend's password hashing, token generation, token expiry, rate limiting, or session revocation is implemented securely. These must be reviewed in the backend.
+The browser's role flag only controls what the interface presents. The Node.js backend (`backend/src/middleware/auth.js` and `backend/src/routes/apiRoutes.js`) validates the session cookie/token, CSRF token, role permissions, allowlisted command values, and Zod input schemas on every sensitive request.
 
 ## 9. Commands and physical-system safety
 
-The UI validates command names against an allowlist, checks endpoint formatting, requests confirmation for consequential actions, and reports success only after an HTTP-success response is received.
+The UI validates command names against an allowlist, checks endpoint formatting, requests confirmation for consequential actions, and reports dispatch status based on the structured response (`lifecycle_state` and `verified_hardware_ack`).
 
-A network response means the backend acknowledged a request. It does not guarantee:
+A `published` response means the backend validated, audited, and published the command to the MQTT broker (`retain: false`). It does not guarantee:
 - that a controller received the command;
 - that a relay physically switched;
 - that a magnetic lock actually unlocked;
 - that the door opened; or
 - that an emergency condition is resolved.
 
-For production use, the backend should correlate a command with a controller result or later telemetry. Physical emergency egress must remain independent of frontend/browser availability, in accordance with the documented hardwired break-glass design and local safety requirements.
+The backend only sets `verified_hardware_ack: true` (`lifecycle_state: "acknowledged"` or `"state_confirmed"`) when a matching `command_id` acknowledgement arrives from the edge controller on `lecf/*/command/ack` within `COMMAND_ACK_TIMEOUT_MS`. Physical emergency egress must remain independent of frontend/browser availability, in accordance with the documented hardwired break-glass design and local safety requirements.
 
 ## 10. Audit explorer and CSV export
 
-Search, time filtering, status/severity classification, sorting, and pagination occur on the rows currently held by the browser. CSV export uses the current filtered records and escapes quotes according to standard CSV quoting rules.
+Search, time filtering, status/severity classification, sorting, and pagination occur on the rows currently held by the browser (up to 500 recent rows returned per table query). CSV export uses the current filtered records and escapes quotes according to standard CSV quoting rules.
 
 The CSV contains the row fields returned to the browser. Therefore:
-- Do not include unnecessary secrets in the API response.
-- Enforce role-based visibility on the server, not only in the table renderer.
-- For large datasets, implement server-side filtering, pagination, and export rather than requiring the browser to fetch every row.
-- Check exported data for personal or biometric information before sharing it.
+- Secrets (`password_hash`, `pin_hash`, session verifiers) are omitted at the SQLite repository query layer.
+- Role-based visibility is enforced on the server (`GET /api/logs/system_users` requires `requireAdmin`), not only in the table renderer.
+- Check exported data for personal or operational sensitivity before sharing it outside the facility network.
 
 ## 11. Deployment notes
 
-The intended overall appliance architecture is documented in `lci_sfm_docker_deployment_architecture.md`. The current Compose file is more limited: it starts only Nginx and mounts the repository root.
+The root `docker-compose.yml` deploys the three core appliance services (`frontend_dashboard`, `backend`, and `mqtt-service`):
 
-For safer deployment:
-1. Build the static frontend with `npm run build`.
-2. Configure Nginx to serve only the intended output assets.
-3. Do not publish Markdown architecture documents, `.env` files, source metadata, or other repository files as public static content.
-4. Configure the backend and its authentication policy separately.
-5. Keep the dashboard and device endpoints on the intended network.
-6. Verify the Content Security Policy against only the local origins actually required.
-7. Do not expose Node-RED editor/admin interfaces to untrusted networks.
-
-The architecture document describes a four-service target (Mosquitto, Node-RED/SQLite, Python vision service, and frontend), but these services are not all defined in the current root `docker-compose.yml`. Treat that document as intended architecture and verify the actual deployment files before claiming a one-command full-stack deployment.
+1. Build the static frontend with `npm run build` (handled automatically in a Node.js 24 container by `install.sh` and `update.sh`).
+2. `frontend_dashboard` mounts only `./dist:/usr/share/nginx/html:ro` and `./nginx/nginx.conf:/etc/nginx/nginx.conf:ro`. Markdown architecture documents, `.env` files, SQLite databases, and source files are never mounted into Nginx.
+3. `backend` uses `GET /api/health/live` for its Docker container health check so `frontend_dashboard` can start even if the MQTT broker is restarting, while `install.sh`, `update.sh`, CI, and View 5 query `GET /api/health/ready` to verify operational readiness (SQLite WAL + MQTT connectivity).
+4. Keep `FRONTEND_BIND_IP` and `MQTT_BIND_IP` bound to `127.0.0.1` for local loopback testing, or bind them explicitly to the server's static private LAN IP when LAN access is required and host firewall rules (`DOCKER-USER`) are in place.
+5. The Python/OpenCV vision service (`lci_sfm_docker_deployment_architecture.md`) and ESP32 node firmware are deployed separately from the 3-service `docker-compose.yml`.
 
 ## 12. Security considerations
 
-- **Secrets:** mask sensitive values in UI and, preferably, omit them from APIs entirely. Masking a value after it reaches the browser is not sufficient.
-- **Authentication:** use suitable password hashing and secure, expiring/revocable sessions on the backend. Do not rely on client-generated session identifiers for authorization.
-- **Authorization:** validate all command and user-administration permissions in Node-RED for every request.
-- **Transport:** `http://` and `ws://` are unencrypted. Use only on the intended trusted LAN unless the deployment is upgraded with appropriate TLS and configuration.
-- **CSP:** maintain a restrictive Content Security Policy; avoid broad allowlists or weakening controls to work around connectivity mistakes.
-- **HTML injection:** escape all data originating from APIs before inserting it into dynamic table/record markup.
-- **Local browser storage:** endpoint addresses and theme preferences are convenience settings, not secrets. Avoid storing passwords, PINs, or long-lived privileged credentials there.
-- **Physical safety:** the frontend is an operator interface, not a safety controller. Safety-critical detection, MFA decisions, and fail-safe egress must remain enforced in the appropriate hardware/backend layers.
+- **Secrets:** sensitive values are masked in UI inputs and omitted from API responses (`GET /api/logs/system_users` never returns `password_hash` or `pin_hash`).
+- **Authentication:** the Node.js backend hashes passwords and PINs using `crypto.scryptSync` and stores SHA-256 session token verifiers in SQLite with idle (`SESSION_IDLE_TTL_MS`) and absolute (`SESSION_ABSOLUTE_TTL_MS`) expiration.
+- **Authorization:** all command and user-administration permissions are enforced server-side in `backend/src/routes/apiRoutes.js` and `backend/src/middleware/auth.js`.
+- **Transport:** `http://` and `ws://` are unencrypted. Use only on the intended trusted private LAN unless TLS termination is configured in front of the appliance.
+- **CSP:** `nginx/nginx.conf` and the backend security middleware maintain a restrictive Content Security Policy.
+- **HTML injection:** all dynamic API and WebSocket data is escaped via `escapeHTML()` before DOM insertion.
+- **Local browser storage:** endpoint addresses and theme preferences in `localStorage` are convenience settings, not secrets.
+- **Physical safety:** the frontend is an operator interface, not a safety controller. Safety-critical detection, MFA decisions, and fail-safe egress remain enforced in the hardware/edge layers.
 
 ## 13. Backend capabilities and remaining boundaries
 
 ### Implemented in the Node.js backend (`backend/src/`)
 
 - **Time-bucketed environment aggregation (`GET /api/telemetry/aggregate`):** Supports `range` (`1h`, `6h`, `24h`, `7d`) and `bucket` (`1m`, `5m`, `15m`, `1h`) over `environmental_telemetry`.
-- **Readiness & liveness probes (`GET /api/health/live`, `GET /api/health/ready`):** Reports SQLite and MQTT readiness (`checks.sqlite`, `checks.mqtt`), surfaced in View 5 (`#diag-ready-state`).
+- **Liveness vs. Readiness separation (`GET /api/health/live`, `GET /api/health/ready`):** `/api/health/live` returns HTTP `200` while the backend process is responsive. `/api/health/ready` reports `sqlite` (`ok`, `journal_mode`, `foreign_keys`) and `mqtt` (`enabled`, `connected`, `state`), returning HTTP `200` when SQLite is healthy and MQTT is connected (or `state: "standby"` when `MQTT_ENABLED=false`), and HTTP `503` (`status: "degraded"`) when SQLite fails or an enabled MQTT broker is disconnected. Surfaced in View 5 (`#diag-ready-state`).
 - **Password & PIN hashing (`backend/src/utils/crypto.js`):** Uses Node's `crypto.scryptSync` (`scrypt$N$r$p$salt$key`) with timing-safe verification. Plaintext passwords, PINs, and hashes are never returned by `/api/logs/system_users`.
 - **Session & CSRF protection (`backend/src/middleware/auth.js`):** Issues `HttpOnly; SameSite=Strict` session cookies (`lci_sid`), enforces `X-CSRF-Token` on cookie-authenticated mutations, and supports `Authorization: Bearer <token>` compatibility.
 
 ### Remaining hardware / architectural boundaries
 
 - **Persistent alarm acknowledgement workflow:** `system_errors` is currently read-only (`GET /api/logs/system_errors`). Persistent alarm acknowledgement, assignment, and resolution require dedicated backend schema/routes and are not simulated in browser state.
-- **Independent edge-node heartbeats:** Node 1, Node 2, and Node 3 statuses in View 5 are inferred from stream/capture evidence and clearly labeled with their evidence source. Dedicated per-node firmware heartbeats are required to distinguish an idle or PIR-sleeping controller from a powered-off device.
+- **Independent edge-node heartbeats:** Node 1, Node 2, and Node 3 statuses in View 5 are inferred from stream/capture evidence and clearly labeled with their evidence source. Dedicated per-node firmware heartbeats (`lecf/*/heartbeat`) are supported by the backend listener when published by firmware, and are required to distinguish an idle or PIR-sleeping controller from a powered-off device.
 - **Branding scope:** The unified `LCI-SFM` shield-and-grid SVG emblem (`#icon-brand-emblem`) is rendered locally from the inline SVG sprite in `index.html`; there is no server-side logo upload or multi-client branding persistence endpoint.
 
 ## 14. Validation and troubleshooting
@@ -403,12 +401,22 @@ The architecture document describes a four-service target (Mosquitto, Node-RED/S
 ### Validation commands
 
 ```bash
+npm ci --no-audit --no-fund
 npm run lint
 npm test
 npm run build
 ```
 
-These verify JavaScript syntax across frontend and backend files, run the 16 automated backend API/WebSocket/RBAC/CSRF integration tests, and build the production bundle in `dist/`.
+These install deterministic dependencies from `package-lock.json`, verify JavaScript syntax across frontend and backend files, run the 21 automated backend API/WebSocket/RBAC/CSRF/readiness/frontend-contract tests, and build the production bundle in `dist/`.
+
+For a deployed Docker Compose stack, check health using the configured `FRONTEND_BIND_IP` (which defaults to `127.0.0.1` in `.env.example`, or the server's LAN IP when deployed via `install.sh`):
+
+```bash
+FRONTEND_BIND_IP="$(sed -n 's/^FRONTEND_BIND_IP=//p' .env 2>/dev/null | tail -n1)"
+FRONTEND_BIND_IP="${FRONTEND_BIND_IP:-127.0.0.1}"
+curl -fsS "http://$FRONTEND_BIND_IP/api/health/live"
+curl -fsS "http://$FRONTEND_BIND_IP/api/health/ready"
+```
 
 ### Common issues
 

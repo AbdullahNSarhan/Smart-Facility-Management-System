@@ -53,7 +53,7 @@ npm run dev
 ### Validation, Testing & Database Operations
 
 ```bash
-npm test           # Run the 20-test full-stack & backend integration suite (Auth, CSRF, RBAC, SQLite, MQTT, WS, Commands, DOM & Contracts)
+npm test           # Run the 21-test full-stack & backend integration suite (Auth, CSRF, RBAC, SQLite, MQTT, WS, Commands, Readiness, DOM & Contracts)
 npm run lint       # Verify syntax across frontend and backend ES modules
 npm run build      # Build production static frontend bundle into dist/
 npm run db:backup  # Perform online SQLite hot backup via VACUUM INTO

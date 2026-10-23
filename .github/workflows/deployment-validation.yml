@@ -148,8 +148,14 @@ jobs:
           import json, sys
           with open(sys.argv[1], encoding="utf-8") as f:
               data = json.load(f)
-          if data.get("ok") is not True or data.get("sqlite", {}).get("ok") is not True:
-              raise SystemExit(f"Backend readiness/SQLite check failed: {data!r}")
+          if (
+              data.get("ok") is not True
+              or data.get("status") != "ready"
+              or data.get("sqlite", {}).get("ok") is not True
+              or data.get("mqtt", {}).get("connected") is not True
+              or data.get("mqtt", {}).get("state") != "connected"
+          ):
+              raise SystemExit(f"Backend readiness/SQLite/MQTT check failed: {data!r}")
           PY
 
           curl --connect-timeout 3 --max-time 10 -fsS \

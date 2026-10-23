@@ -28,7 +28,7 @@ export class MqttService {
   }
 
   isConnected() {
-    return Boolean(this.connected && this.client && this.client.connected);
+    return Boolean(this.config.mqttEnabled && this.connected && this.client && this.client.connected);
   }
 
   getHealthStatus() {
@@ -36,9 +36,13 @@ export class MqttService {
     for (const [nodeId, info] of this.nodeHeartbeats.entries()) {
       nodes[nodeId] = info;
     }
+    const enabled = Boolean(this.config.mqttEnabled);
+    const connected = enabled ? this.isConnected() : false;
+    const state = !enabled ? 'standby' : (connected ? 'connected' : 'disconnected');
     return {
-      enabled: this.config.mqttEnabled,
-      connected: this.isConnected(),
+      enabled,
+      connected,
+      state,
       broker_url: this.config.mqttBrokerUrl,
       last_activity_at: this.lastActivityAt,
       observed_nodes: nodes

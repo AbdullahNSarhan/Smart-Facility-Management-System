@@ -2881,13 +2881,26 @@ export function formatReadinessSummary(data) {
       : data?.sqlite?.ok === false
         ? 'DEGRADED'
         : (data?.checks?.sqlite || 'unknown');
+  const mqttStateRaw = String(data?.mqtt?.state || '').toLowerCase();
   const mqttStatus =
-    typeof data?.mqtt?.connected === 'boolean'
-      ? (data.mqtt.connected
-          ? 'Connected'
-          : (data.mqtt.enabled === false ? 'Standby' : 'Disconnected'))
-      : (data?.checks?.mqtt || 'unknown');
-  return `SQLite: ${sqliteStatus} · MQTT: ${mqttStatus}`;
+    mqttStateRaw === 'connected'
+      ? 'Connected'
+      : mqttStateRaw === 'standby' || mqttStateRaw === 'disabled'
+        ? 'Standby'
+        : mqttStateRaw === 'disconnected'
+          ? 'Disconnected'
+          : typeof data?.mqtt?.connected === 'boolean'
+            ? (data.mqtt.connected && data?.mqtt?.enabled !== false
+                ? 'Connected'
+                : (data.mqtt.enabled === false ? 'Standby' : 'Disconnected'))
+            : (data?.checks?.mqtt || 'unknown');
+  const isDegraded =
+    data?.ok === false ||
+    data?.status === 'degraded' ||
+    data?.sqlite?.ok === false ||
+    (data?.mqtt?.enabled === true && data?.mqtt?.connected === false);
+  const prefix = isDegraded ? 'DEGRADED · ' : '';
+  return `${prefix}SQLite: ${sqliteStatus} · MQTT: ${mqttStatus}`;
 }
 
 async function probeBackendReadiness() {

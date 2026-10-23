@@ -207,19 +207,39 @@ fi
 docker compose up -d --build frontend_dashboard
 docker compose ps
 
-log "Checking backend liveness inside its container"
+log "Checking backend liveness (/api/health/live) inside its container"
 if ! docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"; then
-  printf '\nBackend health check failed. Recent logs:\n' >&2
+  printf '\nBackend liveness check failed. Recent logs:\n' >&2
   docker compose logs --tail=100 backend >&2
   die "Backend liveness check failed. Fix the reported issue and rerun install.sh or update.sh."
 fi
 
+log "Waiting up to 60 seconds for backend operational readiness (/api/health/ready: SQLite + MQTT)"
+READY=0
+for _ in $(seq 1 20); do
+  if docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))" >/dev/null 2>&1; then
+    READY=1
+    break
+  fi
+  sleep 3
+done
+if [[ "$READY" -ne 1 ]]; then
+  printf '\nBackend readiness check timed out after 60 seconds. Last readiness payload:\n' >&2
+  docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/ready').then(async r => console.error(await r.text())).catch(e => console.error(e.message))" >&2 || true
+  docker compose logs --tail=120 backend mqtt-service >&2 || true
+  die "Backend operational readiness check (/api/health/ready) failed. Verify SQLite and Mosquitto MQTT credentials/logs and rerun."
+fi
+
 FRONTEND_BIND_IP="$(sed -n 's/^FRONTEND_BIND_IP=//p' .env | tail -n1)"
 FRONTEND_BIND_IP="${FRONTEND_BIND_IP:-127.0.0.1}"
-log "Checking frontend through http://$FRONTEND_BIND_IP/"
+log "Checking frontend and reverse-proxied readiness through http://$FRONTEND_BIND_IP/"
 if ! curl --connect-timeout 3 --max-time 10 -fsS "http://$FRONTEND_BIND_IP/" -o /dev/null; then
   docker compose logs --tail=100 frontend_dashboard >&2
-  die "Frontend HTTP health check failed at http://$FRONTEND_BIND_IP/."
+  die "Frontend HTTP check failed at http://$FRONTEND_BIND_IP/."
+fi
+if ! curl --connect-timeout 3 --max-time 10 -fsS "http://$FRONTEND_BIND_IP/api/health/ready" -o /dev/null; then
+  docker compose logs --tail=100 frontend_dashboard backend mqtt-service >&2
+  die "Reverse-proxied readiness check failed at http://$FRONTEND_BIND_IP/api/health/ready."
 fi
 
 for service in mqtt-service backend frontend_dashboard; do

@@ -1,14 +1,14 @@
 # LCI-SFM Backend Architecture & Integration Specification
 
-**Status:** Target architecture for the next implementation phase  
+**Status:** Implemented in `backend/src/` and `docker-compose.yml` (originally authored as the Node-RED-to-Node.js migration specification)  
 **Backend runtime:** Node.js 24 LTS  
 **Message broker:** Eclipse Mosquitto  
-**Database:** SQLite with versioned migrations and persistent storage  
-**Frontend:** Existing HTML/CSS/vanilla-JavaScript BMS/HMI console  
-**Vision processing:** Existing/planned Python + OpenCV service  
+**Database:** SQLite with versioned migrations and persistent storage (`node:sqlite` in WAL mode)  
+**Frontend:** Existing HTML/CSS/vanilla-JavaScript BMS/HMI console (`index.html`, `styles.css`, `app.js`)  
+**Vision processing:** Existing/planned Python + OpenCV service (external to `docker-compose.yml`)  
 **Deployment target:** Local wired LAN / air-gapped-oriented appliance
 
-> This document defines the proposed Node.js backend target. The current frontend was originally written to call Node-RED endpoints. The existing architecture documents also describe Node-RED. In the target design below, **Node.js replaces Node-RED as the central HTTP/API and workflow service**. Do not run both as competing owners of authentication, database writes, or actuator logic. Keep the four existing hardware/software reference documents as the source for physical design and safety behavior.
+> **Historical & implementation note:** This document was originally written as the architecture specification for migrating LCI-SFM from its early Node-RED prototype to Node.js. The Node.js backend (`backend/src/`), SQLite migrations, `scrypt` credential hashing, `HttpOnly` cookie + CSRF session middleware, `/api/telemetry/aggregate` rollup endpoint, `/api/health/live` and `/api/health/ready` health probes, and the 3-service `docker-compose.yml` (`frontend_dashboard`, `backend`, `mqtt-service`) are now implemented in the repository. Keep the four hardware/software reference documents as the source for physical design and safety behavior.
 
 ## 1. Architecture decision
 
@@ -62,7 +62,7 @@ Nginx frontend (port 80 for lab; TLS recommended for deployment)
 SQLite file and Mosquitto credentials/configuration live in persistent volumes.
 ```
 
-This is a target plan, not a claim that all services currently exist in the repository. The root `docker-compose.yml` presently defines only an Nginx frontend. The Node.js backend, Mosquitto configuration, and any vision-service container must be implemented and tested separately.
+The root `docker-compose.yml` defines the three core appliance services (`frontend_dashboard` Nginx, `backend` Node.js/SQLite, and `mqtt-service` Mosquitto). The Python/OpenCV vision service and ESP32 node firmware remain external and must be provisioned and tested separately when connecting physical hardware.
 
 ## 2. Required software baseline
 

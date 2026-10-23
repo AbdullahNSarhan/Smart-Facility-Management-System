@@ -179,7 +179,7 @@ docker compose up -d --build || {
   die "Docker Compose deployment failed. Database backup: $BACKUP_PATH"
 }
 
-log "Waiting up to 90 seconds for backend readiness."
+log "Waiting up to 90 seconds for backend operational readiness (/api/health/ready: SQLite + MQTT)."
 READY=0
 for _ in $(seq 1 30); do
   if docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))" >/dev/null 2>&1; then
@@ -189,17 +189,24 @@ for _ in $(seq 1 30); do
   sleep 3
 done
 if [[ "$READY" -ne 1 ]]; then
+  printf '\nBackend readiness check timed out after 90 seconds. Last readiness payload:\n' >&2
+  docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/ready').then(async r => console.error(await r.text())).catch(e => console.error(e.message))" >&2 || true
   docker compose logs --tail=150 backend mqtt-service >&2 || true
-  die "Backend readiness check failed. The database backup remains at $BACKUP_PATH; automatic database restore was intentionally not attempted."
+  die "Backend readiness check failed. Previous frontend index restored if applicable, and the database backup remains at $BACKUP_PATH; automatic database restore was intentionally not attempted."
 fi
 
 FRONTEND_BIND_IP="$(sed -n 's/^FRONTEND_BIND_IP=//p' .env | tail -n1)"
 FRONTEND_BIND_IP="${FRONTEND_BIND_IP:-127.0.0.1}"
-log "Checking frontend HTTP response at http://$FRONTEND_BIND_IP/."
+log "Checking frontend HTTP and reverse-proxied readiness at http://$FRONTEND_BIND_IP/."
 if ! curl --connect-timeout 3 --max-time 10 --retry 3 --retry-delay 2 -fsS \
   "http://$FRONTEND_BIND_IP/" -o /dev/null; then
   docker compose logs --tail=150 frontend_dashboard backend >&2 || true
   die "Frontend HTTP check failed. Database backup remains at $BACKUP_PATH."
+fi
+if ! curl --connect-timeout 3 --max-time 10 --retry 3 --retry-delay 2 -fsS \
+  "http://$FRONTEND_BIND_IP/api/health/ready" -o /dev/null; then
+  docker compose logs --tail=150 frontend_dashboard backend mqtt-service >&2 || true
+  die "Reverse-proxied readiness check failed at http://$FRONTEND_BIND_IP/api/health/ready. Database backup remains at $BACKUP_PATH."
 fi
 
 for service in mqtt-service backend frontend_dashboard; do

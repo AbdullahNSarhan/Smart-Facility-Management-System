@@ -333,7 +333,7 @@ docker compose up -d --build frontend_dashboard
 docker compose ps
 ```
 
-The backend must become healthy before Nginx starts because Compose waits for the backend health check. Check each service's logs if any container exits:
+The backend container uses `GET /api/health/live` for its Docker container health check so Nginx (`frontend_dashboard`) can start even if the MQTT broker is temporarily restarting. Check each service's logs if any container exits:
 
 Follow live logs if debugging:
 
@@ -341,7 +341,7 @@ Follow live logs if debugging:
 docker compose logs -f backend mqtt-service frontend_dashboard
 ```
 
-Confirm all three containers are running and the backend becomes healthy. Backend SQLite readiness does not automatically prove MQTT is connected; check MQTT separately in the readiness response and backend logs.
+Confirm all three containers are running and that operational readiness (`GET /api/health/ready`) returns HTTP `200` (`ok: true`, `status: "ready"`, `sqlite.ok: true`, and `mqtt.connected: true` when `MQTT_ENABLED=true`).
 
 ## 10. Safety gate before connecting live hardware
 
@@ -356,14 +356,32 @@ Keep the deployment on a private test network and restrict access to trusted ope
 
 ## 11. Verify the deployment
 
-For loopback-only smoke tests on the server:
+Because `docker-compose.yml` binds Nginx port `80` to `${FRONTEND_BIND_IP:-127.0.0.1}:80:80`, manual HTTP checks must target the actual configured `FRONTEND_BIND_IP` (note that `install.sh` sets `FRONTEND_BIND_IP` to the server's detected LAN IPv4 address, so `127.0.0.1` will only reach Nginx when `FRONTEND_BIND_IP=127.0.0.1`).
+
+- **Universal verification command on the host (works for both loopback and LAN `FRONTEND_BIND_IP`):**
+
+```bash
+FRONTEND_BIND_IP="$(sed -n 's/^FRONTEND_BIND_IP=//p' .env 2>/dev/null | tail -n1)"
+FRONTEND_BIND_IP="${FRONTEND_BIND_IP:-127.0.0.1}"
+curl -fsS "http://$FRONTEND_BIND_IP/api/health/live"
+curl -fsS "http://$FRONTEND_BIND_IP/api/health/ready"
+```
+
+- **Loopback-only smoke test (`FRONTEND_BIND_IP=127.0.0.1`):**
 
 ```bash
 curl -fsS http://127.0.0.1/api/health/live
 curl -fsS http://127.0.0.1/api/health/ready
 ```
 
-For LAN deployment, use `http://<SERVER_LAN_IP>/api/health/live` and `http://<SERVER_LAN_IP>/api/health/ready` after replacing the placeholder. The liveness response should have `ok: true`; readiness should show healthy SQLite. Check the MQTT status separately.
+- **LAN deployment test (`FRONTEND_BIND_IP=<SERVER_LAN_IP>`):**
+
+```bash
+curl -fsS http://<SERVER_LAN_IP>/api/health/live
+curl -fsS http://<SERVER_LAN_IP>/api/health/ready
+```
+
+The liveness response (`/api/health/live`) returns HTTP `200` (`ok: true`, `status: "live"`) whenever the Node.js process is responsive. The readiness response (`/api/health/ready`) returns HTTP `200` (`ok: true`, `status: "ready"`) only when SQLite is healthy (`sqlite.ok: true`, `journal_mode: "wal"`) **and** MQTT satisfies the configured readiness policy (`mqtt.connected: true`, `mqtt.state: "connected"` when `MQTT_ENABLED=true`, or `mqtt.state: "standby"` when `MQTT_ENABLED=false`). If SQLite fails or an enabled MQTT broker is disconnected, `/api/health/ready` returns HTTP `503` (`ok: false`, `status: "degraded"`).
 
 Then verify manually:
 1. Open `http://<SERVER_LAN_IP>/` from an authorized client.
@@ -414,13 +432,19 @@ Replace `<BACKUP_FILE>.db` with the actual backup filename. Verify readiness, lo
 
 ## 13. Updating the deployment
 
-Before an update, review the working tree and create/copy a database backup:
+For production installations deployed at `/opt/lci-sfm`, run the guarded updater script, which validates the candidate commit in a temporary worktree, creates and verifies an online SQLite backup (`PRAGMA integrity_check`), publishes the tested `dist/` bundle, recreates the containers, and polls `/api/health/ready`:
+
+```bash
+sudo /opt/lci-sfm/update.sh
+```
+
+If performing a manual update instead, review the working tree and create/copy a database backup first:
 
 ```bash
 cd /opt/lci-sfm
 git status --short
 git pull --ff-only
-npm install --no-package-lock
+npm ci --no-audit --no-fund
 npm run lint
 npm test
 npm run build
@@ -446,7 +470,8 @@ If an update fails, capture service logs, preserve the database and backups, and
 | Port 80 is unreachable from LAN | Check `FRONTEND_BIND_IP`, server IP, Compose status, routing, port conflicts, and the relevant firewall path. |
 | ESP32 cannot connect to MQTT | Check `MQTT_BIND_IP`, TCP 1883 filtering, device credentials, broker IP, ACLs, and firmware topic support. |
 | MQTT connected but telemetry is absent | Check device publisher topic/schema, ACLs, validation logs, and actual firmware fields. |
-| Backend ready but commands do not work | SQLite readiness is not MQTT/device readiness. Check MQTT connection, command lifecycle state, firmware ACK support, and observed hardware state. |
+| Backend liveness is OK but `/api/health/ready` returns 503 | `/api/health/ready` requires both healthy SQLite and (when `MQTT_ENABLED=true`) an active MQTT broker connection. Inspect `mqtt.state` in the JSON payload and check `mosquitto` logs/credentials. |
+| Backend ready but hardware does not actuate | Broker connectivity does not guarantee edge-device execution. Check command lifecycle state (`published` vs `acknowledged`/`state_confirmed`), firmware ACK support, and physical wiring. |
 | Cookie login works but API mutation fails | Check CSRF token, same-origin URL, cookie settings, and `ALLOW_BEARER_COMPAT` consistency. |
 | WebSocket authentication fails | Check the same-origin `/ws/telemetry` and `/ws/mfa` paths, cookie delivery, session validity, and logs. |
 | Data disappeared after recreating services | Confirm you did not run `down -v`, inspect the `sqlite_data` volume, and verify `SQLITE_DB_PATH=/app/data/lci_sfm.db`. |
@@ -461,7 +486,7 @@ If an update fails, capture service logs, preserve the database and backups, and
 - [ ] Firewall/router restrictions are implemented and reviewed.
 - [ ] Frontend build, lint, and automated tests pass.
 - [ ] Compose validation passes and all three services start.
-- [ ] Backend health, SQLite readiness, and MQTT connectivity are checked separately.
+- [ ] Backend liveness (`/api/health/live`) and operational readiness (`/api/health/ready`: SQLite + MQTT) return HTTP 200 via `FRONTEND_BIND_IP`.
 - [ ] Authentication, session revocation, and Viewer/Admin boundaries are verified.
 - [ ] MQTT topic ACLs and real telemetry are verified with authorized devices.
 - [ ] Device acknowledgement and resulting state are checked in a safe test environment.

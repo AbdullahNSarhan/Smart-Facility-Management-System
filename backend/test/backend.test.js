@@ -446,6 +446,7 @@ describe('LCI-SFM Production Node.js Backend Integration Suite', () => {
 
   it('publishes valid commands when MQTT is connected, distinguishes published vs acknowledged, and correlates device ACKs', async () => {
     // Enable simulated connected MQTT broker hook
+    ctx.mqttService.config.mqttEnabled = true;
     ctx.mqttService.connected = true;
     ctx.mqttService.client = { connected: true };
     ctx.mqttService.publishCommand = async (topic, payload, opts) => {
@@ -648,15 +649,99 @@ describe('LCI-SFM Production Node.js Backend Integration Suite', () => {
 
     // 4. Readiness formatter matches real GET /api/health/ready response payload
     const readyRes = await request(ctx.app).get('/api/health/ready');
+    assert.equal(readyRes.status, 200);
+    assert.equal(readyRes.body.mqtt.state, 'connected');
     const summary = formatReadinessSummary(readyRes.body);
     assert.equal(summary, 'SQLite: OK (WAL) · MQTT: Connected');
     assert.equal(
       formatReadinessSummary({
+        ok: true,
+        status: 'ready',
         sqlite: { ok: true, journal_mode: 'wal' },
-        mqtt: { enabled: false, connected: false }
+        mqtt: { enabled: false, connected: false, state: 'standby' }
       }),
       'SQLite: OK (WAL) · MQTT: Standby'
     );
+  });
+
+  it('enforces liveness vs. readiness contract across MQTT connected, MQTT disconnected, MQTT standby, and SQLite failure states', async () => {
+    const origEnabled = ctx.mqttService.config.mqttEnabled;
+    const origConnected = ctx.mqttService.connected;
+    const origClient = ctx.mqttService.client;
+    const origHealthCheck = ctx.db.healthCheck.bind(ctx.db);
+
+    try {
+      // Case A: MQTT enabled & connected + SQLite healthy -> 200 ready
+      ctx.mqttService.config.mqttEnabled = true;
+      ctx.mqttService.connected = true;
+      ctx.mqttService.client = { connected: true };
+      const resConnected = await request(ctx.app).get('/api/health/ready');
+      assert.equal(resConnected.status, 200);
+      assert.equal(resConnected.body.ok, true);
+      assert.equal(resConnected.body.status, 'ready');
+      assert.equal(resConnected.body.mqtt.enabled, true);
+      assert.equal(resConnected.body.mqtt.connected, true);
+      assert.equal(resConnected.body.mqtt.state, 'connected');
+      assert.equal(formatReadinessSummary(resConnected.body), 'SQLite: OK (WAL) · MQTT: Connected');
+
+      // Case B: MQTT enabled & disconnected + SQLite healthy -> 503 degraded, while /api/health/live remains 200
+      ctx.mqttService.connected = false;
+      ctx.mqttService.client = { connected: false };
+      const resDisconnected = await request(ctx.app).get('/api/health/ready');
+      assert.equal(resDisconnected.status, 503);
+      assert.equal(resDisconnected.body.ok, false);
+      assert.equal(resDisconnected.body.status, 'degraded');
+      assert.equal(resDisconnected.body.sqlite.ok, true);
+      assert.equal(resDisconnected.body.mqtt.enabled, true);
+      assert.equal(resDisconnected.body.mqtt.connected, false);
+      assert.equal(resDisconnected.body.mqtt.state, 'disconnected');
+      assert.equal(
+        formatReadinessSummary(resDisconnected.body),
+        'DEGRADED · SQLite: OK (WAL) · MQTT: Disconnected'
+      );
+
+      const liveDuringOutage = await request(ctx.app).get('/api/health/live');
+      assert.equal(liveDuringOutage.status, 200);
+      assert.equal(liveDuringOutage.body.ok, true);
+      assert.equal(liveDuringOutage.body.status, 'live');
+
+      // Case C: MQTT intentionally disabled (MQTT_ENABLED=false) -> 200 ready with state 'standby' (never pretends connected)
+      ctx.mqttService.config.mqttEnabled = false;
+      ctx.mqttService.connected = true; // Even if flag were truthy, disabled service must report connected: false, state: 'standby'
+      ctx.mqttService.client = { connected: true };
+      const resStandby = await request(ctx.app).get('/api/health/ready');
+      assert.equal(resStandby.status, 200);
+      assert.equal(resStandby.body.ok, true);
+      assert.equal(resStandby.body.status, 'ready');
+      assert.equal(resStandby.body.mqtt.enabled, false);
+      assert.equal(resStandby.body.mqtt.connected, false);
+      assert.equal(resStandby.body.mqtt.state, 'standby');
+      assert.equal(formatReadinessSummary(resStandby.body), 'SQLite: OK (WAL) · MQTT: Standby');
+
+      // Case D: SQLite failure -> 503 degraded while /api/health/live remains 200
+      ctx.mqttService.config.mqttEnabled = true;
+      ctx.mqttService.connected = true;
+      ctx.mqttService.client = { connected: true };
+      ctx.db.healthCheck = () => ({ ok: false, error: 'Simulated SQLite I/O fault' });
+      const resDbFault = await request(ctx.app).get('/api/health/ready');
+      assert.equal(resDbFault.status, 503);
+      assert.equal(resDbFault.body.ok, false);
+      assert.equal(resDbFault.body.status, 'degraded');
+      assert.equal(resDbFault.body.sqlite.ok, false);
+      assert.equal(
+        formatReadinessSummary(resDbFault.body),
+        'DEGRADED · SQLite: DEGRADED · MQTT: Connected'
+      );
+
+      const liveDuringDbFault = await request(ctx.app).get('/api/health/live');
+      assert.equal(liveDuringDbFault.status, 200);
+      assert.equal(liveDuringDbFault.body.ok, true);
+    } finally {
+      ctx.mqttService.config.mqttEnabled = origEnabled;
+      ctx.mqttService.connected = origConnected;
+      ctx.mqttService.client = origClient;
+      ctx.db.healthCheck = origHealthCheck;
+    }
   });
 
   it('validates frontend sanitization, strict data types, LocalFIFOChart sliding window, and DOM ID parity', () => {

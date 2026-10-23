@@ -56,10 +56,24 @@ export function createApiRouter({
 
   router.get('/health/ready', (req, res) => {
     const dbCheck = db.healthCheck();
-    const mqttStatus = mqttService ? mqttService.getHealthStatus() : { enabled: false, connected: false };
+    const rawMqtt = mqttService
+      ? mqttService.getHealthStatus()
+      : { enabled: false, connected: false, state: 'standby' };
+    const mqttEnabled = Boolean(rawMqtt.enabled);
+    const mqttConnected = mqttEnabled ? Boolean(rawMqtt.connected) : false;
+    const mqttState = !mqttEnabled ? 'standby' : (mqttConnected ? 'connected' : 'disconnected');
+    const mqttStatus = {
+      ...rawMqtt,
+      enabled: mqttEnabled,
+      connected: mqttConnected,
+      state: rawMqtt.state || mqttState
+    };
     const wsStats = wsGateway ? wsGateway.getStats() : { totalClients: 0 };
 
-    const ready = Boolean(dbCheck.ok);
+    const sqliteReady = Boolean(dbCheck && dbCheck.ok);
+    const mqttReady = mqttEnabled ? mqttConnected : true;
+    const ready = sqliteReady && mqttReady;
+
     return res.status(ready ? 200 : 503).json({
       ok: ready,
       status: ready ? 'ready' : 'degraded',
