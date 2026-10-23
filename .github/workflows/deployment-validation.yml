@@ -126,12 +126,16 @@ jobs:
 
           MQTT_PASSWORD="$(sed -n 's/^MQTT_PASSWORD=//p' .env | tail -n1)"
           test -n "$MQTT_PASSWORD"
+          # Disposable MQTT test identity; NEVER use real edge device credentials.
+          NODE2_PASSWORD="$(openssl rand -hex 24)"
+          printf '%s' "$NODE2_PASSWORD" > "$RUNNER_TEMP/ci-node2-password"
+          chmod 600 "$RUNNER_TEMP/ci-node2-password"
           docker pull eclipse-mosquitto:2.0
           docker run --rm --user 0:0 \
-            -e MQTT_PASSWORD="$MQTT_PASSWORD" \
+            -e MQTT_PASSWORD="$MQTT_PASSWORD" -e NODE2_PASSWORD="$NODE2_PASSWORD" \
             -v "$PWD/mosquitto:/mosquitto/config" \
             --entrypoint sh eclipse-mosquitto:2.0 \
-            -ec 'mosquitto_passwd -c -b /mosquitto/config/passwd lci_backend "$MQTT_PASSWORD"'
+            -ec 'mosquitto_passwd -c -b /mosquitto/config/passwd lci_backend "$MQTT_PASSWORD"; mosquitto_passwd -b /mosquitto/config/passwd node2_env "$NODE2_PASSWORD"'
           sudo chown 1883:1883 mosquitto/passwd mosquitto/acl
           sudo chmod 600 mosquitto/passwd mosquitto/acl
           test -s mosquitto/passwd
@@ -222,6 +226,14 @@ jobs:
               if payload.get("user", {}).get("role") != "Admin":
                   raise SystemExit("Bootstrap login did not return Admin role")
           PY
+
+      - name: Exercise live broker with simulated Node2 (no real hardware)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LCI_SIMULATOR_CI_ONLY=1 \
+            CI_MQTT_NODE2_SECRET_FILE="$RUNNER_TEMP/ci-node2-password" \
+            node scripts/ci-mqtt-contract-smoke.mjs
 
       - name: Test SQLite backup and integrity
         shell: bash
