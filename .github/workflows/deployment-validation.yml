@@ -4,34 +4,309 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main, "fix/deployment-scripts-health-credentials"]
+    branches: [main]
 
 permissions:
   contents: read
 
+# Give CI's first stack and the updater's second checkout the same isolated
+# Compose project so the successful update test exercises the same volumes.
+env:
+  COMPOSE_PROJECT_NAME: lci-sfm-ci
+
+concurrency:
+  group: deployment-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  validate:
+  validate-and-smoke-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js 24
         uses: actions/setup-node@v4
         with:
           node-version: 24
 
-      - name: Validate shell syntax
-        run: bash -n install.sh update.sh
+      - name: Verify executable bits and shell syntax
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git ls-files -s -- install.sh | awk '{print $1}')" = "100755"
+          test "$(git ls-files -s -- update.sh | awk '{print $1}')" = "100755"
+          bash -n install.sh update.sh
+          test -f .env.example
+          test -f package-lock.json
+          test -f backend/package-lock.json
+          test -f docker-compose.yml
+          test -f backend/Dockerfile
+          test -f nginx/nginx.conf
+          test -f mosquitto/acl
+          test -f mosquitto/mosquitto.conf
+          for secret_file in .env mosquitto/passwd DEPLOYMENT-CREDENTIALS.txt mosquitto/device-credentials.txt; do
+            if git ls-files --error-unmatch "$secret_file" >/dev/null 2>&1; then
+              echo "A host-specific secret file is tracked by Git: $secret_file" >&2
+              exit 1
+            fi
+          done
 
-      - name: Install dependencies
-        run: npm install --no-package-lock
+      - name: Install frontend dependencies
+        run: npm ci --no-audit --no-fund
 
       - name: Run lint
         run: npm run lint
 
-      - name: Run tests
+      - name: Run automated tests
         run: npm test
 
       - name: Build frontend
         run: npm run build
+
+      - name: Generate isolated integration-test secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import secrets
+          from pathlib import Path
+
+          template = Path(".env.example").read_text().splitlines()
+          values = {
+              "NODE_ENV": "production",
+              "LCI_BOOTSTRAP_ADMIN_USERNAME": "ci_admin",
+              "LCI_BOOTSTRAP_ADMIN_PASSWORD": secrets.token_hex(32),
+              "MQTT_USERNAME": "lci_backend",
+              "MQTT_PASSWORD": secrets.token_hex(32),
+              "FRONTEND_BIND_IP": "127.0.0.1",
+              "MQTT_BIND_IP": "127.0.0.1",
+              "ALLOWED_ORIGINS": "http://127.0.0.1",
+              "SESSION_SECURE_COOKIE": "false",
+              "ALLOW_BEARER_COMPAT": "false",
+          }
+          output = []
+          seen = set()
+          for line in template:
+              if "=" in line and not line.lstrip().startswith("#"):
+                  key = line.split("=", 1)[0]
+                  if key in values:
+                      output.append(f"{key}={values[key]}")
+                      seen.add(key)
+                      continue
+              output.append(line)
+          for key, value in values.items():
+              if key not in seen:
+                  output.append(f"{key}={value}")
+          env_file = Path(".env")
+          env_file.write_text("\n".join(output) + "\n")
+          env_file.chmod(0o600)
+          PY
+
+          MQTT_PASSWORD="$(sed -n 's/^MQTT_PASSWORD=//p' .env | tail -n1)"
+          test -n "$MQTT_PASSWORD"
+          docker pull eclipse-mosquitto:2.0
+          docker run --rm --user 0:0 \
+            -e MQTT_PASSWORD="$MQTT_PASSWORD" \
+            -v "$PWD/mosquitto:/mosquitto/config" \
+            --entrypoint sh eclipse-mosquitto:2.0 \
+            -ec 'mosquitto_passwd -c -b /mosquitto/config/passwd lci_backend "$MQTT_PASSWORD"'
+          sudo chown 1883:1883 mosquitto/passwd mosquitto/acl
+          sudo chmod 600 mosquitto/passwd mosquitto/acl
+          test -s mosquitto/passwd
+          docker compose config -q
+
+      - name: Start the complete Docker Compose stack
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker compose up -d --build
+
+      - name: Wait for service readiness and test login
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          READY=0
+          for attempt in $(seq 1 60); do
+            if curl --connect-timeout 2 --max-time 5 -fsS \
+              http://127.0.0.1/api/health/ready -o "$RUNNER_TEMP/ready.json"; then
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+          test "$READY" -eq 1 || {
+            docker compose ps
+            docker compose logs --tail=150 backend mqtt-service frontend_dashboard
+            exit 1
+          }
+
+          python3 - "$RUNNER_TEMP/ready.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as f:
+              data = json.load(f)
+          if data.get("ok") is not True or data.get("sqlite", {}).get("ok") is not True:
+              raise SystemExit(f"Backend readiness/SQLite check failed: {data!r}")
+          PY
+
+          curl --connect-timeout 3 --max-time 10 -fsS \
+            http://127.0.0.1/ -o "$RUNNER_TEMP/dashboard.html"
+          test -s "$RUNNER_TEMP/dashboard.html"
+
+          for service in mqtt-service backend frontend_dashboard; do
+            docker compose ps --status running --services | grep -Fxq "$service" || {
+              docker compose ps
+              docker compose logs --tail=100 "$service"
+              exit 1
+            }
+          done
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+
+          values = {}
+          for line in Path(".env").read_text().splitlines():
+              if "=" in line and not line.lstrip().startswith("#"):
+                  key, value = line.split("=", 1)
+                  values[key] = value
+          body = json.dumps({
+              "username": values["LCI_BOOTSTRAP_ADMIN_USERNAME"],
+              "password": values["LCI_BOOTSTRAP_ADMIN_PASSWORD"]
+          }).encode()
+          request = Request(
+              "http://127.0.0.1/api/auth/login",
+              data=body,
+              headers={"Content-Type": "application/json"},
+              method="POST"
+          )
+          with urlopen(request, timeout=10) as response:
+              payload = json.loads(response.read())
+              if response.status != 200 or payload.get("authenticated") is not True:
+                  raise SystemExit("Bootstrap Admin login smoke test failed")
+              if payload.get("user", {}).get("role") != "Admin":
+                  raise SystemExit("Bootstrap login did not return Admin role")
+          PY
+
+      - name: Test SQLite backup and integrity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BACKUP_IN_CONTAINER="/app/data/ci_smoke_backup.db"
+          BACKUP_ON_HOST="$RUNNER_TEMP/ci_smoke_backup.db"
+          docker compose exec -T backend node /app/backend/src/db/backup.js backup "$BACKUP_IN_CONTAINER"
+          docker cp "lci_backend:$BACKUP_IN_CONTAINER" "$BACKUP_ON_HOST"
+          test -s "$BACKUP_ON_HOST"
+          python3 - "$BACKUP_ON_HOST" <<'PY'
+          import sqlite3, sys
+          con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+          try:
+              row = con.execute("PRAGMA integrity_check").fetchone()
+              if not row or row[0] != "ok":
+                  raise SystemExit(f"SQLite integrity_check failed: {row!r}")
+          finally:
+              con.close()
+          PY
+          docker compose exec -T backend rm -f "$BACKUP_IN_CONTAINER"
+
+      - name: Prove a failing candidate is rejected before deployment
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          GUARD_DIR="$RUNNER_TEMP/update-guard-checkout"
+          GUARD_REMOTE="$RUNNER_TEMP/update-guard-origin.git"
+          GUARD_LOG="$RUNNER_TEMP/update-guard.log"
+
+          git clone --quiet "$GITHUB_WORKSPACE" "$GUARD_DIR"
+          git -C "$GUARD_DIR" switch -c updater-guard-test
+          git -C "$GUARD_DIR" config user.name "Deployment Validation"
+          git -C "$GUARD_DIR" config user.email "deployment-validation@example.invalid"
+          git init --bare --quiet "$GUARD_REMOTE"
+          git -C "$GUARD_DIR" remote set-url origin "$GUARD_REMOTE"
+          git -C "$GUARD_DIR" push --quiet --set-upstream origin updater-guard-test
+          BASE_COMMIT="$(git -C "$GUARD_DIR" rev-parse HEAD)"
+
+          python3 - "$GUARD_DIR/package.json" <<'PY'
+          import json, sys
+          from pathlib import Path
+          p = Path(sys.argv[1])
+          data = json.loads(p.read_text())
+          data["scripts"]["build"] = 'node -e "process.exit(42)"'
+          p.write_text(json.dumps(data, indent=2) + "\n")
+          PY
+          git -C "$GUARD_DIR" add package.json
+          git -C "$GUARD_DIR" commit --quiet -m "test: inject a deliberately failing build"
+          git -C "$GUARD_DIR" push --quiet origin updater-guard-test
+          git -C "$GUARD_DIR" reset --hard --quiet "$BASE_COMMIT"
+
+          sudo install -m 600 .env "$GUARD_DIR/.env"
+          sudo install -m 600 mosquitto/passwd "$GUARD_DIR/mosquitto/passwd"
+          # Production installations are root-owned; mirror that in this fixture so
+          # sudo-running Git does not trip Git's dubious-ownership safety check.
+          sudo chown -R root:root "$GUARD_DIR"
+
+          if sudo "$GUARD_DIR/update.sh" >"$GUARD_LOG" 2>&1; then
+            cat "$GUARD_LOG"
+            echo "The updater unexpectedly accepted a deliberately failing candidate." >&2
+            exit 1
+          fi
+          grep -Fq 'process.exit(42)' "$GUARD_LOG" || {
+            cat "$GUARD_LOG"
+            echo "The test did not reach the intentional candidate-build failure." >&2
+            exit 1
+          }
+          grep -Fq 'Candidate lint, tests, dependency installation, or frontend build failed' "$GUARD_LOG" || {
+            cat "$GUARD_LOG"
+            echo "The updater did not stop at the candidate validation gate." >&2
+            exit 1
+          }
+          test "$(git -C "$GUARD_DIR" rev-parse HEAD)" = "$BASE_COMMIT"
+          curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1/api/health/ready >/dev/null
+          echo "Expected failure confirmed: candidate rejected; deployment checkout and running stack stayed unchanged."
+
+          # Now push a valid follow-up commit (restores the known-good package.json
+          # and changes only a documentation marker) and exercise the real updater path.
+          GOOD_TREE="$RUNNER_TEMP/update-guard-good"
+          SUCCESS_LOG="$RUNNER_TEMP/update-guard-success.log"
+          sudo git -C "$GUARD_DIR" fetch --quiet origin updater-guard-test
+          sudo git -C "$GUARD_DIR" worktree add -b updater-guard-good "$GOOD_TREE" origin/updater-guard-test
+          sudo git -C "$GOOD_TREE" checkout "$BASE_COMMIT" -- package.json
+          printf '\n<!-- Successful updater smoke test; only exists in the temporary CI repository. -->\n' | sudo tee -a "$GOOD_TREE/README.md" >/dev/null
+          sudo git -C "$GOOD_TREE" add package.json README.md
+          sudo git -C "$GOOD_TREE" commit --quiet -m "test: add a valid candidate for updater smoke test"
+          sudo git -C "$GOOD_TREE" push --quiet origin HEAD:refs/heads/updater-guard-test
+          sudo git -C "$GUARD_DIR" worktree remove --force "$GOOD_TREE"
+
+          if ! sudo env COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" "$GUARD_DIR/update.sh" >"$SUCCESS_LOG" 2>&1; then
+            cat "$SUCCESS_LOG"
+            echo "Updater failed to deploy the valid candidate." >&2
+            exit 1
+          fi
+          grep -Fq 'Deployment checks passed.' "$SUCCESS_LOG" || {
+            cat "$SUCCESS_LOG"
+            echo "Updater did not report passing post-deployment checks." >&2
+            exit 1
+          }
+          grep -Fq 'Database backup:' "$SUCCESS_LOG" || {
+            cat "$SUCCESS_LOG"
+            echo "Updater did not report the verified database backup." >&2
+            exit 1
+          }
+          sudo find "$GUARD_DIR/backups" -maxdepth 1 -type f -name 'lci_sfm_pre_update_*.db' -size +0c | grep -q .
+          test "$(sudo git -C "$GUARD_DIR" rev-parse HEAD)" = "$(sudo git -C "$GUARD_DIR" rev-parse origin/updater-guard-test)"
+          curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1/api/health/ready >/dev/null
+          curl --connect-timeout 3 --max-time 10 -fsS http://127.0.0.1/ -o "$RUNNER_TEMP/dashboard-after-update.html"
+          test -s "$RUNNER_TEMP/dashboard-after-update.html"
+          echo "Successful updater smoke test passed: source advanced, tested frontend was published, DB backup verified, and services stayed healthy."
+
+      - name: Print service logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail=150 backend mqtt-service frontend_dashboard
+
+      - name: Stop smoke-test containers
+        if: always()
+        run: docker compose down --remove-orphans

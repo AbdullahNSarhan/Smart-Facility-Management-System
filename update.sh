@@ -58,9 +58,18 @@ log "Testing the candidate commit in an isolated temporary worktree before chang
 
 TMP_DIR="$(mktemp -d /tmp/lci-sfm-update.XXXXXX)"
 TEST_TREE="$TMP_DIR/source"
+PREVIOUS_INDEX_BACKUP="$TMP_DIR/previous-index.html"
 WORKTREE_ADDED=0
+HAD_PREVIOUS_INDEX=0
+FRONTEND_ARTIFACT_PUBLISHED=0
 cleanup() {
   local rc=$?
+  if [[ "$rc" -ne 0 && "${FRONTEND_ARTIFACT_PUBLISHED:-0}" -eq 1 &&
+        "${HAD_PREVIOUS_INDEX:-0}" -eq 1 &&
+        -s "${PREVIOUS_INDEX_BACKUP:-/nonexistent}" ]]; then
+    install -m 0644 "$PREVIOUS_INDEX_BACKUP" "$PROJECT_DIR/dist/index.html" || true
+    warn "Restored the previous frontend index after a failed deployment check."
+  fi
   if [[ "$WORKTREE_ADDED" -eq 1 ]]; then
     git -C "$PROJECT_DIR" worktree remove --force "$TEST_TREE" >/dev/null 2>&1 || true
     git -C "$PROJECT_DIR" worktree prune >/dev/null 2>&1 || true
@@ -85,7 +94,7 @@ install -m 600 mosquitto/acl "$TEST_TREE/mosquitto/acl"
 docker run --rm \
   -e HOME=/tmp -e npm_config_cache=/tmp/npm-cache \
   -v "$TEST_TREE:/workspace" -w /workspace node:24-alpine sh -lc \
-  'npm install --no-package-lock --no-audit --no-fund && npm run lint && npm test && npm run build' \
+  'npm ci --no-audit --no-fund && npm run lint && npm test && npm run build' \
   || die "Candidate lint, tests, dependency installation, or frontend build failed. Live containers have not been redeployed."
 
 [[ -s "$TEST_TREE/dist/index.html" ]] || die "Candidate build did not produce dist/index.html."
@@ -134,8 +143,34 @@ fi
 chown 1883:1883 mosquitto/passwd mosquitto/acl || die "Could not set Mosquitto file ownership."
 chmod 600 mosquitto/passwd mosquitto/acl || die "Could not set Mosquitto file permissions."
 
+# Keep the previous index so the error trap can restore it if a later deployment
+# check fails. Old content-hashed assets are retained, so the previous index remains usable.
+if [[ -s "$PROJECT_DIR/dist/index.html" ]]; then
+  cp -p "$PROJECT_DIR/dist/index.html" "$PREVIOUS_INDEX_BACKUP"
+  HAD_PREVIOUS_INDEX=1
+fi
+
 log "Fast-forwarding the deployment checkout to $REMOTE_SHORT."
 git merge --ff-only "$REMOTE_FULL" || die "Fast-forward failed. No reset was attempted."
+
+# The frontend is served from a bind-mounted dist/ directory; Compose does not build it.
+# Publish the exact dist/ artifact produced by the candidate build, copying index.html last
+# so users continue to receive the previous entry point until all new assets are present.
+log "Publishing the tested frontend build artifact."
+mkdir -p "$PROJECT_DIR/dist"
+# umask 077 is intentional for secrets, but the static asset tree must be
+# traversable/readable by the unprivileged Nginx worker.
+chmod 755 "$PROJECT_DIR/dist"
+shopt -s dotglob nullglob
+for artifact in "$TEST_TREE/dist"/*; do
+  [[ "${artifact##*/}" == "index.html" ]] && continue
+  cp -a -- "$artifact" "$PROJECT_DIR/dist/"
+done
+shopt -u dotglob nullglob
+find "$PROJECT_DIR/dist" -type d -exec chmod 755 {} +
+find "$PROJECT_DIR/dist" -type f -exec chmod 644 {} +
+install -m 0644 "$TEST_TREE/dist/index.html" "$PROJECT_DIR/dist/index.html" || die "Could not publish the tested frontend index. Database backup: $BACKUP_PATH"
+FRONTEND_ARTIFACT_PUBLISHED=1
 
 log "Rebuilding and recreating services. Persistent Docker volumes will not be removed."
 docker compose up -d --build || {
