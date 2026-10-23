@@ -2,13 +2,11 @@
 
 > **Project:** Light Current Infrastructure for Smart Facility Management  
 > **Component:** Browser-based BMS/HMI Operations Console  
-> **Implementation:** HTML, CSS, vanilla JavaScript ES modules  
-> **Primary backend:** Node-RED HTTP API + WebSockets, backed by SQLite  
+> **Implementation:** HTML, CSS, vanilla JavaScript ES modules (zero external CDNs/icon libraries)  
+> **Primary backend:** Node.js / Express HTTP API + WebSocket Gateway (`/api/*`, `/ws/*`), backed by SQLite (WAL) and MQTT  
 > **Operating model:** Local-network / air-gapped-oriented deployment
 
-This document describes the frontend as implemented in the repository. API paths and payloads below describe the contract the current frontend expects; they should be checked against the deployed Node-RED flows before being treated as a guarantee of backend behavior.
-
-**Backend migration:** The proposed next phase moves the central API/workflow role from Node-RED to Node.js while preserving the UI contract where practical. See [Backend Architecture](BACKEND_ARCHITECTURE.md) for the target service design and [Backend Implementation Prompt](BACKEND_IMPLEMENTATION_PROMPT.md) for staged coding-agent instructions. The routes documented here are the frontend's current expectations, not proof that the replacement backend has been implemented.
+This document describes the frontend as implemented in `index.html`, `styles.css`, and `app.js`, alongside its integration with the Node.js backend (`backend/src/`) and Nginx reverse proxy (`docker-compose.yml`, `nginx/nginx.conf`).
 
 ## Contents
 
@@ -24,7 +22,7 @@ This document describes the frontend as implemented in the repository. API paths
 10. [Audit explorer and CSV export](#10-audit-explorer-and-csv-export)
 11. [Deployment notes](#11-deployment-notes)
 12. [Security considerations](#12-security-considerations)
-13. [Backend work still required](#13-backend-work-still-required)
+13. [Backend capabilities and remaining boundaries](#13-backend-work-still-required)
 14. [Validation and troubleshooting](#14-validation-and-troubleshooting)
 
 ---
@@ -35,27 +33,28 @@ The frontend provides one operator interface for the project's three edge nodes 
 
 - **Node 1 — Smart access:** RFID, keypad PIN, the face/RFID/PIN 2-out-of-3 MFA workflow, door-state monitoring, and magnetic-lock actuation.
 - **Node 2 — Environmental monitoring:** temperature, relative humidity, smoke/gas readings, auxiliary-light state, and fan/light relays.
-- **Node 3 — Biometric camera:** PIR-triggered camera wake/capture and JPEG snapshot endpoint.
-- **Central services:** Node-RED handles HTTP endpoints and application logic; MQTT carries node telemetry/commands; SQLite persists operational records; a Python/OpenCV service handles face recognition.
+- **Node 3 — Biometric camera:** PIR-triggered camera wake/capture and direct JPEG snapshot endpoint (`http://<ip_node3>/capture.jpg`).
+- **Central services:** The Node.js/Express backend handles authentication, RBAC, CSRF enforcement, REST endpoints, WebSocket streams (`/ws/telemetry`, `/ws/mfa`), MQTT broker integration, and SQLite persistence.
 
-The browser application consumes central HTTP and WebSocket endpoints and requests camera snapshots from Node 3. It does not implement the node firmware, MQTT broker, SQLite database, or biometric engine.
+The browser application consumes central HTTP and WebSocket endpoints and requests camera snapshots directly from Node 3. It does not implement the node firmware, MQTT broker, SQLite database, or biometric engine.
 
 ### High-level flow
 
 ```text
 Operator's browser
   index.html + styles.css + app.js
-       | HTTP: authentication, logs, commands, admin
-       | WebSocket: telemetry and MFA
+       | HTTP: /api/auth/*, /api/logs/*, /api/telemetry/aggregate, /api/command, /api/provision/user, /api/users/*, /api/health/*
+       | WebSocket: /ws/telemetry and /ws/mfa
        v
-Node-RED / API and automation flows <----> SQLite
+Nginx Reverse Proxy (in Docker) / Vite Dev Middleware
+       |
+       v
+Node.js Central Backend (Express + ws) <----> SQLite (WAL)
        |
        +---- MQTT broker <----> Node 1 / Node 2 / Node 3
        |
-       +---- Python/OpenCV vision service <---- Node 3 JPEG capture
+       +---- Direct LAN HTTP (Browser <----> http://<ip_node3>/capture.jpg)
 ```
-
-This describes the intended integration. Confirm the currently deployed backend flows and actual node firmware before relying on a path or operational behavior.
 
 ## 2. Frontend files
 
@@ -99,33 +98,34 @@ npm install
 npm run dev
 ```
 
-The `dev` script runs Vite on port 3000 and binds to `0.0.0.0`. Use the URL shown by Vite. To access from another computer, ensure port 3000 is reachable and the browser can reach the configured backend and camera endpoints.
+The `dev` script runs `node backend/src/server.js`, which starts the Express + SQLite + WebSocket backend on port 3000 and mounts Vite middleware to serve the frontend from the same origin.
 
-### Lint / build / preview
+### Lint / test / build / preview
 
 ```bash
 npm run lint
+npm test
 npm run build
 npm run preview
 ```
 
-- `npm run lint` runs `node --check app.js`; this is a syntax check, not a complete linter or automated test suite.
+- `npm run lint` runs `node --check` on `app.js` and the backend modules.
+- `npm test` runs the Node.js integration test suite (`backend/test/backend.test.js`).
 - `npm run build` generates the production static bundle in `dist/`.
 - `npm run preview` serves the production build locally.
-- `npm run clean` removes `dist/` and `server.js`.
 
 ### Docker / Nginx
 
-The current Compose file publishes port 80 and mounts the repository root read-only at Nginx's document root.
+The root `docker-compose.yml` builds the multi-stage `Dockerfile`:
+- `backend`: runs the Node.js/Express + SQLite service on internal port 3000.
+- `frontend`: runs Nginx on port 8080 (`${FRONTEND_PORT:-8080}:80`), serving only the built `dist/` static bundle and reverse-proxying same-origin `/api/` and `/ws/` requests to `backend:3000`.
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 docker compose ps
-docker compose logs -f frontend_dashboard
+docker compose logs -f
 docker compose down
 ```
-
-**Important:** the current Compose file only deploys the frontend. It does not start Node-RED, Mosquitto, SQLite, the Python/OpenCV service, or edge-node firmware. Before a production deployment, configure Nginx to expose only the intended public frontend files (normally the built `dist/` contents) instead of mounting the entire repository root.
 
 ## 4. Network configuration
 
@@ -133,18 +133,14 @@ The frontend uses these defaults:
 
 | Setting | Default | Use |
 |---|---|---|
-| `server_host` | `192.168.43.225:1880` | Node-RED HTTP API and WebSocket host |
-| `ip_node1` | `192.168.43.11` | Smart access controller |
-| `ip_node2` | `192.168.43.12` | Environmental controller |
-| `ip_node3` | `192.168.43.13` | Biometric camera controller |
+| `server_host` | `window.location.host` (fallback `192.168.43.225:1880`) | Central HTTP API (`/api/*`) and WebSocket (`/ws/*`) host |
+| `ip_node1` | `192.168.43.11` | Smart access controller (ESP32 Node 1) |
+| `ip_node2` | `192.168.43.12` | Environmental controller (ESP32 Node 2) |
+| `ip_node3` | `192.168.43.13` | Biometric camera controller (ESP32-CAM Node 3, direct LAN `http://<ip_node3>/capture.jpg`) |
 
-These values are local-installation defaults, not a guarantee that devices exist at those addresses. The browser stores the chosen endpoint values in `localStorage` under `lci_server_host`, `ip_node1`, `ip_node2`, and `ip_node3`.
-
-The central server can be adjusted on the login screen. The administrator endpoint settings provide access to the server and node IP fields for a verified Admin.
-
-The frontend constructs HTTP endpoints using `http://<server_host>` and WebSocket endpoints using `ws://<server_host>`. The Content Security Policy in `index.html` also restricts where requests and images may connect. If the installation moves to an address range not included in the policy, update the policy deliberately and narrowly along with the endpoint configuration.
-
-Because the current addresses use plain HTTP/WebSocket, this design should remain on its intended trusted local network unless transport protection and the required CSP changes have been implemented.
+- **Legacy Host Auto-Migration:** If `localStorage.getItem('lci_server_host')` contains the exact legacy Node-RED value `192.168.43.225:1880` and the dashboard is served from a different browser origin (`window.location.host`), the frontend automatically migrates `lci_server_host` to `window.location.host`. Intentional custom hosts (such as a separate LAN appliance IP/port) and all three edge-node IPs (`ip_node1`, `ip_node2`, `ip_node3`) are preserved untouched.
+- **Reset to Current Host:** The Login screen, Quick Endpoint Modal, and View 6 Network Configuration form each provide a **Use this dashboard's server / Use Current Host** action to reset `server_host` to `window.location.host` without altering `ip_node1`, `ip_node2`, or `ip_node3`.
+- **Protocol Construction:** When `server_host === window.location.host`, HTTP and WebSocket URLs automatically match `window.location.protocol` (`http:`/`https:` and `ws:`/`wss:`).
 
 ## 5. Application views
 
@@ -387,52 +383,20 @@ The architecture document describes a four-service target (Mosquitto, Node-RED/S
 - **Local browser storage:** endpoint addresses and theme preferences are convenience settings, not secrets. Avoid storing passwords, PINs, or long-lived privileged credentials there.
 - **Physical safety:** the frontend is an operator interface, not a safety controller. Safety-critical detection, MFA decisions, and fail-safe egress must remain enforced in the appropriate hardware/backend layers.
 
-## 13. Backend work still required
+## 13. Backend capabilities and remaining boundaries
 
-The current frontend deliberately exposes some backend dependencies instead of presenting them as implemented features.
+### Implemented in the Node.js backend (`backend/src/`)
 
-### Time-bucketed environment aggregation
+- **Time-bucketed environment aggregation (`GET /api/telemetry/aggregate`):** Supports `range` (`1h`, `6h`, `24h`, `7d`) and `bucket` (`1m`, `5m`, `15m`, `1h`) over `environmental_telemetry`.
+- **Readiness & liveness probes (`GET /api/health/live`, `GET /api/health/ready`):** Reports SQLite and MQTT readiness (`checks.sqlite`, `checks.mqtt`), surfaced in View 5 (`#diag-ready-state`).
+- **Password & PIN hashing (`backend/src/utils/crypto.js`):** Uses Node's `crypto.scryptSync` (`scrypt$N$r$p$salt$key`) with timing-safe verification. Plaintext passwords, PINs, and hashes are never returned by `/api/logs/system_users`.
+- **Session & CSRF protection (`backend/src/middleware/auth.js`):** Issues `HttpOnly; SameSite=Strict` session cookies (`lci_sid`), enforces `X-CSRF-Token` on cookie-authenticated mutations, and supports `Authorization: Bearer <token>` compatibility.
 
-The rollup selector for 24-hour/7-day trends does not call an aggregate endpoint. Add an authenticated, parameter-validated endpoint such as:
+### Remaining hardware / architectural boundaries
 
-`GET /api/telemetry/aggregate?range=24h&bucket=15m`
-
-The backend should constrain supported ranges/buckets, use appropriate indexes, return timestamps and aggregate fields consistently, and enforce permissions. Example response shape:
-
-```json
-{
-  "range": "24h",
-  "bucket": "15m",
-  "series": [
-    {
-      "timestamp": "2026-10-22T12:00:00Z",
-      "temperature_avg": 25.4,
-      "temperature_min": 24.9,
-      "temperature_max": 26.1,
-      "humidity_avg": 48.3,
-      "sample_count": 8
-    }
-  ]
-}
-```
-
-This is a **proposed contract**, not an endpoint currently implemented by the frontend/backend.
-
-### Persistent alarm workflow
-
-The current frontend can display rows from `system_errors`, but persistent acknowledgement, assignment, resolution, and escalation require backend data and routes. A proper implementation should define a status lifecycle, who can change it, audit metadata, and append-only history as appropriate. Do not simulate acknowledgement with browser-only state.
-
-### Independent node heartbeat
-
-The current frontend infers node health from the streams and device evidence available to it. Add explicit per-node heartbeat messages with node identity, sequence/counter, timestamp or uptime, firmware/version details if needed, and health flags. Node 3's planned sleep states need to be distinguished from a failed or unreachable camera.
-
-### Credential API minimization
-
-The user-directory UI masks PIN/password-related values, but the backend should not return `pin`, `password`, or `password_hash` unless a narrowly defined, justified use requires it. Prefer a boolean such as `pin_configured` and a separately maintained credential status. Never transmit plaintext passwords or PINs in a user-list response.
-
-### Operational command acknowledgement
-
-Define the command API's response schema and distinguish request receipt, dispatch, controller acknowledgement, and confirmed hardware state. The frontend currently treats HTTP 2xx as acknowledgement from Node-RED, not proof of physical actuation.
+- **Persistent alarm acknowledgement workflow:** `system_errors` is currently read-only (`GET /api/logs/system_errors`). Persistent alarm acknowledgement, assignment, and resolution require dedicated backend schema/routes and are not simulated in browser state.
+- **Independent edge-node heartbeats:** Node 1, Node 2, and Node 3 statuses in View 5 are inferred from stream/capture evidence and clearly labeled with their evidence source. Dedicated per-node firmware heartbeats are required to distinguish an idle or PIR-sleeping controller from a powered-off device.
+- **Branding scope:** The unified `LCI-SFM` shield-and-grid SVG emblem (`#icon-brand-emblem`) is rendered locally from the inline SVG sprite in `index.html`; there is no server-side logo upload or multi-client branding persistence endpoint.
 
 ## 14. Validation and troubleshooting
 
@@ -440,32 +404,22 @@ Define the command API's response schema and distinguish request receipt, dispat
 
 ```bash
 npm run lint
+npm test
 npm run build
 ```
 
-These check JavaScript syntax and the Vite production build. They do not test the real hardware, deployed API permissions, WebSocket schema, CSS layouts at every viewport, or browser accessibility conformance.
+These verify JavaScript syntax across frontend and backend files, run the 16 automated backend API/WebSocket/RBAC/CSRF integration tests, and build the production bundle in `dist/`.
 
 ### Common issues
 
 | Symptom | Checks |
 |---|---|
-| Login endpoint is unreachable | Confirm `server_host`, browser-to-server routing, Node-RED availability, port 1880, and firewall/CSP rules |
-| Login returns 401/403 | Verify assigned credentials and server-side user record; the frontend intentionally does not fall back to local Admin authentication |
+| Login endpoint is unreachable | Click **Use this dashboard's server** on the Login screen to reset `server_host` to the current origin, or verify custom `server_host` reachability and CSP rules |
+| Login returns 401/403 | Verify assigned credentials and server-side user record; the frontend never falls back to local Admin authentication |
 | Authentication unavailable | Inspect the local network/backend; read-only inspection is unverified and cannot authorize privileged actions |
-| Telemetry shows unknown or stale | Check `/ws/telemetry`, the Node-RED flow, MQTT delivery, Node 2 power/network, payload field names, and the last successful packet |
-| MFA stream is offline | Check `/ws/mfa` and the Node-RED subscription/forwarding flow |
-| Camera capture fails | Verify the Node 3 address, endpoint, browser CSP, network path, camera status, PIR-triggered wake behavior, and the returned image |
-| Command dispatch fails | Confirm a server-verified Admin session, endpoint/IP validity, `POST /api/command`, the allowlisted command/state, and backend logs |
-| Historical chart has few points | The frontend plots at most 30 returned SQLite rows; multi-day bucketed aggregation requires backend support |
-| Node appears stale/unknown | Current health status is inferred from evidence; implement dedicated per-node heartbeat data for stronger diagnosis |
-| Nginx exposes repository material | Replace the repository-root mount with a build-output-only mount and verify the served file list |
+| Telemetry shows unknown or stale | Check `/ws/telemetry`, MQTT delivery, Node 2 power/network, payload field names, and the last successful packet |
+| MFA stream is offline | Check `/ws/mfa` and central backend WebSocket connectivity |
+| Camera capture fails | Verify the Node 3 IP (`ip_node3`), `http://<ip_node3>/capture.jpg`, browser CSP, network path, and PIR-triggered wake behavior |
+| Command dispatch fails | Confirm a server-verified Admin session, valid `X-CSRF-Token`, endpoint/IP validity, `POST /api/command`, and MQTT broker status |
+| Node appears stale/unknown | Current health status is inferred from evidence; check View 5 diagnostics for the specific evidence source and last-seen age |
 
----
-
-## Implementation status summary
-
-**Implemented in the frontend:** the six views, theme and responsive styling, read-only inspection fallback, browser-side status/freshness presentation, live FIFO charts, recent SQLite history mode, client-side audit explorer, CSV export, confirmation/detail modals, endpoint configuration, and command/admin API calls.
-
-**Not implemented solely by the frontend:** SQLite schema and migrations, backend authentication and authorization internals, real alarm acknowledgement/escalation, multi-day telemetry aggregation, authoritative device heartbeats, controller-side command acknowledgements, hardware firmware behavior, and physical safety interlocks.
-
-This distinction is deliberate: the dashboard should communicate its data and capability limits instead of implying unverified system behavior.

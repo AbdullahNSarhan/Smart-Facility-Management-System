@@ -1,7 +1,7 @@
 /**
  * LCI-SFM Enterprise BMS / HMI Operations Console Application Logic (ES6 Module)
- * - Air-Gapped 3-File Architecture (index.html, styles.css, app.js)
- * - Default Central Appliance Endpoint: 192.168.43.225:1880 (Node-RED + SQLite3 /home/Bedo/lci_sfm.db)
+ * - Air-Gapped 3-File Frontend Architecture (index.html, styles.css, app.js)
+ * - Same-Origin / Configurable Central Backend Gateway (/api/*, /ws/telemetry, /ws/mfa)
  * - Verified Server Authentication (POST /api/auth/login), Dynamic SQLite Explorer (GET /api/logs/:table),
  *   Hardware Command Dispatch (POST /api/command), and User Provisioning (POST /api/provision/user)
  */
@@ -347,15 +347,30 @@ export let system_errors = [];
 export let system_users = [];
 
 // Dynamic Endpoints (Central Server + Edge Nodes 1, 2, 3)
-// Defaults to same-origin host when served by Nginx / Node.js backend, with fallback to 192.168.43.225:1880
+// Defaults to same-origin host when served by Nginx / Node.js backend.
+// Auto-migrates only the known legacy Node-RED host (192.168.43.225:1880) when served from another origin,
+// while preserving any intentional custom host and independent edge node IPs.
+const LEGACY_NODE_RED_HOST = '192.168.43.225:1880';
 const defaultBrowserHost =
   typeof window !== 'undefined' && window.location?.host
     ? window.location.host
-    : '192.168.43.225:1880';
-export let server_host = sanitizeInput(localStorage.getItem('lci_server_host') || defaultBrowserHost);
-if (!isValidHostPort(server_host)) {
-  server_host = defaultBrowserHost;
+    : LEGACY_NODE_RED_HOST;
+
+let storedServerHost = sanitizeInput(localStorage.getItem('lci_server_host') || '');
+if (
+  storedServerHost === LEGACY_NODE_RED_HOST &&
+  defaultBrowserHost &&
+  defaultBrowserHost !== LEGACY_NODE_RED_HOST
+) {
+  storedServerHost = defaultBrowserHost;
+  try {
+    localStorage.setItem('lci_server_host', storedServerHost);
+  } catch {}
 }
+
+export let server_host = isValidHostPort(storedServerHost)
+  ? storedServerHost
+  : defaultBrowserHost;
 export let ip_node1 = sanitizeInput(localStorage.getItem('ip_node1') || '192.168.43.11');
 export let ip_node2 = sanitizeInput(localStorage.getItem('ip_node2') || '192.168.43.12');
 export let ip_node3 = sanitizeInput(localStorage.getItem('ip_node3') || '192.168.43.13');
@@ -426,6 +441,7 @@ let lastNode3CaptureTimestamp = 0;
 let node3ProbeStatus = 'STANDBY'; // 'STANDBY' | 'LOADING' | 'ONLINE' | 'UNREACHABLE'
 let lastHttpApiSuccessTimestamp = 0;
 let httpApiReachable = false;
+let lastBackendReadySummary = 'Awaiting Probe';
 
 let wsTelemetryState = 'OFFLINE'; // 'ONLINE' | 'OFFLINE'
 let wsMfaState = 'OFFLINE'; // 'ONLINE' | 'OFFLINE'
@@ -595,7 +611,7 @@ function applyRBACPermissions() {
       ? ''
       : (verified
           ? 'Locked — Viewer role has read-only permissions'
-          : 'Locked — Authenticate against the Node-RED SQLite server to enable hardware control');
+          : 'Locked — Authenticate against the Central Backend to enable hardware control');
   });
 
   document.querySelectorAll('.rbac-protected-input').forEach(input => {
@@ -929,7 +945,7 @@ function requestDoorUnlockAction(triggerBtn) {
     openConfirmModal({
       kicker: 'Physical Security Override Confirmation',
       title: `Confirm Door Solenoid ${nextState === 'OPEN' ? 'Unlock' : 'Lock'}`,
-      description: `This action dispatches an authenticated request to Node-RED to ${nextState === 'OPEN' ? 'de-energize (UNLOCK)' : 'energize (LOCK)'} the 12V magnetic lock on Node 1.`,
+      description: `This action dispatches an authenticated command to the central backend to ${nextState === 'OPEN' ? 'de-energize (UNLOCK)' : 'energize (LOCK)'} the 12V magnetic lock on Node 1.`,
       endpoint: `POST ${getNodeRedHttp()}/api/command`,
       payload: `EMERGENCY_DOOR_UNLOCK -> ${nextState}`,
       targetNode: `Node 1 (${ip_node1})`,
@@ -1190,7 +1206,8 @@ function mountAuthenticatedViewListeners() {
   }, { signal });
 
   document.getElementById('probe-health-btn')?.addEventListener('click', async () => {
-    showToast('Probing Subsystems', `Checking REST endpoints on ${getNodeRedHttp()}...`, 'info');
+    showToast('Probing Subsystems', `Checking REST & readiness endpoints on ${getNodeRedHttp()}...`, 'info');
+    await probeBackendReadiness();
     await fetchSQLiteLogs('system_errors');
     await fetchSQLiteLogs('access_logs');
     updateHeartbeatDiagnosticsUI();
@@ -1357,7 +1374,14 @@ function mountAuthenticatedViewListeners() {
     }
   }, { signal });
 
-  // View 6: IP Settings Form
+  // View 6: IP Settings Form & Reset-to-Current-Host Action
+  document.getElementById('settings-reset-host-btn')?.addEventListener('click', () => {
+    if (!isPrivilegedAdmin()) return;
+    const setSrv = document.getElementById('set_server_host');
+    if (setSrv) setSrv.value = defaultBrowserHost;
+    showToast('Current Host Populated', `Central server field set to ${defaultBrowserHost}. Click Save & Reconnect to apply.`, 'info');
+  }, { signal });
+
   document.getElementById('settings-ip-form')?.addEventListener('submit', (e) => {
     e.preventDefault();
     if (!isPrivilegedAdmin()) return;
@@ -1405,7 +1429,7 @@ function mountAuthenticatedViewListeners() {
             showToast('Role Updated', `${uname} clearance updated to ${nextRole} in SQLite.`, 'success');
             await fetchSystemUsers();
           } catch {
-            showToast('Role Update Failed', `Node-RED SQLite backend unreachable; role was not modified.`, 'error');
+            showToast('Role Update Failed', `Central backend unreachable; role was not modified.`, 'error');
           }
         }
       });
@@ -1430,7 +1454,7 @@ function mountAuthenticatedViewListeners() {
             showToast('User Deleted', `Removed ${uname} from SQLite system_users.`, 'info');
             await fetchSystemUsers();
           } catch {
-            showToast('Deletion Failed', `Node-RED SQLite backend unreachable; user was not deleted.`, 'error');
+            showToast('Deletion Failed', `Central backend unreachable; user was not deleted.`, 'error');
           }
         }
       });
@@ -1603,7 +1627,7 @@ function openIpModal() {
   }
   const modal = document.getElementById('startup-modal');
   const srvInput = document.getElementById('modal_server_host');
-  if (srvInput) srvInput.value = server_host || '192.168.43.225:1880';
+  if (srvInput) srvInput.value = server_host || defaultBrowserHost;
   document.getElementById('modal_ip_node1').value = ip_node1 || '192.168.43.11';
   document.getElementById('modal_ip_node2').value = ip_node2 || '192.168.43.12';
   document.getElementById('modal_ip_node3').value = ip_node3 || '192.168.43.13';
@@ -1618,7 +1642,7 @@ function checkNodeIPsOnStartup() {
   if (!isValidIPv4(ip_node1)) ip_node1 = '192.168.43.11';
   if (!isValidIPv4(ip_node2)) ip_node2 = '192.168.43.12';
   if (!isValidIPv4(ip_node3)) ip_node3 = '192.168.43.13';
-  if (!isValidHostPort(server_host)) server_host = '192.168.43.225:1880';
+  if (!isValidHostPort(server_host)) server_host = defaultBrowserHost;
   syncIPInputs();
 }
 
@@ -1633,7 +1657,7 @@ function saveNodeIPs(rawN1, rawN2, rawN3, rawServerHost = server_host) {
     return false;
   }
   if (!isValidHostPort(srv)) {
-    showToast('Invalid Server Host', 'Server host must be a valid IPv4:Port (e.g. 192.168.43.225:1880).', 'error');
+    showToast('Invalid Server Host', 'Server host must be a valid host or IPv4:Port (e.g. localhost:3000 or 192.168.43.225:3000).', 'error');
     return false;
   }
 
@@ -1652,6 +1676,7 @@ function saveNodeIPs(rawN1, rawN2, rawN3, rawServerHost = server_host) {
   showToast('Endpoints Updated', `Server: ${server_host} · Nodes: ${ip_node1}, ${ip_node2}, ${ip_node3}`, 'success');
 
   if (hostChanged && isAuthenticated()) {
+    probeBackendReadiness();
     connectWebSockets();
   }
   return true;
@@ -1660,6 +1685,10 @@ function saveNodeIPs(rawN1, rawN2, rawN3, rawServerHost = server_host) {
 function syncIPInputs() {
   const setSrv = document.getElementById('set_server_host');
   if (setSrv) setSrv.value = server_host;
+  const loginSrv = document.getElementById('login_server_host');
+  if (loginSrv) loginSrv.value = server_host;
+  const modalSrv = document.getElementById('modal_server_host');
+  if (modalSrv) modalSrv.value = server_host;
   const setN1 = document.getElementById('set_ip_node1');
   if (setN1) setN1.value = ip_node1;
   const setN2 = document.getElementById('set_ip_node2');
@@ -1686,6 +1715,9 @@ function syncIPInputs() {
   setText('topo-ip-node3', ip_node3);
   setText('access-node1-ip', ip_node1);
   setText('cam-endpoint-label', `http://${ip_node3}/capture.jpg`);
+  setText('diag-effective-http', `${getNodeRedHttp()}/api/*`);
+  setText('diag-effective-ws-tel', `${getWsProtocol()}//${server_host}/ws/telemetry`);
+  setText('diag-effective-ws-mfa', `${getWsProtocol()}//${server_host}/ws/mfa`);
 }
 
 function refreshCameraSnapshot(userInitiated = false) {
@@ -2407,7 +2439,7 @@ function renderDatabaseTable() {
   if (pageSlice.length === 0) {
     thead.innerHTML = '<tr><th>SQLite Table Status</th></tr>';
     const reason = prov?.status === 'UNREACHABLE'
-      ? `Node-RED SQLite service at ${getNodeRedHttp()} is currently unreachable.`
+      ? `Central backend SQLite service at ${getNodeRedHttp()} is currently unreachable.`
       : `Table "${activeDbTable}" returned 0 matching records for the current filter.`;
     tbody.innerHTML = `<tr><td>${getEmptyTableIllustrationHTML(
       `No Records Displayed for "${activeDbTable}"`,
@@ -2805,6 +2837,27 @@ function updateFacilityStatusAndFreshness() {
   }
 }
 
+async function probeBackendReadiness() {
+  try {
+    const res = await fetchWithTimeout(`${getNodeRedHttp()}/api/health/ready`, {
+      method: 'GET'
+    }, 2000);
+    const data = await res.json().catch(() => ({}));
+    if (res.ok || res.status === 503) {
+      httpApiReachable = true;
+      lastHttpApiSuccessTimestamp = Date.now();
+      const sqliteStatus = data?.checks?.sqlite || 'unknown';
+      const mqttStatus = data?.checks?.mqtt || 'unknown';
+      lastBackendReadySummary = `SQLite: ${sqliteStatus} · MQTT: ${mqttStatus}`;
+    } else {
+      lastBackendReadySummary = `HTTP ${res.status}`;
+    }
+  } catch {
+    lastBackendReadySummary = 'Unreachable';
+  }
+  updateHeartbeatDiagnosticsUI();
+}
+
 function updateHeartbeatDiagnosticsUI() {
   const now = Date.now();
 
@@ -2828,11 +2881,15 @@ function updateHeartbeatDiagnosticsUI() {
     if (el) el.textContent = text;
   };
   setDiagText('diag-http-state', httpApiReachable ? `OK (${formatAgeSeconds(lastHttpApiSuccessTimestamp)})` : 'Unreachable');
+  setDiagText('diag-ready-state', lastBackendReadySummary);
   setDiagText('diag-ws-tel-state', wsTelemetryState);
   setDiagText('diag-ws-mfa-state', wsMfaState);
   setDiagText('diag-server-last', formatAgeSeconds(lastServerTs));
   setDiagText('topo-ws-tel', wsTelemetryState);
   setDiagText('topo-ws-mfa', wsMfaState);
+  setDiagText('diag-effective-http', `${getNodeRedHttp()}/api/*`);
+  setDiagText('diag-effective-ws-tel', `${getWsProtocol()}//${server_host}/ws/telemetry`);
+  setDiagText('diag-effective-ws-mfa', `${getWsProtocol()}//${server_host}/ws/mfa`);
 
   // 2. Node 1 (#hb-node1) — Evaluated strictly from Node 1 MFA/Door evidence
   const n1Age = lastNode1EvidenceTimestamp ? (now - lastNode1EvidenceTimestamp) : Infinity;
@@ -2916,6 +2973,7 @@ function bootAuthenticatedSession() {
   renderUserManagementTable();
 
   connectWebSockets();
+  probeBackendReadiness();
   fetchSQLiteLogs('access_logs');
   fetchSQLiteLogs('system_errors');
   if (isPrivilegedAdmin()) {
@@ -2960,19 +3018,32 @@ window.addEventListener('DOMContentLoaded', () => {
   // Toast Clear All (X) Button
   document.getElementById('toast-clear-all-btn')?.addEventListener('click', clearAllToasts);
 
-  // Login Screen Server Host Override
+  // Login Screen Server Host Override & Reset to Current Origin
   const loginServerHostInput = document.getElementById('login_server_host');
   if (loginServerHostInput) loginServerHostInput.value = server_host;
   document.getElementById('login-apply-host-btn')?.addEventListener('click', () => {
     const candidate = sanitizeInput(loginServerHostInput?.value || '');
     if (!isValidHostPort(candidate)) {
-      showToast('Invalid Host Format', 'Enter a valid IPv4:Port (e.g. 192.168.43.225:1880).', 'error');
+      showToast('Invalid Host Format', 'Enter a valid host or IPv4:Port (e.g. localhost:3000 or 192.168.43.225:3000).', 'error');
       return;
     }
     server_host = candidate;
     localStorage.setItem('lci_server_host', server_host);
     syncIPInputs();
     showToast('Gateway Host Updated', `Authentication endpoint set to ${getNodeRedHttp()}.`, 'info');
+  });
+
+  document.getElementById('login-reset-host-btn')?.addEventListener('click', () => {
+    server_host = defaultBrowserHost;
+    localStorage.setItem('lci_server_host', server_host);
+    syncIPInputs();
+    showToast('Using Current Host', `Authentication endpoint reset to ${getNodeRedHttp()}.`, 'info');
+  });
+
+  document.getElementById('modal-reset-host-btn')?.addEventListener('click', () => {
+    const modalSrv = document.getElementById('modal_server_host');
+    if (modalSrv) modalSrv.value = defaultBrowserHost;
+    showToast('Current Host Populated', `Central server field set to ${defaultBrowserHost}. Click Save & Reconnect to apply.`, 'info');
   });
 
   // Strict Server-Verified Authentication Flow:

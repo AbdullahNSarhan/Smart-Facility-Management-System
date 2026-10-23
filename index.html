@@ -5,22 +5,160 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <!-- Strict Air-Gapped Content Security Policy (Blocks all external scripts, fonts, frames, and CDNs) -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://192.168.43.225:1880 http://192.168.43.* http://192.168.* http://10.* http://172.16.* http://127.0.0.1:* http://localhost:*; connect-src 'self' ws: wss: ws://192.168.43.225:1880 http://192.168.43.225:1880 ws://192.168.* http://192.168.* ws://10.* http://10.* ws://172.16.* http://172.16.* ws://127.0.0.1:* http://127.0.0.1:* ws://localhost:* http://localhost:*; font-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self';" />
-  <title>LCI-SFM Command &amp; Control Dashboard</title>
-  <meta name="description" content="Air-gapped Light Current Infrastructure for Smart Facility Management (LCI-SFM) Web GUI Dashboard with real-time WebSocket telemetry, 2-of-3 MFA tracker, environmental monitoring, and SQLite audit explorer." />
-  <meta property="og:title" content="LCI-SFM Command &amp; Control Dashboard" />
-  <meta property="og:description" content="Air-gapped Light Current Infrastructure for Smart Facility Management (LCI-SFM) Web GUI Dashboard with real-time WebSocket telemetry, 2-of-3 MFA tracker, environmental monitoring, and SQLite audit explorer." />
+  <title>LCI-SFM · BMS / HMI Operations Console</title>
+  <meta name="description" content="Air-gapped Light Current Infrastructure for Smart Facility Management (LCI-SFM) BMS/HMI Operations Console with real-time WebSocket telemetry, 2-of-3 MFA tracker, environmental actuation, and SQLite audit explorer." />
+  <meta property="og:title" content="LCI-SFM · BMS / HMI Operations Console" />
+  <meta property="og:description" content="Air-gapped Light Current Infrastructure for Smart Facility Management (LCI-SFM) BMS/HMI Operations Console with real-time WebSocket telemetry, 2-of-3 MFA tracker, environmental actuation, and SQLite audit explorer." />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+  <!-- ==========================================================================
+       SHARED INLINE SVG ICON SPRITE (24x24 Outline System, Air-Gapped, Zero CDN)
+       Canonical Brand Mark: #icon-brand-emblem (Used in Login & Sidebar)
+       ========================================================================== -->
+  <svg xmlns="http://www.w3.org/2000/svg" class="sr-only" aria-hidden="true" focusable="false">
+    <defs>
+      <!-- Unified LCI-SFM Shield & Grid Brand Emblem -->
+      <symbol id="icon-brand-emblem" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+        <rect x="8.5" y="8.5" width="3" height="3" rx="0.5"></rect>
+        <rect x="12.5" y="8.5" width="3" height="3" rx="0.5"></rect>
+        <rect x="8.5" y="12.5" width="3" height="3" rx="0.5"></rect>
+        <rect x="12.5" y="12.5" width="3" height="3" rx="0.5"></rect>
+      </symbol>
+      <symbol id="icon-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+        <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+        <rect x="14" y="14" width="7" height="7" rx="1"></rect>
+        <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+      </symbol>
+      <symbol id="icon-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+      </symbol>
+      <symbol id="icon-unlock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+        <path d="M7 11V7a5 5 0 0 1 9.9-1"></path>
+      </symbol>
+      <symbol id="icon-thermometer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"></path>
+      </symbol>
+      <symbol id="icon-droplet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"></path>
+      </symbol>
+      <symbol id="icon-flame" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"></path>
+      </symbol>
+      <symbol id="icon-fan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M12 9a4.5 4.5 0 0 0-4.5-4.5C5.5 4.5 4 6 4 8c0 2.5 2.5 4 5 4"></path>
+        <path d="M15 12a4.5 4.5 0 0 0 4.5-4.5C19.5 5.5 18 4 16 4c-2.5 0-4 2.5-4 5"></path>
+        <path d="M12 15a4.5 4.5 0 0 0 4.5 4.5c2 0 3.5-1.5 3.5-3.5 0-2.5-2.5-4-5-4"></path>
+        <path d="M9 12a4.5 4.5 0 0 0-4.5 4.5C4.5 18.5 6 20 8 20c2.5 0 4-2.5 4-5"></path>
+      </symbol>
+      <symbol id="icon-bulb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 18h6"></path>
+        <path d="M10 22h4"></path>
+        <path d="M12 2a7 7 0 0 0-4 12.75V17h8v-2.25A7 7 0 0 0 12 2z"></path>
+      </symbol>
+      <symbol id="icon-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+        <polyline points="9 12 11 14 15 10"></polyline>
+      </symbol>
+      <symbol id="icon-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+        <line x1="16" y1="13" x2="8" y2="13"></line>
+        <line x1="16" y1="17" x2="8" y2="17"></line>
+      </symbol>
+      <symbol id="icon-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+      </symbol>
+      <symbol id="icon-network" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="2" width="6" height="6" rx="1"></rect>
+        <rect x="2" y="16" width="6" height="6" rx="1"></rect>
+        <rect x="16" y="16" width="6" height="6" rx="1"></rect>
+        <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"></path>
+        <line x1="12" y1="12" x2="12" y2="8"></line>
+      </symbol>
+      <symbol id="icon-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+      </symbol>
+      <symbol id="icon-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="4" y1="21" x2="4" y2="14"></line>
+        <line x1="4" y1="10" x2="4" y2="3"></line>
+        <line x1="12" y1="21" x2="12" y2="12"></line>
+        <line x1="12" y1="8" x2="12" y2="3"></line>
+        <line x1="20" y1="21" x2="20" y2="16"></line>
+        <line x1="20" y1="12" x2="20" y2="3"></line>
+        <line x1="1" y1="14" x2="7" y2="14"></line>
+        <line x1="9" y1="8" x2="15" y2="8"></line>
+        <line x1="17" y1="16" x2="23" y2="16"></line>
+      </symbol>
+      <symbol id="icon-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+        <circle cx="9" cy="7" r="4"></circle>
+        <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+      </symbol>
+      <symbol id="icon-camera" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+        <circle cx="12" cy="13" r="4"></circle>
+      </symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="23 4 23 10 17 10"></polyline>
+        <polyline points="1 20 1 14 7 14"></polyline>
+        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+      </symbol>
+      <symbol id="icon-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </symbol>
+      <symbol id="icon-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+        <polyline points="12 6 12 12 16 14"></polyline>
+      </symbol>
+      <symbol id="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="5"></circle>
+        <line x1="12" y1="1" x2="12" y2="3"></line>
+        <line x1="12" y1="21" x2="12" y2="23"></line>
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+        <line x1="1" y1="12" x2="3" y2="12"></line>
+        <line x1="21" y1="12" x2="23" y2="12"></line>
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+      </symbol>
+      <symbol id="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+      </symbol>
+      <symbol id="icon-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="12" y1="16" x2="12" y2="12"></line>
+        <line x1="12" y1="8" x2="12.01" y2="8"></line>
+      </symbol>
+      <symbol id="icon-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+        <line x1="12" y1="9" x2="12" y2="13"></line>
+        <line x1="12" y1="17" x2="12.01" y2="17"></line>
+      </symbol>
+      <symbol id="icon-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+      </symbol>
+    </defs>
+  </svg>
+
   <!-- Custom Vanilla Toast Notification Wrapper with "Clear All (X)" Control -->
   <div id="toast-wrapper" class="toast-wrapper" aria-live="polite" aria-atomic="false">
     <div id="toast-toolbar" class="toast-toolbar hidden">
       <span id="toast-count-label" class="toast-count-label tabular-nums">Notifications</span>
-      <button type="button" id="toast-clear-all-btn" class="toast-clear-btn" title="Dismiss all notifications">
+      <button type="button" id="toast-clear-all-btn" class="toast-clear-btn" title="Dismiss all notifications" aria-label="Dismiss all notifications">
         <span>Clear All</span>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+        <svg class="icon-16" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
           <line x1="18" y1="6" x2="6" y2="18"></line>
           <line x1="6" y1="6" x2="18" y2="18"></line>
         </svg>
@@ -29,40 +167,38 @@
     <div id="toast-container" class="toast-container"></div>
   </div>
 
-  <!-- Full-Screen Enterprise RBAC Login Overlay (SQLite Backend Authentication) -->
+  <!-- Full-Screen Enterprise RBAC Login Overlay (Central Backend Authentication) -->
   <div id="login-overlay" class="login-backdrop" role="dialog" aria-modal="true" aria-labelledby="login-heading">
     <div class="login-panel bms-panel">
       <div class="login-header-bar">
         <div class="login-brand">
           <div class="brand-logo login-logo" aria-hidden="true">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            <svg class="icon-20" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+              <use href="#icon-brand-emblem"></use>
             </svg>
           </div>
           <div>
-            <span class="kicker-text">LCI-SFM · Layer 3 Operations Console</span>
+            <span class="kicker-text">LCI-SFM · BMS / HMI Console</span>
             <h2 id="login-heading">Operator Authentication</h2>
           </div>
         </div>
-        <span id="login-server-status-badge" class="status-tag status-unknown">Air-Gapped LAN</span>
+        <span id="login-server-status-badge" class="status-tag status-unknown">Local LAN</span>
       </div>
 
       <p class="login-subtitle">
-        Verify operator credentials against the Node-RED SQLite <code>system_users</code> service (<code id="login-endpoint-display">http://192.168.43.225:1880/api/auth/login</code>).
+        Sign in with your assigned operator credentials. Active gateway: <code id="login-endpoint-display">/api/auth/login</code>
       </p>
 
-      <!-- Explicit Backend Unavailable Warning Box (Hidden unless auth request fails to reach Node-RED) -->
+      <!-- Explicit Backend Unavailable Warning Box (Hidden unless auth request fails to reach Central Backend) -->
       <div id="login-offline-alert" class="callout-box callout-warning hidden" role="alert">
         <div class="callout-header">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-            <line x1="12" y1="9" x2="12" y2="13"></line>
-            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          <svg class="icon-16" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+            <use href="#icon-warning"></use>
           </svg>
           <strong id="login-offline-title">Authentication Service Unreachable</strong>
         </div>
         <p id="login-offline-desc" class="callout-body">
-          Could not establish an HTTP connection to the central Node-RED authentication endpoint. Privileged control actions cannot be authorized without server verification.
+          Could not reach the Central Backend authentication service. Privileged control actions remain locked without server verification.
         </p>
         <div class="callout-actions">
           <button type="button" id="login-offline-readonly-btn" class="btn-outline btn-sm">
@@ -74,32 +210,34 @@
       <form id="login-form" autocomplete="off" novalidate>
         <div class="field-group">
           <label for="login_username">Operator Username</label>
-          <input type="text" id="login_username" name="username" maxlength="32" placeholder="Enter assigned operator username" autocomplete="username" required />
+          <input type="text" id="login_username" name="username" maxlength="32" placeholder="Enter operator username" autocomplete="username" required />
         </div>
 
         <div class="field-group">
           <label for="login_password">Password / Credential</label>
           <input type="password" id="login_password" name="password" maxlength="64" placeholder="Enter operator password" autocomplete="current-password" required />
-          <span class="input-hint">Credentials are verified server-side via SHA-256 against <code>system_users</code>.</span>
+          <span class="input-hint">Credentials are verified by the central backend. Secret values are never displayed.</span>
         </div>
 
         <!-- Expandable Server Host Override for Field Engineers on Custom Subnets -->
         <details class="login-endpoint-details">
-          <summary>Network Gateway Endpoint (<code id="login-summary-host">192.168.43.225:1880</code>)</summary>
+          <summary>
+            <span>Central Gateway Origin (<code id="login-summary-host">current-origin</code>)</span>
+          </summary>
           <div class="field-group mt-12">
-            <label for="login_server_host">Central Node-RED Host (IPv4:Port)</label>
+            <label for="login_server_host">Central Backend Host (Host:Port)</label>
             <div class="inline-input-row">
-              <input type="text" id="login_server_host" value="192.168.43.225:1880" maxlength="32" placeholder="192.168.43.225:1880" />
-              <button type="button" id="login-apply-host-btn" class="btn-outline btn-sm">Apply Host</button>
+              <input type="text" id="login_server_host" value="" maxlength="64" placeholder="Same-origin host" />
+              <button type="button" id="login-apply-host-btn" class="btn-outline btn-sm">Apply</button>
+              <button type="button" id="login-reset-host-btn" class="btn-outline btn-sm" title="Reset to this dashboard's current server host">Use Current Host</button>
             </div>
-            <span class="input-hint">Updates local HTTP API and WebSocket target host for this workstation.</span>
+            <span class="input-hint">Uses this dashboard's origin by default. Override only when targeting a separate gateway host.</span>
           </div>
         </details>
 
         <button type="submit" id="login-submit-btn" class="btn-primary full-width login-submit-btn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          <svg class="icon-16" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+            <use href="#icon-lock"></use>
           </svg>
           <span>Authenticate Session</span>
         </button>
@@ -112,35 +250,39 @@
     <div class="modal-panel bms-panel">
       <div class="modal-top-bar">
         <div>
-          <span class="kicker-text">Layer 1 &amp; Layer 3 Network Addressing</span>
-          <h2 id="ip-modal-title">LCI-SFM Endpoint Configuration</h2>
+          <span class="kicker-text">Workstation Network Configuration</span>
+          <h2 id="ip-modal-title">Gateway &amp; Edge Node Endpoints</h2>
         </div>
         <button type="button" id="close-ip-modal-x" class="modal-close-x" title="Close modal (Esc)" aria-label="Close modal">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <svg class="icon-18" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
           </svg>
         </button>
       </div>
-      <p class="modal-desc">Configure static wired Ethernet IPv4 endpoints for the central Node-RED appliance and ESP32-S3 PoE edge controllers.</p>
+      <p class="modal-desc">Browser-local endpoint settings for the Central Backend and independent PoE edge controllers.</p>
 
       <form id="startup-ip-form" novalidate>
         <div class="field-group">
-          <label for="modal_server_host">Central Server — Node-RED &amp; WebSocket Host (<code>server_host</code>)</label>
-          <input type="text" id="modal_server_host" placeholder="192.168.43.225:1880" required />
-          <span class="input-hint">Format: <code>IPv4:Port</code> (default <code>192.168.43.225:1880</code>)</span>
+          <div class="label-with-action">
+            <label for="modal_server_host">Central Backend Host (<code>server_host</code>)</label>
+            <button type="button" id="modal-reset-host-btn" class="btn-link-inline" title="Reset central host to current browser origin">Use this dashboard's server</button>
+          </div>
+          <input type="text" id="modal_server_host" placeholder="Same-origin host" required />
+          <span class="input-hint">Same-origin <code>/api</code> and <code>/ws</code> proxy by default.</span>
         </div>
         <div class="field-group">
           <label for="modal_ip_node1">Node 1 — Smart Access &amp; MFA Controller (<code>ip_node1</code>)</label>
           <input type="text" id="modal_ip_node1" placeholder="192.168.43.11" required />
         </div>
         <div class="field-group">
-          <label for="modal_ip_node2">Node 2 — Environmental &amp; HVAC Telemetry Node (<code>ip_node2</code>)</label>
+          <label for="modal_ip_node2">Node 2 — Environmental &amp; HVAC Controller (<code>ip_node2</code>)</label>
           <input type="text" id="modal_ip_node2" placeholder="192.168.43.12" required />
         </div>
         <div class="field-group">
-          <label for="modal_ip_node3">Node 3 — Biometric Optical Camera Node (<code>ip_node3</code>)</label>
+          <label for="modal_ip_node3">Node 3 — Biometric Camera Controller (<code>ip_node3</code>)</label>
           <input type="text" id="modal_ip_node3" placeholder="192.168.43.13" required />
+          <span class="input-hint">Direct optical capture endpoint: <code>http://&lt;ip_node3&gt;/capture.jpg</code></span>
         </div>
         <div class="modal-actions-row">
           <button type="button" id="cancel-ip-modal-btn" class="btn-outline">Cancel</button>
@@ -159,7 +301,7 @@
           <h2 id="confirm-modal-title">Confirm Hardware Command</h2>
         </div>
         <button type="button" id="close-confirm-modal-x" class="modal-close-x" title="Cancel (Esc)" aria-label="Close confirmation dialog">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <svg class="icon-18" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
           </svg>
@@ -171,7 +313,7 @@
       <div class="confirm-spec-box">
         <div class="confirm-spec-row">
           <span>Target Endpoint</span>
-          <code id="confirm-spec-endpoint">POST http://192.168.43.225:1880/api/command</code>
+          <code id="confirm-spec-endpoint">POST /api/command</code>
         </div>
         <div class="confirm-spec-row">
           <span>Command Payload</span>
@@ -194,11 +336,11 @@
     <div class="modal-panel bms-panel modal-panel-wide">
       <div class="modal-top-bar">
         <div>
-          <span id="event-detail-kicker" class="kicker-text">SQLite Record Inspector</span>
+          <span id="event-detail-kicker" class="kicker-text">Audit Record Inspector</span>
           <h2 id="event-detail-title">Event Record Details</h2>
         </div>
         <button type="button" id="close-event-detail-x" class="modal-close-x" title="Close inspector (Esc)" aria-label="Close inspector">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <svg class="icon-18" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
           </svg>
@@ -221,9 +363,13 @@
   <div class="layout-wrapper">
     <!-- Fixed & Collapsible Left Sidebar -->
     <aside id="sidebar" class="sidebar" aria-label="Facility Operations Navigation">
-      <div class="brand-header" title="LCI-SFM Air-Gapped Facility Console">
+      <div class="brand-header" title="LCI-SFM · BMS / HMI Operations Console">
         <div class="brand-row">
-          <div class="brand-logo" aria-hidden="true">LCI</div>
+          <div class="brand-logo" aria-hidden="true">
+            <svg class="icon-20" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+              <use href="#icon-brand-emblem"></use>
+            </svg>
+          </div>
           <div class="brand-text">
             <span class="brand-tag">BMS / HMI Console</span>
             <h1>LCI-SFM</h1>
@@ -233,54 +379,47 @@
 
       <nav class="sidebar-nav" aria-label="Primary Facility Views">
         <div class="nav-group-label">Monitoring &amp; Operations</div>
-        <button type="button" class="nav-item active" data-view="view-1" title="Overview / Command Center">
+        <button type="button" class="nav-item active" data-view="view-1" title="Command Center — Facility Overview &amp; Dispatch">
           <span class="nav-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="7" height="7"></rect>
-              <rect x="14" y="3" width="7" height="7"></rect>
-              <rect x="14" y="14" width="7" height="7"></rect>
-              <rect x="3" y="14" width="7" height="7"></rect>
+            <svg class="icon-18" width="18" height="18" viewBox="0 0 24 24">
+              <use href="#icon-grid"></use>
             </svg>
           </span>
           <span class="nav-label">Command Center</span>
         </button>
 
-        <button type="button" class="nav-item" data-view="view-2" title="Smart Access &amp; Security (2-of-3 MFA)">
+        <button type="button" class="nav-item" data-view="view-2" title="Access &amp; Security — Door Hardware, 2-of-3 MFA &amp; Node 3 Camera">
           <span class="nav-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            <svg class="icon-18" width="18" height="18" viewBox="0 0 24 24">
+              <use href="#icon-shield"></use>
             </svg>
           </span>
           <span class="nav-label">Access &amp; Security</span>
         </button>
 
-        <button type="button" class="nav-item" data-view="view-3" title="Environment &amp; Actuators (Node 2)">
+        <button type="button" class="nav-item" data-view="view-3" title="Environment &amp; HVAC — Gauges, Trends &amp; Relay Control">
           <span class="nav-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"></path>
+            <svg class="icon-18" width="18" height="18" viewBox="0 0 24 24">
+              <use href="#icon-thermometer"></use>
             </svg>
           </span>
           <span class="nav-label">Environment &amp; HVAC</span>
         </button>
 
         <div class="nav-group-label mt-12">Diagnostics &amp; Records</div>
-        <button type="button" class="nav-item" data-view="view-4" title="Events, Alarms &amp; SQLite Audit Logs">
+        <button type="button" class="nav-item" data-view="view-4" title="Audit Logs — Operational Records, Search &amp; CSV Export">
           <span class="nav-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-              <polyline points="14 2 14 8 20 8"></polyline>
-              <line x1="16" y1="13" x2="8" y2="13"></line>
-              <line x1="16" y1="17" x2="8" y2="17"></line>
+            <svg class="icon-18" width="18" height="18" viewBox="0 0 24 24">
+              <use href="#icon-list"></use>
             </svg>
           </span>
           <span class="nav-label">Events &amp; Audit Logs</span>
         </button>
 
-        <button type="button" class="nav-item" data-view="view-5" title="System Health &amp; Device Diagnostics">
+        <button type="button" class="nav-item" data-view="view-5" title="Health &amp; Diagnostics — Gateway Readiness &amp; Node Evidence">
           <span class="nav-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+            <svg class="icon-18" width="18" height="18" viewBox="0 0 24 24">
+              <use href="#icon-activity"></use>
             </svg>
           </span>
           <span class="nav-label">Health &amp; Diagnostics</span>
@@ -289,11 +428,10 @@
         <div id="nav-divider-view-6" class="nav-divider" role="separator" aria-hidden="true"></div>
 
         <!-- Visually Separated Administration Nav Item (Strictly Hidden for Viewers) -->
-        <button type="button" id="nav-item-view-6" class="nav-item nav-item-management" data-view="view-6" title="Administration &amp; User Provisioning (Admin Only)">
+        <button type="button" id="nav-item-view-6" class="nav-item nav-item-management" data-view="view-6" title="Administration — User Provisioning, RBAC &amp; Endpoints (Admin Only)">
           <span class="nav-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="3"></circle>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            <svg class="icon-18" width="18" height="18" viewBox="0 0 24 24">
+              <use href="#icon-settings"></use>
             </svg>
           </span>
           <span class="nav-label">Administration</span>
@@ -303,18 +441,18 @@
       <!-- Sidebar Bottom Area: WebSocket Status + Lock System / Logout Button -->
       <div class="sidebar-footer">
         <div class="ws-status-group">
-          <div class="ws-indicator" title="WebSocket Telemetry Stream Status (/ws/telemetry)">
+          <div class="ws-indicator" title="Telemetry WebSocket Stream (/ws/telemetry)">
             <span id="ws-telemetry-dot" class="dot dot-red" aria-hidden="true"></span>
             <span class="ws-text">Telemetry WS · <strong id="ws-telemetry-status" class="tabular-nums">OFFLINE</strong></span>
           </div>
-          <div class="ws-indicator" title="WebSocket Biometric MFA Status (/ws/mfa)">
+          <div class="ws-indicator" title="Biometric MFA WebSocket Stream (/ws/mfa)">
             <span id="ws-mfa-dot" class="dot dot-red" aria-hidden="true"></span>
             <span class="ws-text">MFA Stream · <strong id="ws-mfa-status" class="tabular-nums">OFFLINE</strong></span>
           </div>
         </div>
 
-        <button type="button" id="logout-btn" class="logout-sidebar-btn" title="Lock Console / Terminate Session">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <button type="button" id="logout-btn" class="logout-sidebar-btn" title="Lock Console &amp; Sign Out">
+          <svg class="icon-16" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
             <polyline points="16 17 21 12 16 7"></polyline>
             <line x1="21" y1="12" x2="9" y2="12"></line>
@@ -330,7 +468,7 @@
       <header class="top-bar">
         <div class="top-bar-left">
           <button type="button" id="sidebar-toggle-btn" class="icon-btn" title="Toggle Navigation Sidebar" aria-label="Toggle Sidebar">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <svg class="icon-18" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
               <line x1="3" y1="6" x2="21" y2="6"></line>
               <line x1="3" y1="12" x2="21" y2="12"></line>
               <line x1="3" y1="18" x2="21" y2="18"></line>
@@ -340,11 +478,11 @@
             <div class="breadcrumb-row">
               <span>LCI-SFM</span>
               <span aria-hidden="true">/</span>
-              <code id="header-server-host">192.168.43.225:1880</code>
+              <code id="header-server-host" title="Active Central Backend Origin">current-origin</code>
               <span aria-hidden="true">·</span>
               <span>Operator: <strong id="header-operator-name">Unauthenticated</strong></span>
               <span aria-hidden="true">·</span>
-              <span>Clearance: <strong id="header-role-label" class="text-cyber">VIEWER</strong></span>
+              <span>Role: <strong id="header-role-label" class="text-cyber">VIEWER</strong></span>
               <span id="header-auth-mode-tag" class="auth-verification-text">Unverified</span>
             </div>
             <h2 id="current-view-title">Overview &amp; Command Center</h2>
@@ -353,13 +491,19 @@
 
         <div class="top-bar-actions">
           <!-- Global Data Freshness Indicator -->
-          <div class="freshness-box" title="Elapsed time since last verified WebSocket frame from Node-RED">
-            <span class="freshness-label">Last Telemetry:</span>
+          <div class="freshness-box" title="Elapsed time since last verified telemetry frame">
+            <svg class="icon-16 text-muted" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
+              <use href="#icon-activity"></use>
+            </svg>
+            <span class="freshness-label">Telemetry:</span>
             <strong id="global-freshness-label" class="tabular-nums text-muted">No Data Received</strong>
           </div>
 
           <!-- Live Digital Clock (HH:MM:SS AM/PM + Date) -->
-          <div class="live-clock-box" title="Local Facility Workstation Time">
+          <div class="live-clock-box" title="Local Workstation Time">
+            <svg class="icon-16 text-muted" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
+              <use href="#icon-clock"></use>
+            </svg>
             <span id="live-clock-time" class="clock-time tabular-nums">--:--:-- --</span>
             <span class="clock-sep" aria-hidden="true">·</span>
             <span id="live-clock-date" class="clock-date tabular-nums">--- --, ----</span>
@@ -367,13 +511,13 @@
 
           <!-- Toggle Fullscreen Button -->
           <button type="button" id="fullscreen-toggle-btn" class="icon-btn" title="Toggle Fullscreen Console" aria-label="Toggle Fullscreen">
-            <svg id="fs-icon-expand" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <svg id="fs-icon-expand" class="icon-18" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <polyline points="15 3 21 3 21 9"></polyline>
               <polyline points="9 21 3 21 3 15"></polyline>
               <line x1="21" y1="3" x2="14" y2="10"></line>
               <line x1="3" y1="21" x2="10" y2="14"></line>
             </svg>
-            <svg id="fs-icon-compress" class="hidden" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <svg id="fs-icon-compress" class="icon-18 hidden" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <polyline points="4 14 10 14 10 20"></polyline>
               <polyline points="20 10 14 10 14 4"></polyline>
               <line x1="14" y1="10" x2="21" y2="3"></line>
@@ -383,11 +527,22 @@
 
           <!-- Light/Dark Theme Toggle -->
           <button type="button" id="theme-toggle-btn" class="theme-switch-btn" title="Switch Light / Dark Theme" aria-label="Toggle Theme">
-            <span id="theme-icon-sun" class="theme-icon hidden">☀ Light</span>
-            <span id="theme-icon-moon" class="theme-icon">☾ Dark</span>
+            <span id="theme-icon-sun" class="theme-icon hidden">
+              <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-sun"></use></svg>
+              <span>Light</span>
+            </span>
+            <span id="theme-icon-moon" class="theme-icon">
+              <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-moon"></use></svg>
+              <span>Dark</span>
+            </span>
           </button>
 
-          <button type="button" id="open-ip-modal-btn" class="btn-outline rbac-protected" title="Configure Central Server &amp; Node IPv4 Addresses">Endpoints</button>
+          <button type="button" id="open-ip-modal-btn" class="btn-outline btn-sm rbac-protected" title="Configure Central Gateway &amp; Edge Node IPv4 Addresses">
+            <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
+              <use href="#icon-sliders"></use>
+            </svg>
+            <span>Endpoints</span>
+          </button>
         </div>
       </header>
 
@@ -395,8 +550,8 @@
       <div id="unverified-session-banner" class="callout-box callout-warning mb-18 hidden" role="status">
         <div class="flex-between">
           <div>
-            <strong>Unverified Offline Inspection Mode Active</strong>
-            <span class="callout-inline-text">Server authentication at <code id="offline-banner-host">192.168.43.225:1880</code> was unreachable. All actuator commands, user provisioning, and configuration writes are locked.</span>
+            <strong>Unverified Offline Inspection Mode</strong>
+            <span class="callout-inline-text">Central Backend at <code id="offline-banner-host">current-origin</code> was unreachable. Hardware commands, user provisioning, and endpoint writes are locked.</span>
           </div>
           <button type="button" id="retry-server-auth-btn" class="btn-outline btn-sm">Authenticate with Server</button>
         </div>
@@ -410,7 +565,7 @@
         <div id="global-status-banner" class="status-banner status-unknown">
           <div class="status-banner-main">
             <div id="global-status-icon" class="status-banner-icon" aria-hidden="true">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg class="icon-24" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="10"></circle>
                 <line x1="12" y1="8" x2="12" y2="12"></line>
                 <line x1="12" y1="16" x2="12.01" y2="16"></line>
@@ -420,7 +575,7 @@
               <span id="global-status-kicker" class="banner-tag">Facility Operating State · Unverified</span>
               <h3 id="global-status-title">Awaiting Telemetry Stream — Status Unknown</h3>
               <p id="global-status-subtitle" class="banner-subtext">
-                No verified sensor frames received from Node-RED (<code>ws://192.168.43.225:1880/ws/telemetry</code>). Initial values do not confirm normal hardware operation.
+                No verified sensor frames received on <code>/ws/telemetry</code>. Initial zero values do not confirm normal hardware operation.
               </p>
             </div>
           </div>
@@ -430,11 +585,11 @@
               <strong id="banner-smoke-val" class="tabular-nums">0 PPM</strong>
             </div>
             <div class="banner-metric-item">
-              <span class="banner-metric-label">Active Stream State</span>
+              <span class="banner-metric-label">Active Streams</span>
               <strong id="banner-stream-state" class="tabular-nums">DISCONNECTED</strong>
             </div>
             <div class="banner-metric-item">
-              <span class="banner-metric-label">Logged System Errors</span>
+              <span class="banner-metric-label">Logged Faults</span>
               <strong id="banner-error-count" class="tabular-nums">0</strong>
             </div>
           </div>
@@ -445,20 +600,26 @@
           <!-- 1. Door & Lock State -->
           <div class="glass-card stat-card">
             <div class="stat-card-top">
-              <span class="card-label">Door &amp; Lock State</span>
+              <span class="card-label">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-lock"></use></svg>
+                <span>Door &amp; Lock</span>
+              </span>
               <span id="fresh-door" class="metric-state-text">Awaiting Stream</span>
             </div>
             <div id="snap-door" class="card-value text-muted tabular-nums">CLOSED</div>
             <div class="stat-card-footer">
-              <code class="card-var">door_state</code>
-              <span class="stat-source">Node 1 · Reed + Solenoid</span>
+              <code class="card-var" title="Telemetry field: door_state">door_state</code>
+              <span class="stat-source">Node 1 · Solenoid</span>
             </div>
           </div>
 
           <!-- 2. Temperature -->
           <div class="glass-card stat-card">
             <div class="stat-card-top">
-              <span class="card-label">Temperature (DHT22)</span>
+              <span class="card-label">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-thermometer"></use></svg>
+                <span>Temperature</span>
+              </span>
               <span id="fresh-temp" class="metric-state-text">Awaiting Stream</span>
             </div>
             <div class="stat-value-row">
@@ -466,7 +627,7 @@
               <svg id="spark-temp" class="stat-sparkline" viewBox="0 0 80 26" aria-hidden="true"></svg>
             </div>
             <div class="stat-card-footer">
-              <code class="card-var">temperature</code>
+              <code class="card-var" title="Telemetry field: temperature">temperature</code>
               <span class="stat-source">Auto-Fan &gt; 30.0 °C</span>
             </div>
           </div>
@@ -474,7 +635,10 @@
           <!-- 3. Humidity -->
           <div class="glass-card stat-card">
             <div class="stat-card-top">
-              <span class="card-label">Relative Humidity</span>
+              <span class="card-label">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-droplet"></use></svg>
+                <span>Humidity</span>
+              </span>
               <span id="fresh-hum" class="metric-state-text">Awaiting Stream</span>
             </div>
             <div class="stat-value-row">
@@ -482,33 +646,39 @@
               <svg id="spark-hum" class="stat-sparkline" viewBox="0 0 80 26" aria-hidden="true"></svg>
             </div>
             <div class="stat-card-footer">
-              <code class="card-var">humidity</code>
-              <span class="stat-source">Node 2 · DHT22 (0–100%)</span>
+              <code class="card-var" title="Telemetry field: humidity">humidity</code>
+              <span class="stat-source">Node 2 · DHT22</span>
             </div>
           </div>
 
           <!-- 4. Smoke / Gas Reading -->
           <div class="glass-card stat-card">
             <div class="stat-card-top">
-              <span class="card-label">Smoke / Gas (MQ-2)</span>
+              <span class="card-label">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-flame"></use></svg>
+                <span>Smoke / Gas</span>
+              </span>
               <span id="fresh-smoke" class="metric-state-text">Awaiting Stream</span>
             </div>
             <div id="snap-smoke" class="card-value text-muted tabular-nums">0 PPM</div>
             <div class="stat-card-footer">
-              <code class="card-var">smoke_gas_level</code>
-              <span class="stat-source">Alarm &ge; 400 PPM (3x/6s)</span>
+              <code class="card-var" title="Telemetry field: smoke_gas_level">smoke_gas_level</code>
+              <span class="stat-source">Alarm &ge; 400 PPM</span>
             </div>
           </div>
 
           <!-- 5. HVAC Fan Relay -->
           <div class="glass-card stat-card">
             <div class="stat-card-top">
-              <span class="card-label">HVAC Fan Relay</span>
+              <span class="card-label">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-fan"></use></svg>
+                <span>HVAC Fan Relay</span>
+              </span>
               <span id="fresh-fan" class="metric-state-text">Awaiting Stream</span>
             </div>
             <div id="snap-fan" class="card-value text-muted tabular-nums">OFF</div>
             <div class="stat-card-footer">
-              <code class="card-var">fan_relay</code>
+              <code class="card-var" title="Telemetry field: fan_relay">fan_relay</code>
               <span id="snap-fan-mode" class="stat-source">Mode: AUTO</span>
             </div>
           </div>
@@ -516,12 +686,15 @@
           <!-- 6. Auxiliary Light State -->
           <div class="glass-card stat-card">
             <div class="stat-card-top">
-              <span class="card-label">Aux Light (LDR)</span>
+              <span class="card-label">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-bulb"></use></svg>
+                <span>Aux Lighting</span>
+              </span>
               <span id="fresh-light" class="metric-state-text">Awaiting Stream</span>
             </div>
             <div id="snap-light" class="card-value text-muted tabular-nums">OFF</div>
             <div class="stat-card-footer">
-              <code class="card-var">light_state</code>
+              <code class="card-var" title="Telemetry field: light_state">light_state</code>
               <span class="stat-source">Node 2 · Relay Ch.2</span>
             </div>
           </div>
@@ -529,12 +702,15 @@
           <!-- 7. Biometric MFA Status -->
           <div class="glass-card stat-card">
             <div class="stat-card-top">
-              <span class="card-label">Access MFA State</span>
+              <span class="card-label">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-shield"></use></svg>
+                <span>Access MFA State</span>
+              </span>
               <span id="fresh-mfa" class="metric-state-text">Awaiting Stream</span>
             </div>
             <div id="snap-mfa" class="card-value text-muted tabular-nums">IDLE</div>
             <div class="stat-card-footer">
-              <code class="card-var">mfa_status</code>
+              <code class="card-var" title="MFA stream field: mfa_status">mfa_status</code>
               <span id="snap-mfa-factors" class="stat-source">0 / 2 Factors Passed</span>
             </div>
           </div>
@@ -542,7 +718,10 @@
           <!-- 8. Central & Edge Connectivity -->
           <div class="glass-card stat-card">
             <div class="stat-card-top">
-              <span class="card-label">System Connectivity</span>
+              <span class="card-label">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-network"></use></svg>
+                <span>Connectivity</span>
+              </span>
               <span id="fresh-conn" class="metric-state-text">Probing</span>
             </div>
             <div id="snap-conn" class="card-value text-rose tabular-nums">OFFLINE</div>
@@ -553,98 +732,32 @@
           </div>
         </div>
 
-        <!-- C. System Architecture & Device Topology Overview -->
-        <div class="glass-card mb-20">
-          <div class="section-header-row">
-            <div>
-              <h3 class="section-heading">Edge-First PoE Topology &amp; Subsystem Status</h3>
-              <p class="helper-note">Wired CAT6 IEEE 802.3af/at PoE architecture. Node statuses reflect independent evidence—never inferred from unrelated streams.</p>
-            </div>
-            <button type="button" class="btn-outline btn-sm" data-nav-jump="view-5">Open Full Diagnostics</button>
-          </div>
-
-          <div class="topology-grid">
-            <!-- Central Server Pillar -->
-            <div class="topo-node">
-              <div class="topo-node-header">
-                <span class="topo-role">Layer 3 Central Appliance</span>
-                <span id="topo-status-server" class="status-tag status-offline">OFFLINE</span>
-              </div>
-              <strong class="topo-title">Node-RED + MQTT + SQLite + AI Vision</strong>
-              <code id="topo-ip-server" class="topo-ip">192.168.43.225:1880</code>
-              <div class="topo-meta">
-                <span>Telemetry WS: <strong id="topo-ws-tel">CLOSED</strong></span>
-                <span aria-hidden="true">·</span>
-                <span>MFA WS: <strong id="topo-ws-mfa">CLOSED</strong></span>
-              </div>
-            </div>
-
-            <!-- Node 1 -->
-            <div class="topo-node">
-              <div class="topo-node-header">
-                <span class="topo-role">Layer 1 · Edge Node 1</span>
-                <span id="topo-status-node1" class="status-tag status-unknown">UNKNOWN</span>
-              </div>
-              <strong class="topo-title">Smart Access &amp; 2-of-3 MFA</strong>
-              <code id="topo-ip-node1" class="topo-ip">192.168.43.11</code>
-              <div class="topo-meta">
-                <span>ESP32-S3-POE · RC522 (FSPI) · 4x4 Keypad · Fail-Safe Lock</span>
-              </div>
-            </div>
-
-            <!-- Node 2 -->
-            <div class="topo-node">
-              <div class="topo-node-header">
-                <span class="topo-role">Layer 1 · Edge Node 2</span>
-                <span id="topo-status-node2" class="status-tag status-offline">OFFLINE</span>
-              </div>
-              <strong class="topo-title">Environmental &amp; HVAC Node</strong>
-              <code id="topo-ip-node2" class="topo-ip">192.168.43.12</code>
-              <div class="topo-meta">
-                <span>ESP32-S3-POE · DHT22 · MQ-2 · LDR · 2-Ch Opto-Relay · LCD</span>
-              </div>
-            </div>
-
-            <!-- Node 3 -->
-            <div class="topo-node">
-              <div class="topo-node-header">
-                <span class="topo-role">Layer 1 · Edge Node 3</span>
-                <span id="topo-status-node3" class="status-tag status-unknown">STANDBY / UNKNOWN</span>
-              </div>
-              <strong class="topo-title">Biometric Camera Unit</strong>
-              <code id="topo-ip-node3" class="topo-ip">192.168.43.13</code>
-              <div class="topo-meta">
-                <span>ESP32-S3-POE-CAM · OV2640 (PSRAM) · PIR Interrupt Wake</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- D. Operator Dispatch & Live Activity Feed -->
-        <div class="two-col-grid">
+        <!-- C. Operator Dispatch & Live Activity Feed (High-Priority Operational Controls Above Topology) -->
+        <div class="two-col-grid mb-20">
           <!-- Quick Action Panel with RBAC Lock, Prerequisite Validation & Confirmation -->
           <div class="glass-card">
             <div class="section-header-row">
               <div>
                 <h3 class="section-heading">Operator Hardware Dispatch</h3>
-                <p class="helper-note">Dispatches authenticated HTTP POST commands to <code>/api/command</code>. Requires verified Admin session.</p>
+                <p class="helper-note">Authenticated actuator commands. Requires verified Admin session.</p>
               </div>
               <span id="rbac-action-notice" class="rbac-lock-tag hidden">Read-Only Session</span>
             </div>
 
             <div class="dispatch-readiness-bar">
-              <span>Session Authorization: <strong id="dispatch-auth-status" class="text-muted">Unverified</strong></span>
+              <span>Authorization: <strong id="dispatch-auth-status" class="text-muted">Unverified</strong></span>
               <span aria-hidden="true">·</span>
-              <span>Last Command Result: <strong id="dispatch-last-result" class="tabular-nums">None</strong></span>
+              <span>Last Command: <strong id="dispatch-last-result" class="tabular-nums">None</strong></span>
             </div>
 
             <div class="action-stack">
               <div class="action-row-card">
                 <div class="action-row-info">
                   <strong>Emergency Door Unlock / Lock</strong>
-                  <span>Target: Node 1 Solenoid Relay (<code>EMERGENCY_DOOR_UNLOCK</code>)</span>
+                  <span>Node 1 Solenoid · <code>EMERGENCY_DOOR_UNLOCK</code></span>
                 </div>
                 <button type="button" id="cmd-unlock-door" class="btn-rose action-btn rbac-protected">
+                  <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-unlock"></use></svg>
                   <span class="btn-label">Emergency Door Unlock</span>
                 </button>
               </div>
@@ -652,9 +765,10 @@
               <div class="action-row-card">
                 <div class="action-row-info">
                   <strong>HVAC Brushless Fan Relay</strong>
-                  <span>Target: Node 2 Relay Ch.1 (<code>TOGGLE_HVAC_FAN</code>)</span>
+                  <span>Node 2 Relay Ch.1 · <code>TOGGLE_HVAC_FAN</code></span>
                 </div>
                 <button type="button" id="cmd-toggle-fan" class="btn-cyber action-btn rbac-protected">
+                  <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-fan"></use></svg>
                   <span class="btn-label">Toggle HVAC Fan Relay</span>
                 </button>
               </div>
@@ -662,9 +776,10 @@
               <div class="action-row-card">
                 <div class="action-row-info">
                   <strong>Auxiliary Facility Lighting</strong>
-                  <span>Target: Node 2 Relay Ch.2 (<code>TOGGLE_AUX_LIGHT</code>)</span>
+                  <span>Node 2 Relay Ch.2 · <code>TOGGLE_AUX_LIGHT</code></span>
                 </div>
                 <button type="button" id="cmd-toggle-light" class="btn-mint action-btn rbac-protected">
+                  <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-bulb"></use></svg>
                   <span class="btn-label">Toggle Auxiliary Light</span>
                 </button>
               </div>
@@ -683,12 +798,95 @@
             <div class="section-header-row">
               <div>
                 <h3 class="section-heading">Recent Facility Events &amp; Dispatches</h3>
-                <p class="helper-note">Live session events from WebSocket telemetry, MFA transitions, and verified operator actions.</p>
+                <p class="helper-note">Live session events from WebSocket streams and verified operator commands.</p>
               </div>
-              <button type="button" class="btn-outline btn-sm" data-nav-jump="view-4">Full Audit Log</button>
+              <button type="button" class="btn-outline btn-sm" data-nav-jump="view-4">
+                <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-list"></use></svg>
+                <span>Audit Explorer</span>
+              </button>
             </div>
             <ul id="live-activity-list" class="activity-list"></ul>
           </div>
+        </div>
+
+        <!-- D. System Architecture & Device Topology Overview (Secondary Detail with Progressive Disclosure) -->
+        <div class="glass-card">
+          <div class="section-header-row">
+            <div>
+              <h3 class="section-heading">Facility Gateway &amp; Edge PoE Topology</h3>
+              <p class="helper-note">Subsystem status is derived strictly from independent stream or HTTP evidence.</p>
+            </div>
+            <button type="button" class="btn-outline btn-sm" data-nav-jump="view-5">
+              <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-activity"></use></svg>
+              <span>Full Diagnostics</span>
+            </button>
+          </div>
+
+          <div class="topology-grid">
+            <!-- Central Server Pillar -->
+            <div class="topo-node">
+              <div class="topo-node-header">
+                <span class="topo-role">Layer 3 Central Gateway</span>
+                <span id="topo-status-server" class="status-tag status-offline">OFFLINE</span>
+              </div>
+              <strong class="topo-title">Central API + MQTT + SQLite</strong>
+              <code id="topo-ip-server" class="topo-ip">current-origin</code>
+              <div class="topo-meta">
+                <span>Telemetry WS: <strong id="topo-ws-tel">CLOSED</strong></span>
+                <span aria-hidden="true">·</span>
+                <span>MFA WS: <strong id="topo-ws-mfa">CLOSED</strong></span>
+              </div>
+            </div>
+
+            <!-- Node 1 -->
+            <div class="topo-node">
+              <div class="topo-node-header">
+                <span class="topo-role">Edge Node 1</span>
+                <span id="topo-status-node1" class="status-tag status-unknown">UNKNOWN</span>
+              </div>
+              <strong class="topo-title">Smart Access &amp; 2-of-3 MFA</strong>
+              <code id="topo-ip-node1" class="topo-ip">192.168.43.11</code>
+              <div class="topo-meta">
+                <span>RFID · Keypad · Fail-Safe Lock</span>
+              </div>
+            </div>
+
+            <!-- Node 2 -->
+            <div class="topo-node">
+              <div class="topo-node-header">
+                <span class="topo-role">Edge Node 2</span>
+                <span id="topo-status-node2" class="status-tag status-offline">OFFLINE</span>
+              </div>
+              <strong class="topo-title">Environmental &amp; HVAC Node</strong>
+              <code id="topo-ip-node2" class="topo-ip">192.168.43.12</code>
+              <div class="topo-meta">
+                <span>DHT22 · MQ-2 · LDR · 2-Ch Relay</span>
+              </div>
+            </div>
+
+            <!-- Node 3 -->
+            <div class="topo-node">
+              <div class="topo-node-header">
+                <span class="topo-role">Edge Node 3</span>
+                <span id="topo-status-node3" class="status-tag status-unknown">STANDBY / UNKNOWN</span>
+              </div>
+              <strong class="topo-title">Biometric Camera Unit</strong>
+              <code id="topo-ip-node3" class="topo-ip">192.168.43.13</code>
+              <div class="topo-meta">
+                <span>OV2640 Optical · PIR Wake</span>
+              </div>
+            </div>
+          </div>
+
+          <details class="tech-disclosure mt-12">
+            <summary>Technical Details · Hardware Bus &amp; PoE Architecture</summary>
+            <div class="tech-disclosure-body">
+              <span><strong>Network Layer:</strong> Wired CAT6 IEEE 802.3af/at PoE (W5500 Ethernet).</span>
+              <span><strong>Node 1 Bus:</strong> ESP32-S3-POE with MFRC522 on isolated FSPI (SPI2), 4x4 matrix keypad, and opto-isolated 12V fail-safe solenoid relay.</span>
+              <span><strong>Node 2 Cadence:</strong> Polls DHT22, MQ-2 ADC, and LDR every 2,000 ms via non-blocking <code>millis()</code> and publishes to <code>lecf/env/telemetry</code>.</span>
+              <span><strong>Node 3 Vision:</strong> ESP32-S3-POE-CAM wakes on PIR interrupt to serve <code>http://&lt;ip_node3&gt;/capture.jpg</code>.</span>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -701,28 +899,29 @@
           <div class="glass-card">
             <div class="section-header-row">
               <div>
-                <h3 class="section-heading">Node 1 · Door &amp; Fail-Safe Lock Hardware</h3>
-                <p class="helper-note">Controller Endpoint: <code id="access-node1-ip">192.168.43.11</code> · W5500 Wired PoE</p>
+                <h3 class="section-heading">Node 1 · Door &amp; Fail-Safe Lock State</h3>
+                <p class="helper-note">Controller IP: <code id="access-node1-ip">192.168.43.11</code></p>
               </div>
               <span id="access-stream-badge" class="status-tag status-offline">MFA Stream Offline</span>
             </div>
 
             <div class="hardware-grid">
               <div class="hw-box">
-                <span class="card-label">Magnetic Reed Switch (Contact)</span>
+                <span class="card-label">
+                  <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-shield"></use></svg>
+                  <span>Magnetic Reed Contact</span>
+                </span>
                 <strong id="access-reed-state" class="hw-state text-muted">CLOSED (UNVERIFIED)</strong>
-                <span class="hw-sub">Physical door frame alignment sensor</span>
+                <span class="hw-sub">Physical door frame alignment</span>
               </div>
               <div class="hw-box">
-                <span class="card-label">12V Fail-Safe Solenoid Lock</span>
+                <span class="card-label">
+                  <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-lock"></use></svg>
+                  <span>12V Fail-Safe Solenoid</span>
+                </span>
                 <strong id="access-solenoid-state" class="hw-state text-muted">ENERGIZED (LOCKED)</strong>
-                <span class="hw-sub">Opto-isolated relay (JD-VCC separated)</span>
+                <span class="hw-sub">De-energizes on power loss or unlock</span>
               </div>
-            </div>
-
-            <!-- Emergency Egress & Security Architecture Note -->
-            <div class="arch-note-bar mt-12">
-              <strong>Hardwired Emergency Egress:</strong> Break-Glass unit is wired in series with the 12V magnetic lock supply. Activating Break-Glass physically drops lock power independent of microcontroller or network state.
             </div>
 
             <hr class="section-divider" />
@@ -730,13 +929,13 @@
             <!-- 2-out-of-3 MFA Finite State Machine -->
             <div class="section-header-row">
               <div>
-                <h3 class="section-heading">2-out-of-3 Multi-Factor Authentication FSM</h3>
-                <p class="helper-note">Strict boolean factor isolation prevents single-modality replay. Any 2 distinct factors within 10s unlock the solenoid for 5s.</p>
+                <h3 class="section-heading">2-out-of-3 Multi-Factor Authentication</h3>
+                <p class="helper-note">Any 2 distinct verified factors within 10s release the solenoid lock for 5s.</p>
               </div>
             </div>
 
             <div class="mfa-status-bar">
-              <span>FSM State (<code>mfa_status</code>) · <strong id="mfa-status-label" class="text-cyber">IDLE</strong></span>
+              <span>FSM State · <strong id="mfa-status-label" class="text-cyber">IDLE</strong></span>
               <span>Stage-2 Window · <strong id="mfa-timer-label" class="tabular-nums">10s</strong></span>
             </div>
 
@@ -751,7 +950,7 @@
                   <span id="cp-face-badge" class="cp-state-label">PENDING</span>
                 </div>
                 <code class="cp-var">isFacePassed: false</code>
-                <span class="cp-desc">Node 3 JPEG → OpenCV YuNet/SFace → <code>lecf/access/mfa_face</code></span>
+                <span class="cp-desc">Node 3 optical match</span>
               </div>
 
               <div id="cp-card" class="checkpoint">
@@ -760,7 +959,7 @@
                   <span id="cp-card-badge" class="cp-state-label">PENDING</span>
                 </div>
                 <code class="cp-var">isCardPassed: false</code>
-                <span class="cp-desc">Node 1 MFRC522 on secondary <code>FSPI</code> (SPI2) bus</span>
+                <span class="cp-desc">Node 1 RC522 UID check</span>
               </div>
 
               <div id="cp-pin" class="checkpoint">
@@ -769,22 +968,31 @@
                   <span id="cp-pin-badge" class="cp-state-label">PENDING</span>
                 </div>
                 <code class="cp-var">isPinPassed: false</code>
-                <span class="cp-desc">Node 1 4x4 Matrix Keypad (6-digit local validation)</span>
+                <span class="cp-desc">Node 1 6-digit keypad</span>
               </div>
             </div>
 
             <!-- Access Control Action Bar inside View 2 -->
-            <div class="access-override-box mt-20">
+            <div class="access-override-box mt-16">
               <div class="flex-between">
                 <div>
                   <strong class="access-override-title">Remote Door Actuation Override</strong>
-                  <span class="helper-note block-note">Dispatches <code>EMERGENCY_DOOR_UNLOCK</code> to Node-RED Core.</span>
+                  <span class="helper-note block-note">Dispatches <code>EMERGENCY_DOOR_UNLOCK</code> via Central API.</span>
                 </div>
                 <button type="button" id="access-view-unlock-btn" class="btn-rose rbac-protected">
-                  Emergency Door Unlock
+                  <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-unlock"></use></svg>
+                  <span>Emergency Door Unlock</span>
                 </button>
               </div>
             </div>
+
+            <details class="tech-disclosure mt-12">
+              <summary>Technical Details · Fail-Safe Egress &amp; Factor Isolation</summary>
+              <div class="tech-disclosure-body">
+                <span><strong>Hardwired Break-Glass Egress:</strong> Wired in series with the 12V lock supply; drops lock power independent of network or firmware state.</span>
+                <span><strong>Modality Isolation:</strong> Boolean checkpoints (<code>isFacePassed</code>, <code>isCardPassed</code>, <code>isPinPassed</code>) prevent single-factor replay from satisfying the 2-of-3 requirement.</span>
+              </div>
+            </details>
           </div>
 
           <!-- Right Column: Node 3 Biometric Camera & Recent Access Events -->
@@ -792,12 +1000,15 @@
             <div class="glass-card">
               <div class="section-header-row">
                 <div>
-                  <h3 class="section-heading">Node 3 · Biometric Optical Snapshot (<code>ip_node3</code>)</h3>
-                  <p class="helper-note">OV2640 Camera w/ PSRAM. Wakes on PIR motion interrupt (1.5m range) or manual frame request.</p>
+                  <h3 class="section-heading">Node 3 · Biometric Optical Snapshot</h3>
+                  <p class="helper-note">Direct LAN snapshot from Node 3 camera controller.</p>
                 </div>
                 <div class="cam-actions">
                   <span id="cam-status-badge" class="status-tag status-unknown">STANDBY</span>
-                  <button type="button" id="refresh-cam-btn" class="btn-outline btn-sm">Capture Frame</button>
+                  <button type="button" id="refresh-cam-btn" class="btn-outline btn-sm">
+                    <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-camera"></use></svg>
+                    <span>Capture Frame</span>
+                  </button>
                 </div>
               </div>
 
@@ -805,18 +1016,18 @@
                 <div class="camera-viewport">
                   <img id="biometric-camera-img" class="hidden" alt="Node 3 Biometric Snapshot" referrerPolicy="no-referrer" />
                   <div id="camera-fallback-overlay" class="camera-fallback">
-                    <svg class="empty-state-svg" width="46" height="46" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <svg class="empty-state-svg" width="42" height="42" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <rect x="8" y="16" width="48" height="36" rx="6"></rect>
                       <circle cx="32" cy="34" r="9"></circle>
                       <path d="M22 16l4-6h12l4 6"></path>
                       <line x1="12" y1="12" x2="52" y2="56"></line>
                     </svg>
                     <strong id="camera-fallback-title" class="empty-state-title">Optical Feed in PIR Standby / Unverified</strong>
-                    <span id="camera-fallback-text" class="empty-state-sub">Node 3 remains in low-power sleep until PIR motion triggers an interrupt. Click "Capture Frame" to request a live JPEG snapshot.</span>
+                    <span id="camera-fallback-text" class="empty-state-sub">Node 3 remains in low-power standby until PIR motion wakes the camera or "Capture Frame" is requested.</span>
                   </div>
                 </div>
                 <div class="camera-caption flex-between">
-                  <span>Endpoint · <code id="cam-endpoint-label">http://192.168.43.13/capture.jpg</code></span>
+                  <span>Device Endpoint · <code id="cam-endpoint-label">http://192.168.43.13/capture.jpg</code></span>
                   <span id="cam-last-attempt" class="tabular-nums">Last request: Never</span>
                 </div>
               </div>
@@ -827,9 +1038,12 @@
               <div class="section-header-row">
                 <div>
                   <h3 class="section-heading">Recent Access &amp; Biometric Logs</h3>
-                  <p class="helper-note">Latest entries from SQLite <code>access_logs</code> and <code>camera_events</code>.</p>
+                  <p class="helper-note">Latest verified access and camera events.</p>
                 </div>
-                <button type="button" class="btn-outline btn-sm" data-nav-jump="view-4">Open Explorer</button>
+                <button type="button" class="btn-outline btn-sm" data-nav-jump="view-4">
+                  <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-list"></use></svg>
+                  <span>Open Explorer</span>
+                </button>
               </div>
               <div class="table-container">
                 <table class="data-table compact-table">
@@ -858,7 +1072,10 @@
           <!-- Circular Gauge: Temperature -->
           <div class="glass-card gauge-card">
             <div class="gauge-card-header">
-              <span class="card-label">Temperature (DHT22)</span>
+              <span class="card-label">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-thermometer"></use></svg>
+                <span>Temperature (DHT22)</span>
+              </span>
               <span id="env-temp-status" class="status-tag status-unknown">AWAITING DATA</span>
             </div>
             <div class="gauge-wrap">
@@ -872,14 +1089,17 @@
             </div>
             <div class="gauge-meta-footer">
               <code class="card-var">temperature</code>
-              <span>Range: 0–50 °C · Auto-Fan &gt; 30.0 °C</span>
+              <span>0–50 °C · Auto-Fan &gt; 30.0 °C</span>
             </div>
           </div>
 
           <!-- Circular Gauge: Humidity -->
           <div class="glass-card gauge-card">
             <div class="gauge-card-header">
-              <span class="card-label">Relative Humidity (DHT22)</span>
+              <span class="card-label">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-droplet"></use></svg>
+                <span>Relative Humidity</span>
+              </span>
               <span id="env-hum-status" class="status-tag status-unknown">AWAITING DATA</span>
             </div>
             <div class="gauge-wrap">
@@ -893,14 +1113,17 @@
             </div>
             <div class="gauge-meta-footer">
               <code class="card-var">humidity</code>
-              <span>Range: 0–100 % · Edge NaN Filtered</span>
+              <span>0–100 % · Node 2 DHT22</span>
             </div>
           </div>
 
           <!-- Circular Gauge: Smoke & Gas Level -->
           <div class="glass-card gauge-card">
             <div class="gauge-card-header">
-              <span class="card-label">Smoke &amp; Gas (MQ-2 ADC)</span>
+              <span class="card-label">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-flame"></use></svg>
+                <span>Smoke &amp; Gas (MQ-2)</span>
+              </span>
               <span id="env-smoke-status" class="status-tag status-unknown">AWAITING DATA</span>
             </div>
             <div class="gauge-wrap">
@@ -914,7 +1137,7 @@
             </div>
             <div class="gauge-meta-footer">
               <code class="card-var">smoke_gas_level</code>
-              <span>Danger &ge; 400 PPM (3x debounce / 6s)</span>
+              <span>Elevated &ge; 250 · Critical &ge; 400 PPM</span>
             </div>
           </div>
         </div>
@@ -925,20 +1148,20 @@
             <div>
               <h3 class="section-heading">Environmental Telemetry Series</h3>
               <p id="chart-window-desc" class="helper-note">
-                Displaying real-time 30-sample FIFO sliding window captured from <code>ws://192.168.43.225:1880/ws/telemetry</code> (Node 2 polls every 2,000 ms).
+                Real-time 30-sample FIFO sliding window from live telemetry stream.
               </p>
             </div>
             <div class="segmented-control" role="group" aria-label="Telemetry Chart Data Source">
               <button type="button" id="chart-mode-live-btn" class="seg-btn active">Live 30-Sample FIFO</button>
-              <button type="button" id="chart-mode-sqlite-btn" class="seg-btn">SQLite History (<code>environmental_telemetry</code>)</button>
-              <button type="button" id="chart-mode-agg-btn" class="seg-btn" title="Requires Backend Aggregation API">24h / 7d Rollup</button>
+              <button type="button" id="chart-mode-sqlite-btn" class="seg-btn">Persisted History</button>
+              <button type="button" id="chart-mode-agg-btn" class="seg-btn" title="Query 24h time-bucket rollups from Central API">24h / 7d Rollup</button>
             </div>
           </div>
 
           <!-- Time-Bucket Aggregation Status Notice when 24h / 7d Rollup is inspected -->
           <div id="chart-agg-notice" class="callout-box callout-info mt-12 hidden">
             <strong>Historical Time-Bucket Aggregation (<code>GET /api/telemetry/aggregate</code>):</strong>
-            Queries SQLite <code>environmental_telemetry</code> bucketed rollups (min/max/avg) from the Node.js backend without extrapolating or fabricating missing intervals.
+            Displays server-computed min/max/avg rollups without extrapolating missing intervals.
           </div>
 
           <div class="two-col-grid mt-16">
@@ -975,11 +1198,11 @@
           <div class="flex-between">
             <div>
               <div class="mode-title-row">
-                <h3 class="section-heading">Node 2 Actuator Control &amp; Override Mode</h3>
+                <h3 class="section-heading">Node 2 Actuator Control Mode</h3>
                 <span id="env-active-mode-badge" class="status-tag status-nominal">ACTIVE MODE: AUTO</span>
               </div>
               <p class="helper-note">
-                In <strong>AUTO</strong> mode, Node 2 autonomously energizes the 12V Brushless Fan when <code>temperature &gt; 30.0 °C</code> or <code>smoke_gas_level &ge; 400 PPM</code>. Switch to <strong>MANUAL</strong> to dispatch direct relay overrides via Node-RED.
+                <strong>AUTO</strong> runs edge threshold logic (&gt; 30.0 °C or &ge; 400 PPM). Switch to <strong>MANUAL</strong> for direct relay overrides.
               </p>
             </div>
             <div class="override-controls">
@@ -992,24 +1215,26 @@
           <div id="manual-controls-panel" class="manual-controls-panel hidden">
             <div class="manual-panel-header">
               <span class="kicker-text">Direct Actuator Dispatch (Manual Override Active)</span>
-              <p class="helper-note">Target: Node 2 (<code>ip_node2</code>) Opto-Isolated 2-Channel Relay Board. Hardware safety overrides for smoke/fire remain active on the edge microcontroller.</p>
+              <p class="helper-note">Target: Node 2 Relay Channels 1 &amp; 2. Edge smoke/fire safety interlocks remain active.</p>
             </div>
             <div class="manual-btn-grid">
               <div class="action-row-card">
                 <div class="action-row-info">
                   <strong>12V Brushless HVAC Fan (Relay Ch.1)</strong>
-                  <span>Current Verified State: <code id="manual-fan-state-label">OFF</code></span>
+                  <span>Verified State: <code id="manual-fan-state-label">OFF</code></span>
                 </div>
                 <button type="button" id="env-manual-toggle-fan" class="btn-cyber action-btn rbac-protected">
+                  <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-fan"></use></svg>
                   <span class="btn-label">Toggle HVAC Fan</span>
                 </button>
               </div>
               <div class="action-row-card">
                 <div class="action-row-info">
                   <strong>Auxiliary Facility Light (Relay Ch.2)</strong>
-                  <span>Current Verified State: <code id="manual-light-state-label">OFF</code></span>
+                  <span>Verified State: <code id="manual-light-state-label">OFF</code></span>
                 </div>
                 <button type="button" id="env-manual-toggle-light" class="btn-mint action-btn rbac-protected">
+                  <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-bulb"></use></svg>
                   <span class="btn-label">Toggle Aux Light</span>
                 </button>
               </div>
@@ -1025,22 +1250,22 @@
         <div class="glass-card">
           <div class="section-header-row">
             <div>
-              <h3 class="section-heading">SQLite Audit Log &amp; Event Explorer</h3>
-              <p class="helper-note">Queries persistent SQLite tables (<code>/home/Bedo/lci_sfm.db</code>) via Node-RED REST API (<code>GET /api/logs/:table</code>). Click any record to inspect full payload details.</p>
+              <h3 class="section-heading">Audit Log &amp; Event Explorer</h3>
+              <p class="helper-note">Inspect persisted operational tables from the Central API. Select any row to view its full JSON record.</p>
             </div>
             <div class="provenance-bar">
-              <span>Data Source Status: <strong id="db-provenance-badge" class="text-muted">Not Fetched Yet</strong></span>
+              <span>Source Status: <strong id="db-provenance-badge" class="text-muted">Not Fetched Yet</strong></span>
               <span aria-hidden="true">·</span>
               <span>Last Sync: <strong id="db-last-sync-label" class="tabular-nums">—</strong></span>
             </div>
           </div>
 
           <div class="explorer-toolbar mt-12">
-            <div class="tab-group" role="tablist" aria-label="SQLite Tables">
-              <button type="button" class="tab-btn active" data-table="access_logs">Access Logs (<code>access_logs</code>)</button>
-              <button type="button" class="tab-btn" data-table="camera_events">Camera Events (<code>camera_events</code>)</button>
-              <button type="button" class="tab-btn" data-table="environmental_telemetry">Environmental History (<code>environmental_telemetry</code>)</button>
-              <button type="button" class="tab-btn" data-table="system_errors">System Errors (<code>system_errors</code>)</button>
+            <div class="tab-group" role="tablist" aria-label="Operational Log Tables">
+              <button type="button" class="tab-btn active" data-table="access_logs" title="Table: access_logs">Access Logs</button>
+              <button type="button" class="tab-btn" data-table="camera_events" title="Table: camera_events">Camera Events</button>
+              <button type="button" class="tab-btn" data-table="environmental_telemetry" title="Table: environmental_telemetry">Environmental History</button>
+              <button type="button" class="tab-btn" data-table="system_errors" title="Table: system_errors">System Errors</button>
             </div>
 
             <div class="search-group">
@@ -1066,7 +1291,7 @@
                   <circle cx="11" cy="11" r="8"></circle>
                   <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                 </svg>
-                <input type="text" id="db-search-input" maxlength="64" placeholder="Search user, node, event, or status..." aria-label="Search SQLite records" />
+                <input type="text" id="db-search-input" maxlength="64" placeholder="Filter by user, node, event, or status..." aria-label="Search audit records" />
                 <button type="button" id="db-search-clear-btn" class="search-clear-btn hidden" title="Clear search filter" aria-label="Clear search">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
                     <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -1075,8 +1300,14 @@
                 </button>
               </div>
 
-              <button type="button" id="db-refresh-btn" class="btn-cyber btn-sm">Refresh SQLite</button>
-              <button type="button" id="db-export-csv-btn" class="btn-outline btn-sm" title="Export filtered records to CSV">Export CSV</button>
+              <button type="button" id="db-refresh-btn" class="btn-cyber btn-sm">
+                <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-refresh"></use></svg>
+                <span>Refresh</span>
+              </button>
+              <button type="button" id="db-export-csv-btn" class="btn-outline btn-sm" title="Export filtered records to CSV">
+                <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-download"></use></svg>
+                <span>Export CSV</span>
+              </button>
             </div>
           </div>
 
@@ -1104,6 +1335,14 @@
               <button type="button" id="db-next-page-btn" class="btn-outline btn-sm" disabled>Next</button>
             </div>
           </div>
+
+          <details class="tech-disclosure mt-12">
+            <summary>Technical Details · Query Contract &amp; Client-Side Filtering</summary>
+            <div class="tech-disclosure-body">
+              <span><strong>Endpoint:</strong> <code>GET /api/logs/:table</code> (allowlisted tables: <code>access_logs</code>, <code>camera_events</code>, <code>environmental_telemetry</code>, <code>system_errors</code>).</span>
+              <span><strong>Filter Scope:</strong> Search, time-window filtering, sorting, and pagination operate client-side on the fetched dataset (up to 250 latest rows).</span>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -1114,10 +1353,13 @@
         <div class="glass-card mb-20">
           <div class="flex-between">
             <div>
-              <h3 class="section-heading">Subsystem Connectivity &amp; Heartbeat Diagnostics</h3>
-              <p class="helper-note">Each endpoint is evaluated strictly from its own protocol evidence (REST response, WebSocket stream, or payload origin)—never inferred globally from a single timer.</p>
+              <h3 class="section-heading">Subsystem Connectivity &amp; Readiness Diagnostics</h3>
+              <p class="helper-note">Evaluates Central API readiness, SQLite state, MQTT broker link, WebSocket streams, and per-node evidence independently.</p>
             </div>
-            <button type="button" id="probe-health-btn" class="btn-cyber btn-sm">Probe All Endpoints</button>
+            <button type="button" id="probe-health-btn" class="btn-cyber btn-sm">
+              <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-refresh"></use></svg>
+              <span>Probe All Endpoints</span>
+            </button>
           </div>
         </div>
 
@@ -1125,13 +1367,17 @@
           <!-- 1. Central Server -->
           <div class="glass-card diag-card">
             <div class="diag-card-top">
-              <span class="card-label">Central Appliance</span>
+              <span class="card-label">
+                <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-network"></use></svg>
+                <span>Central Gateway</span>
+              </span>
               <div id="hb-server" class="hb-pill offline">OFFLINE</div>
             </div>
-            <strong class="node-title">Node-RED Core &amp; SQLite</strong>
-            <code id="hb-ip-server" class="node-ip">192.168.43.225:1880</code>
+            <strong class="node-title">Central API &amp; Persistence</strong>
+            <code id="hb-ip-server" class="node-ip">current-origin</code>
             <div class="diag-kv-list">
               <div class="diag-kv"><span>HTTP REST API:</span><strong id="diag-http-state" class="tabular-nums">Unverified</strong></div>
+              <div class="diag-kv"><span>SQLite / MQTT:</span><strong id="diag-ready-state" class="tabular-nums">Unverified</strong></div>
               <div class="diag-kv"><span>Telemetry WS:</span><strong id="diag-ws-tel-state" class="tabular-nums">CLOSED</strong></div>
               <div class="diag-kv"><span>MFA Stream WS:</span><strong id="diag-ws-mfa-state" class="tabular-nums">CLOSED</strong></div>
               <div class="diag-kv"><span>Last Seen:</span><strong id="diag-server-last" class="tabular-nums">Never</strong></div>
@@ -1141,14 +1387,17 @@
           <!-- 2. Node 1 -->
           <div class="glass-card diag-card">
             <div class="diag-card-top">
-              <span class="card-label">Node 1 (Access &amp; MFA)</span>
+              <span class="card-label">
+                <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-shield"></use></svg>
+                <span>Node 1 (Access &amp; MFA)</span>
+              </span>
               <div id="hb-node1" class="hb-pill offline">UNKNOWN</div>
             </div>
             <strong class="node-title">Access Controller</strong>
             <code id="hb-ip-node1" class="node-ip">192.168.43.11</code>
             <div class="diag-kv-list">
               <div class="diag-kv"><span>Hardware:</span><strong>ESP32-S3-ETH-POE</strong></div>
-              <div class="diag-kv"><span>Peripherals:</span><strong>RC522 (FSPI), Keypad</strong></div>
+              <div class="diag-kv"><span>Peripherals:</span><strong>RC522, Keypad, Lock</strong></div>
               <div class="diag-kv"><span>Evidence Source:</span><strong id="diag-node1-source">MFA WS / Door State</strong></div>
               <div class="diag-kv"><span>Last Frame:</span><strong id="diag-node1-last" class="tabular-nums">Never</strong></div>
             </div>
@@ -1157,7 +1406,10 @@
           <!-- 3. Node 2 -->
           <div class="glass-card diag-card">
             <div class="diag-card-top">
-              <span class="card-label">Node 2 (Environment)</span>
+              <span class="card-label">
+                <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-thermometer"></use></svg>
+                <span>Node 2 (Environment)</span>
+              </span>
               <div id="hb-node2" class="hb-pill offline">OFFLINE</div>
             </div>
             <strong class="node-title">Telemetry Sensor Hub</strong>
@@ -1173,7 +1425,10 @@
           <!-- 4. Node 3 -->
           <div class="glass-card diag-card">
             <div class="diag-card-top">
-              <span class="card-label">Node 3 (Biometrics)</span>
+              <span class="card-label">
+                <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-camera"></use></svg>
+                <span>Node 3 (Biometrics)</span>
+              </span>
               <div id="hb-node3" class="hb-pill offline">STANDBY</div>
             </div>
             <strong class="node-title">Optical Face Unit</strong>
@@ -1191,10 +1446,13 @@
         <div class="glass-card mt-20">
           <div class="flex-between mb-12">
             <div>
-              <h3 class="section-heading">System Error &amp; Fault Log (<code>system_errors</code>)</h3>
-              <p class="helper-note">Hardware traps, MQTT sequence anomalies, and security token failures logged in SQLite. Note: Backend exposes read-only error records; alarm acknowledgement requires backend API expansion.</p>
+              <h3 class="section-heading">System Error &amp; Fault Log</h3>
+              <p class="helper-note">Hardware traps, MQTT validation anomalies, and protocol faults recorded by the Central Backend.</p>
             </div>
-            <button type="button" id="refresh-errors-btn" class="btn-outline btn-sm">Refresh Errors</button>
+            <button type="button" id="refresh-errors-btn" class="btn-outline btn-sm">
+              <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-refresh"></use></svg>
+              <span>Refresh Errors</span>
+            </button>
           </div>
           <div class="table-container">
             <table class="data-table">
@@ -1210,6 +1468,15 @@
               <tbody id="system-errors-body"></tbody>
             </table>
           </div>
+
+          <details class="tech-disclosure mt-12">
+            <summary>Technical Details · Effective Endpoints &amp; Capability Boundaries</summary>
+            <div class="tech-disclosure-body">
+              <span><strong>Active HTTP Origin:</strong> <code id="diag-effective-http">/api</code> · <strong>Telemetry WS:</strong> <code id="diag-effective-ws-tel">/ws/telemetry</code> · <strong>MFA WS:</strong> <code id="diag-effective-ws-mfa">/ws/mfa</code></span>
+              <span><strong>Readiness Separation:</strong> <code>GET /api/health/ready</code> verifies SQLite WAL health and reports MQTT/WebSocket metadata; it does not imply physical edge nodes are online.</span>
+              <span><strong>Integration Note:</strong> Fault rows from <code>GET /api/logs/system_errors</code> are currently read-only; persistent alarm acknowledgement/resolution requires a separate backend workflow.</span>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -1220,8 +1487,12 @@
         <div class="three-col-grid">
           <!-- 1. User Provisioning Form with Node 3 Camera Face Capture (POST /api/provision/user) -->
           <div class="glass-card">
-            <h3 class="section-heading">Access Credential Provisioning</h3>
-            <p class="helper-note">Enrolls personnel into SQLite <code>system_users</code> via <code>POST /api/provision/user</code> with SHA-256 credential hashing.</p>
+            <div class="section-header-row">
+              <div>
+                <h3 class="section-heading">Access Credential Provisioning</h3>
+                <p class="helper-note">Enroll personnel credentials and optional biometric link. Secrets are hashed by the central backend.</p>
+              </div>
+            </div>
             <form id="user-provision-form" autocomplete="off" novalidate>
               <div class="field-group">
                 <label for="prov_name">Username / Personnel Identifier</label>
@@ -1260,24 +1531,30 @@
                 </div>
                 <div class="face-capture-actions">
                   <button type="button" id="prov-capture-face-btn" class="btn-cyber full-width rbac-protected">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                      <circle cx="12" cy="13" r="4"></circle>
+                    <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+                      <use href="#icon-camera"></use>
                     </svg>
                     <span>Capture Face from Node 3</span>
                   </button>
-                  <span class="input-hint">Links frame from <code>http://&lt;ip_node3&gt;/capture.jpg</code></span>
+                  <span class="input-hint">Captures directly from <code>http://&lt;ip_node3&gt;/capture.jpg</code></span>
                 </div>
               </div>
 
-              <button type="submit" id="prov-submit-btn" class="btn-primary full-width rbac-protected">Provision User Credential</button>
+              <button type="submit" id="prov-submit-btn" class="btn-primary full-width rbac-protected">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-users"></use></svg>
+                <span>Provision User Credential</span>
+              </button>
             </form>
           </div>
 
-          <!-- 2. Admin Profile Form (Update Admin Username & Password in SQLite) -->
+          <!-- 2. Admin Profile Form (Update Admin Username & Password) -->
           <div class="glass-card">
-            <h3 class="section-heading">Administrator Credential Rotation</h3>
-            <p class="helper-note">Updates the active Administrator username and SHA-256 password hash in SQLite <code>system_users</code> (<code>POST /api/auth/admin-profile</code>).</p>
+            <div class="section-header-row">
+              <div>
+                <h3 class="section-heading">Administrator Credential Rotation</h3>
+                <p class="helper-note">Update the active Administrator username and password. Verified and hashed by the central backend.</p>
+              </div>
+            </div>
             <form id="admin-profile-form" autocomplete="off" novalidate>
               <div class="field-group">
                 <label for="admin_new_username">Administrator Username</label>
@@ -1287,24 +1564,34 @@
               <div class="field-group">
                 <label for="admin_new_password">New Administrator Password</label>
                 <input type="password" id="admin_new_password" class="rbac-protected-input" maxlength="64" placeholder="Enter new strong password" autocomplete="new-password" required />
-                <span class="input-hint">Minimum 6 characters. Transmitted only to verified SQLite backend; never stored in browser storage.</span>
+                <span class="input-hint">Minimum 6 characters. Never stored in browser storage.</span>
               </div>
               <div class="field-group">
                 <label for="admin_confirm_password">Confirm New Password</label>
                 <input type="password" id="admin_confirm_password" class="rbac-protected-input" maxlength="64" placeholder="Re-enter new password" autocomplete="new-password" required />
               </div>
-              <button type="submit" id="admin-profile-submit-btn" class="btn-primary full-width rbac-protected">Update Admin Credentials</button>
+              <button type="submit" id="admin-profile-submit-btn" class="btn-primary full-width rbac-protected">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-key"></use></svg>
+                <span>Update Admin Credentials</span>
+              </button>
             </form>
           </div>
 
           <!-- 3. Dynamic Server & Node IP Configuration Form -->
           <div class="glass-card">
-            <h3 class="section-heading">Network &amp; Edge Endpoint Configuration</h3>
-            <p class="helper-note">Centralized local-network addressing for Node-RED Core and ESP32-S3 PoE edge controllers.</p>
+            <div class="section-header-row">
+              <div>
+                <h3 class="section-heading">Workstation Endpoint Configuration</h3>
+                <p class="helper-note">Browser-local addressing for the Central Gateway and independent PoE edge nodes.</p>
+              </div>
+            </div>
             <form id="settings-ip-form" novalidate>
               <div class="field-group">
-                <label for="set_server_host">Central Server Host (<code>server_host</code>)</label>
-                <input type="text" id="set_server_host" class="rbac-protected-input" maxlength="32" placeholder="192.168.43.225:1880" required />
+                <div class="label-with-action">
+                  <label for="set_server_host">Central Gateway Host (<code>server_host</code>)</label>
+                  <button type="button" id="settings-reset-host-btn" class="btn-link-inline rbac-protected" title="Reset central host to this dashboard's server">Use Current Host</button>
+                </div>
+                <input type="text" id="set_server_host" class="rbac-protected-input" maxlength="64" placeholder="Same-origin host" required />
               </div>
               <div class="field-group">
                 <label for="set_ip_node1">Node 1 — Access Controller (<code>ip_node1</code>)</label>
@@ -1318,22 +1605,28 @@
                 <label for="set_ip_node3">Node 3 — Biometric Camera (<code>ip_node3</code>)</label>
                 <input type="text" id="set_ip_node3" class="rbac-protected-input" maxlength="15" required />
               </div>
-              <button type="submit" id="settings-ip-submit-btn" class="btn-cyber full-width rbac-protected">Save Network Endpoints</button>
+              <button type="submit" id="settings-ip-submit-btn" class="btn-cyber full-width rbac-protected">
+                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-sliders"></use></svg>
+                <span>Save Network Endpoints</span>
+              </button>
             </form>
           </div>
         </div>
 
-        <!-- 4. Dynamic SQLite User Management Table (/api/logs/system_users) -->
+        <!-- 4. Dynamic User Management Table (/api/logs/system_users) -->
         <div class="glass-card mt-20">
           <div class="flex-between">
             <div>
-              <h3 class="section-heading">Facility Operator &amp; Personnel Directory (<code>system_users</code>)</h3>
-              <p class="helper-note">Records retrieved from <code>GET /api/logs/system_users</code>. PINs and password hashes are strictly masked to prevent credential exposure.</p>
+              <h3 class="section-heading">Facility Operator &amp; Personnel Directory</h3>
+              <p class="helper-note">Secret hashes and PIN verifiers are omitted by the Central Backend; only safe directory metadata is displayed.</p>
             </div>
             <div class="search-group">
               <span id="user-sync-badge" class="status-tag status-unknown">Not Synced</span>
               <span id="user-count-label" class="sub-label tabular-nums">0 Users</span>
-              <button type="button" id="refresh-users-btn" class="btn-outline btn-sm">Refresh Directory</button>
+              <button type="button" id="refresh-users-btn" class="btn-outline btn-sm">
+                <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-refresh"></use></svg>
+                <span>Refresh Directory</span>
+              </button>
             </div>
           </div>
           <div class="table-container mt-16">
