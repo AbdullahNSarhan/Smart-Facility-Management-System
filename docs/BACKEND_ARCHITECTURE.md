@@ -68,17 +68,16 @@ The root `docker-compose.yml` defines the three core appliance services (`fronte
 
 Use Node.js **24 LTS** for the initial implementation. Prefer an Active LTS release over the Current release for a facility appliance.
 
-Recommended dependencies:
+Recommended and implemented dependencies:
 - `express` for the REST API and HTTP server.
 - `mqtt` (MQTT.js) for broker client connectivity, subscriptions, and publishing.
 - `ws` for WebSocket servers attached to the HTTP server.
-- `better-sqlite3` for local SQLite access, prepared statements, transactions, and migrations.
-- `zod` or an equally strict schema validator for request/payload validation.
-- `argon2` for Argon2id password hashing, or a reviewed alternative such as the Node.js built-in scrypt implementation.
-- `helmet` and `express-rate-limit` for applicable HTTP security controls and rate limits.
-- A structured logger such as `pino`, with secret redaction.
+- `node:sqlite` (`DatabaseSync`, built into Node.js 22.5+ / 24 LTS) for zero-native-addon local SQLite access, prepared statements, WAL mode, transactions, and versioned migrations.
+- `zod` for strict request and MQTT payload validation.
+- `node:crypto` (`crypto.scryptSync` and `crypto.timingSafeEqual`) for memory-hard password and PIN hashing and SHA-256 session verifiers.
+- Custom security and rate-limiting middleware (`backend/src/middleware/security.js`, with bounded memory eviction) and structured JSON logging (`backend/src/utils/logger.js`) with secret redaction.
 
-Use pinned, currently supported package versions when implementing. Avoid dependencies and external services that need the public internet at runtime. Install/build assets before moving the appliance into an air-gapped network.
+Use pinned, currently supported package versions (`package-lock.json` and `backend/package-lock.json`). Avoid dependencies and external services that need the public internet at runtime. Install/build assets before moving the appliance into an air-gapped network.
 
 ## 3. Service responsibilities
 

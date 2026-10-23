@@ -306,8 +306,57 @@ export class CommandCoordinator {
    * lecf/access/command/ack or lecf/env/command/ack.
    */
   handleCommandAck(ackPayload) {
-    const { command_id: commandId, node_id: nodeId, status, observed_state: observedState, error_code: errorCode, message } = ackPayload;
+    const {
+      command_id: commandId,
+      node_id: nodeId,
+      status,
+      observed_state: observedState,
+      error_code: errorCode,
+      message
+    } = ackPayload;
     const nowIso = new Date().toISOString();
+
+    const pending = this.pendingCommands.get(commandId);
+    const auditRow = this.repo.getCommandAudit(commandId);
+
+    if (!pending && !auditRow) {
+      logger.warn('Ignored MQTT command ACK for unknown command_id', {
+        command_id: commandId,
+        node_id: nodeId
+      });
+      this.repo.insertSystemError({
+        source_node: nodeId || 'unknown',
+        error_code: 'UNKNOWN_COMMAND_ACK',
+        severity: 'WARN',
+        error_description: `Received command ACK for unknown command_id "${commandId}" from node "${nodeId}"`
+      });
+      return { ok: false, reason: 'UNKNOWN_COMMAND_ID' };
+    }
+
+    const expectedNode = pending?.targetNode || auditRow?.target_node;
+    if (expectedNode && nodeId && expectedNode !== nodeId) {
+      logger.warn('Rejected MQTT command ACK from unexpected node_id', {
+        command_id: commandId,
+        expected_node: expectedNode,
+        actual_node: nodeId
+      });
+      this.repo.insertSystemError({
+        source_node: nodeId,
+        error_code: 'COMMAND_ACK_NODE_MISMATCH',
+        severity: 'WARN',
+        error_description: `Command "${commandId}" targeted "${expectedNode}" but received ACK from "${nodeId}"`
+      });
+      return { ok: false, reason: 'NODE_MISMATCH' };
+    }
+
+    const terminalStates = new Set(['acknowledged', 'state_confirmed', 'rejected', 'failed']);
+    if (auditRow && terminalStates.has(auditRow.lifecycle_state)) {
+      logger.info('Ignored duplicate MQTT command ACK for already-settled command', {
+        command_id: commandId,
+        lifecycle_state: auditRow.lifecycle_state
+      });
+      return { ok: true, duplicate: true, lifecycle_state: auditRow.lifecycle_state };
+    }
 
     const lifecycleState =
       status === 'executed' || status === 'acknowledged'
@@ -326,7 +375,6 @@ export class CommandCoordinator {
       details: message || `Device ${nodeId} reported status=${status}`
     });
 
-    const pending = this.pendingCommands.get(commandId);
     if (pending && !pending.settled) {
       pending.settled = true;
       clearTimeout(pending.ackTimer);
@@ -354,6 +402,8 @@ export class CommandCoordinator {
       node_id: nodeId,
       lifecycle_state: lifecycleState
     });
+
+    return { ok: true, duplicate: false, lifecycle_state: lifecycleState };
   }
 
   /**
@@ -364,6 +414,7 @@ export class CommandCoordinator {
     const nowIso = new Date().toISOString();
     for (const [commandId, pending] of this.pendingCommands.entries()) {
       if (pending.settled) continue;
+      if (pending.targetNode && nodeId && pending.targetNode !== nodeId) continue;
       const field = pending.telemetryField;
       if (!field || stateRecord[field] === undefined) continue;
 
@@ -389,6 +440,7 @@ export class CommandCoordinator {
 
   shutdown() {
     for (const pending of this.pendingCommands.values()) {
+      pending.settled = true;
       clearTimeout(pending.ackTimer);
       clearTimeout(pending.fastReturnTimer);
     }

@@ -11,16 +11,35 @@ import {
 import { logger } from '../utils/logger.js';
 
 export class MqttService {
-  constructor({ config, repo, wsGateway, commandCoordinator }) {
+  constructor({
+    config,
+    repo,
+    wsGateway,
+    commandCoordinator,
+    dnsLookup = dns.lookup,
+    mqttConnect = mqtt.connect
+  }) {
     this.config = config;
     this.repo = repo;
     this.wsGateway = wsGateway;
     this.commandCoordinator = commandCoordinator;
+    this._dnsLookup = dnsLookup;
+    this._mqttConnect = mqttConnect;
 
     this.client = null;
     this.connected = false;
+    this.subscriptionsReady = false;
+    this.subscribedTopics = new Set();
+    this.failedSubscriptions = new Map();
+    this.lastError = null;
     this.lastActivityAt = null;
     this.nodeHeartbeats = new Map();
+
+    this._closing = false;
+    this._connecting = false;
+    this._retryTimer = null;
+    this._dnsAttempt = 0;
+    this._connectionGeneration = 0;
   }
 
   setCommandCoordinator(commandCoordinator) {
@@ -31,6 +50,17 @@ export class MqttService {
     return Boolean(this.config.mqttEnabled && this.connected && this.client && this.client.connected);
   }
 
+  areSubscriptionsReady() {
+    if (!this.config.mqttEnabled) return true;
+    if (!this.isConnected()) return false;
+    if (this.failedSubscriptions.size > 0) return false;
+    if (this.subscriptionsReady) return true;
+    if (this.client && typeof this.client.subscribe !== 'function') {
+      return true;
+    }
+    return false;
+  }
+
   getHealthStatus() {
     const nodes = {};
     for (const [nodeId, info] of this.nodeHeartbeats.entries()) {
@@ -38,47 +68,112 @@ export class MqttService {
     }
     const enabled = Boolean(this.config.mqttEnabled);
     const connected = enabled ? this.isConnected() : false;
-    const state = !enabled ? 'standby' : (connected ? 'connected' : 'disconnected');
+    const subscriptionsReady = !enabled ? true : this.areSubscriptionsReady();
+    const state = !enabled
+      ? 'standby'
+      : !connected
+        ? 'disconnected'
+        : subscriptionsReady
+          ? 'connected'
+          : 'degraded';
     return {
       enabled,
       connected,
+      subscriptions_ready: subscriptionsReady,
+      subscribed_topics: Array.from(this.subscribedTopics),
+      failed_subscriptions: Object.fromEntries(this.failedSubscriptions),
       state,
+      last_error: this.lastError || null,
       broker_url: this.config.mqttBrokerUrl,
       last_activity_at: this.lastActivityAt,
       observed_nodes: nodes
     };
   }
 
+  _scheduleDnsRetry() {
+    if (this._closing || !this.config.mqttEnabled || this.client || this._retryTimer) {
+      return;
+    }
+    const baseMs = Math.max(50, Number(this.config.mqttDnsRetryBaseMs ?? 1000));
+    const maxMs = Math.max(baseMs, Number(this.config.mqttDnsRetryMaxMs ?? 30000));
+    const exponent = Math.min(6, Math.max(0, this._dnsAttempt - 1));
+    const delayMs = Math.min(maxMs, baseMs * (2 ** exponent));
+
+    this._retryTimer = setTimeout(() => {
+      this._retryTimer = null;
+      if (!this._closing && this.config.mqttEnabled && !this.client) {
+        this.connect();
+      }
+    }, delayMs);
+
+    if (this._retryTimer.unref) {
+      this._retryTimer.unref();
+    }
+  }
+
   connect() {
+    this._closing = false;
+
     if (!this.config.mqttEnabled) {
       logger.info('MQTT client in standby mode (MQTT_ENABLED=false)');
       return;
     }
 
-    if (this.client) {
+    if (this.client || this._connecting) {
       return;
+    }
+
+    if (this._retryTimer) {
+      clearTimeout(this._retryTimer);
+      this._retryTimer = null;
     }
 
     let brokerHostname = 'localhost';
     try {
       const parsed = new URL(this.config.mqttBrokerUrl);
+      if (parsed.protocol !== 'mqtt:' && parsed.protocol !== 'mqtts:') {
+        throw new Error(`Unsupported MQTT protocol "${parsed.protocol}"`);
+      }
+      if (!parsed.hostname) {
+        throw new Error('Missing MQTT broker hostname');
+      }
       brokerHostname = parsed.hostname;
-    } catch {
-      brokerHostname = 'localhost';
+    } catch (err) {
+      this.lastError = err?.message || 'Invalid MQTT_BROKER_URL';
+      logger.error('Invalid MQTT_BROKER_URL; cannot initiate broker connection', {
+        broker_url: this.config.mqttBrokerUrl,
+        error: this.lastError
+      });
+      return;
     }
 
-    // Pre-flight DNS check: prevents endless EAI_AGAIN / ENOTFOUND error loops when
-    // a Docker internal service name (e.g., "mqtt-service") is configured outside Docker.
-    dns.lookup(brokerHostname, (dnsErr) => {
-      if (dnsErr) {
-        logger.info('MQTT broker host is not resolvable in current network; entering standby mode', {
-          broker_url: this.config.mqttBrokerUrl,
-          host: brokerHostname
-        });
+    this._connecting = true;
+
+    this._dnsLookup(brokerHostname, (dnsErr) => {
+      this._connecting = false;
+
+      if (this._closing || this.client || !this.config.mqttEnabled) {
         return;
       }
 
-      if (this.client) return;
+      if (dnsErr) {
+        this.connected = false;
+        this.subscriptionsReady = false;
+        this._dnsAttempt += 1;
+        this.lastError = dnsErr.code || dnsErr.message || String(dnsErr);
+        if (this._dnsAttempt === 1) {
+          logger.info('MQTT broker host is not yet resolvable; scheduling bounded DNS retry', {
+            broker_url: this.config.mqttBrokerUrl,
+            host: brokerHostname,
+            attempt: this._dnsAttempt,
+            reason: this.lastError
+          });
+        }
+        this._scheduleDnsRetry();
+        return;
+      }
+
+      this._dnsAttempt = 0;
 
       const options = {
         clientId: this.config.mqttClientId,
@@ -95,17 +190,27 @@ export class MqttService {
         username: options.username
       });
 
-      this.client = mqtt.connect(this.config.mqttBrokerUrl, options);
+      this.client = this._mqttConnect(this.config.mqttBrokerUrl, options);
       let loggedOfflineNotice = false;
 
       this.client.on('connect', () => {
+        if (this._closing) return;
+        this._connectionGeneration += 1;
+        const generation = this._connectionGeneration;
         this.connected = true;
+        this.lastError = null;
+        this.subscribedTopics.clear();
+        this.failedSubscriptions.clear();
+        this.subscriptionsReady = false;
         loggedOfflineNotice = false;
         logger.info('MQTT broker connection established');
-        this._subscribeAll();
+        this._subscribeAll(generation);
       });
 
       this.client.on('reconnect', () => {
+        this.connected = false;
+        this.subscriptionsReady = false;
+        this.subscribedTopics.clear();
         if (!loggedOfflineNotice) {
           logger.info('Attempting MQTT broker reconnection...');
         }
@@ -113,15 +218,21 @@ export class MqttService {
 
       this.client.on('close', () => {
         this.connected = false;
+        this.subscriptionsReady = false;
+        this.subscribedTopics.clear();
       });
 
       this.client.on('offline', () => {
         this.connected = false;
+        this.subscriptionsReady = false;
+        this.subscribedTopics.clear();
       });
 
       this.client.on('error', (err) => {
         this.connected = false;
+        this.subscriptionsReady = false;
         const reason = err?.message || String(err);
+        this.lastError = reason;
         if (!loggedOfflineNotice) {
           loggedOfflineNotice = true;
           logger.info('MQTT broker currently unreachable; standing by', {
@@ -137,23 +248,52 @@ export class MqttService {
     });
   }
 
-  _subscribeAll() {
+  _subscribeAll(generation = this._connectionGeneration) {
     if (!this.client) return;
     const subscriptions = getSubscribedTopics();
+    if (subscriptions.length === 0) {
+      this.subscriptionsReady = true;
+      return;
+    }
+
     for (const sub of subscriptions) {
-      this.client.subscribe(sub.topic, { qos: sub.qos }, (err) => {
-        if (err) {
+      this.client.subscribe(sub.topic, { qos: sub.qos }, (err, granted) => {
+        if (generation !== this._connectionGeneration || !this.connected || this._closing) {
+          return;
+        }
+
+        const grantFailure =
+          Array.isArray(granted) &&
+          granted.some(
+            (g) => g && (g.qos === 128 || g.qos === 0x80 || typeof g.qos !== 'number' || g.qos < 0 || g.qos > 2)
+          );
+
+        if (err || grantFailure) {
+          const reason = err
+            ? err.message || String(err)
+            : `Broker rejected subscription grant (${JSON.stringify(granted)})`;
+          this.failedSubscriptions.set(sub.topic, reason);
+          this.subscribedTopics.delete(sub.topic);
+          this.subscriptionsReady = false;
+          this.lastError = `Subscription failed for ${sub.topic}: ${reason}`;
           logger.error('Failed to subscribe to MQTT topic', {
             topic: sub.topic,
-            error: err.message
+            error: reason
           });
-        } else {
-          logger.info('Subscribed to MQTT topic', {
-            topic: sub.topic,
-            qos: sub.qos,
-            status: sub.status
-          });
+          return;
         }
+
+        this.failedSubscriptions.delete(sub.topic);
+        this.subscribedTopics.add(sub.topic);
+
+        const allSubscribed = subscriptions.every((item) => this.subscribedTopics.has(item.topic));
+        this.subscriptionsReady = allSubscribed && this.failedSubscriptions.size === 0;
+
+        logger.info('Subscribed to MQTT topic', {
+          topic: sub.topic,
+          qos: sub.qos,
+          status: sub.status
+        });
       });
     }
   }
@@ -463,16 +603,26 @@ export class MqttService {
   }
 
   async close() {
+    this._closing = true;
+    this._connecting = false;
+    if (this._retryTimer) {
+      clearTimeout(this._retryTimer);
+      this._retryTimer = null;
+    }
+    this._connectionGeneration += 1;
+    this.connected = false;
+    this.subscriptionsReady = false;
+    this.subscribedTopics.clear();
+    this.failedSubscriptions.clear();
+
     if (!this.client) return;
-    if (typeof this.client.end !== 'function') {
-      this.connected = false;
-      this.client = null;
+    const clientToClose = this.client;
+    this.client = null;
+    if (typeof clientToClose.end !== 'function') {
       return;
     }
     return new Promise((resolve) => {
-      this.client.end(true, {}, () => {
-        this.connected = false;
-        this.client = null;
+      clientToClose.end(true, {}, () => {
         resolve();
       });
     });

@@ -58,20 +58,30 @@ export function createApiRouter({
     const dbCheck = db.healthCheck();
     const rawMqtt = mqttService
       ? mqttService.getHealthStatus()
-      : { enabled: false, connected: false, state: 'standby' };
+      : { enabled: false, connected: false, subscriptions_ready: true, state: 'standby' };
     const mqttEnabled = Boolean(rawMqtt.enabled);
     const mqttConnected = mqttEnabled ? Boolean(rawMqtt.connected) : false;
-    const mqttState = !mqttEnabled ? 'standby' : (mqttConnected ? 'connected' : 'disconnected');
+    const mqttSubsReady = !mqttEnabled
+      ? true
+      : Boolean(mqttConnected && rawMqtt.subscriptions_ready !== false);
+    const mqttState = !mqttEnabled
+      ? 'standby'
+      : !mqttConnected
+        ? 'disconnected'
+        : mqttSubsReady
+          ? 'connected'
+          : 'degraded';
     const mqttStatus = {
       ...rawMqtt,
       enabled: mqttEnabled,
       connected: mqttConnected,
-      state: rawMqtt.state || mqttState
+      subscriptions_ready: mqttSubsReady,
+      state: mqttState
     };
     const wsStats = wsGateway ? wsGateway.getStats() : { totalClients: 0 };
 
     const sqliteReady = Boolean(dbCheck && dbCheck.ok);
-    const mqttReady = mqttEnabled ? mqttConnected : true;
+    const mqttReady = mqttEnabled ? (mqttConnected && mqttSubsReady) : true;
     const ready = sqliteReady && mqttReady;
 
     return res.status(ready ? 200 : 503).json({
@@ -163,6 +173,17 @@ export function createApiRouter({
   router.post('/auth/logout', (req, res) => {
     const activeSession = authMiddleware.resolveRequestSession(req);
     if (activeSession) {
+      if (typeof authMiddleware.verifyCsrfForRequest === 'function') {
+        const csrfCheck = authMiddleware.verifyCsrfForRequest(req, activeSession);
+        if (!csrfCheck.ok) {
+          return res.status(403).json({
+            ok: false,
+            error: csrfCheck.error,
+            code: csrfCheck.code,
+            request_id: req.requestId
+          });
+        }
+      }
       repo.revokeSessionByToken(activeSession.rawToken);
       if (wsGateway) {
         wsGateway.disconnectSession(activeSession.sessionId);

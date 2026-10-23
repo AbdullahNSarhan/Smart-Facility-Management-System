@@ -53,7 +53,8 @@ npm run dev
 ### Validation, Testing & Database Operations
 
 ```bash
-npm test           # Run the 21-test full-stack & backend integration suite (Auth, CSRF, RBAC, SQLite, MQTT, WS, Commands, Readiness, DOM & Contracts)
+npm test           # Run the 28-test full-stack & backend integration suite (Auth, CSRF, RBAC, SQLite, MQTT, WS, Commands, Readiness, Rollback, DOM & Contracts)
+npm --prefix backend test # Run the same 28-test suite from the backend workspace
 npm run lint       # Verify syntax across frontend and backend ES modules
 npm run build      # Build production static frontend bundle into dist/
 npm run db:backup  # Perform online SQLite hot backup via VACUUM INTO
@@ -92,7 +93,7 @@ For the complete server preparation, private-LAN binding, firewall, verification
 
 ## Automated Ubuntu Server Deployment
 
-For a fresh Ubuntu Server on a trusted private LAN, the repository includes `install.sh` and `update.sh`. The installer installs missing host prerequisites, clones this repository to `/opt/lci-sfm`, generates local production secrets and Mosquitto credentials, runs frontend lint/tests/build inside Node.js 24, validates Compose, and starts the services. It preserves an existing `.env` and Mosquitto password file on reruns.
+For a fresh Ubuntu Server on a trusted private LAN, the repository includes `install.sh` and `update.sh`. The installer acquires a shared deployment lock (`/var/lock/lci-sfm-deploy.lock`), installs missing host prerequisites, clones this repository to `/opt/lci-sfm`, generates local production secrets and Mosquitto credentials, runs frontend and backend lint/tests/build inside Node.js 24, validates Compose, and starts the services. It preserves an existing `.env` and Mosquitto password file on reruns.
 
 Run the installer from the server:
 
@@ -108,7 +109,7 @@ Update later with:
 sudo /opt/lci-sfm/update.sh
 ```
 
-The update script refuses a dirty Git checkout, backs up SQLite when the backend is running, fast-forwards the current branch, reruns validation/build, and rebuilds the Compose stack without deleting persistent volumes. Review `docs/DEPLOYMENT_GUIDE.md` before connecting physical hardware. The current HTTP/MQTT configuration is intended only for a trusted private network, not public internet exposure.
+The update script acquires the shared deployment lock (`/var/lock/lci-sfm-deploy.lock`), refuses a dirty Git checkout, validates the candidate commit in a temporary worktree, creates and verifies an online SQLite backup (`PRAGMA integrity_check`) when the backend is running, fast-forwards the current branch, publishes the tested `dist/` bundle, and recreates the Compose stack without deleting persistent volumes. If a post-merge deployment or readiness check fails, `update.sh` automatically restores the previous `dist/` directory, rewinds the Git checkout to the previous commit when still on the candidate commit with a clean working tree, and attempts to re-bring up the previous containers while preserving the verified SQLite backup. Review `docs/DEPLOYMENT_GUIDE.md` before connecting physical hardware. The current HTTP/MQTT configuration is intended only for a trusted private network, not public internet exposure.
 
 ## Default endpoints
 

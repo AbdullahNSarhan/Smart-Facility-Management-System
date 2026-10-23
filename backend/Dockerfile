@@ -23,6 +23,6 @@ ENV SERVE_FRONTEND=false
 EXPOSE 3000
 
 HEALTHCHECK --interval=15s --timeout=4s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:3000/api/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:3000/api/health/live', { signal: AbortSignal.timeout(3000) }).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 CMD ["node", "backend/src/server.js"]

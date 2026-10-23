@@ -37,8 +37,13 @@ export function redactSensitive(value, depth = 0) {
   return copy;
 }
 
+const isTestRuntime =
+  process.env.NODE_ENV === 'test' ||
+  process.execArgv.includes('--test') ||
+  process.argv.includes('--test');
+
 export const logger = {
-  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'test' ? 'silent' : 'info'),
+  level: process.env.LOG_LEVEL || (isTestRuntime ? 'silent' : 'info'),
 
   write(level, msg, meta = {}) {
     if (this.level === 'silent') return;

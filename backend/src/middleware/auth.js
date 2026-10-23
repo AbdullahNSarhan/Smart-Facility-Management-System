@@ -55,13 +55,17 @@ export function createAuthMiddleware(repo, config) {
       ? extractBearerToken(req.headers.authorization)
       : null;
 
+    // If a valid session cookie is present, it authenticates the request as 'cookie'.
+    // Never classify a cookie-authenticated request as 'cookie+bearer' based on an
+    // unverified or secondary Authorization header, as that would allow CSRF bypass.
     if (cookieToken) {
       const session = repo.verifySessionToken(cookieToken, config.sessionIdleTtlMs);
       if (session) {
         return {
           ...session,
           rawToken: cookieToken,
-          authTransport: bearerToken ? 'cookie+bearer' : 'cookie'
+          authTransport: 'cookie',
+          source: 'cookie'
         };
       }
     }
@@ -72,12 +76,45 @@ export function createAuthMiddleware(repo, config) {
         return {
           ...session,
           rawToken: bearerToken,
-          authTransport: 'bearer'
+          authTransport: 'bearer',
+          source: 'bearer'
         };
       }
     }
 
     return null;
+  }
+
+  function verifyCsrfForRequest(req, session) {
+    if (!STATE_CHANGING_METHODS.has(req.method)) {
+      return { ok: true };
+    }
+    const csrfHeader = req.headers['x-csrf-token'];
+    const isCookieAuth = session.authTransport === 'cookie' || session.source === 'cookie';
+
+    if (isCookieAuth) {
+      if (
+        typeof csrfHeader !== 'string' ||
+        csrfHeader.length === 0 ||
+        !safeCompareTokens(csrfHeader, session.csrfToken)
+      ) {
+        return {
+          ok: false,
+          error: 'Invalid or missing CSRF token for cookie-authenticated mutation',
+          code: 'CSRF_INVALID'
+        };
+      }
+    } else if (csrfHeader !== undefined) {
+      if (typeof csrfHeader !== 'string' || !safeCompareTokens(csrfHeader, session.csrfToken)) {
+        return {
+          ok: false,
+          error: 'Invalid CSRF token',
+          code: 'CSRF_INVALID'
+        };
+      }
+    }
+
+    return { ok: true };
   }
 
   function requireAuth(req, res, next) {
@@ -91,30 +128,18 @@ export function createAuthMiddleware(repo, config) {
       });
     }
 
-    // Enforce CSRF check on state-changing requests authenticated solely via cookie
-    // or whenever X-CSRF-Token is explicitly supplied
-    if (STATE_CHANGING_METHODS.has(req.method)) {
-      const csrfHeader = req.headers['x-csrf-token'];
-      if (session.authTransport === 'cookie') {
-        if (!csrfHeader || !safeCompareTokens(String(csrfHeader), session.csrfToken)) {
-          return res.status(403).json({
-            ok: false,
-            error: 'Invalid or missing CSRF token for cookie-authenticated mutation',
-            code: 'CSRF_INVALID',
-            request_id: req.requestId
-          });
-        }
-      } else if (csrfHeader && !safeCompareTokens(String(csrfHeader), session.csrfToken)) {
-        return res.status(403).json({
-          ok: false,
-          error: 'Invalid CSRF token',
-          code: 'CSRF_INVALID',
-          request_id: req.requestId
-        });
-      }
+    const csrfCheck = verifyCsrfForRequest(req, session);
+    if (!csrfCheck.ok) {
+      return res.status(403).json({
+        ok: false,
+        error: csrfCheck.error,
+        code: csrfCheck.code,
+        request_id: req.requestId
+      });
     }
 
     req.session = session;
+    req.auth = session;
     req.user = session.user;
     next();
   }
@@ -136,35 +161,63 @@ export function createAuthMiddleware(repo, config) {
   function authenticateWsUpgrade(req) {
     const cookies = parseCookies(req.headers.cookie);
     const cookieToken = cookies[config.sessionCookieName] || null;
-    const bearerToken = config.allowBearerCompat
-      ? extractBearerToken(req.headers.authorization)
-      : null;
+    if (cookieToken) {
+      const session = repo.verifySessionToken(cookieToken, config.sessionIdleTtlMs);
+      if (session) {
+        return {
+          ...session,
+          rawToken: cookieToken,
+          authTransport: 'cookie',
+          source: 'cookie'
+        };
+      }
+    }
 
-    // URL query tokens are enabled only for the temporary Bearer compatibility mode.
-    // Query strings may be written to proxy/access logs, so cookie-only deployments
-    // must not accept a token from the WebSocket URL.
-    let queryToken = null;
-    if (config.allowBearerCompat) {
+    if (!config.allowBearerCompat) {
+      return null;
+    }
+
+    const bearerToken = extractBearerToken(req.headers.authorization);
+    if (bearerToken) {
+      const session = repo.verifySessionToken(bearerToken, config.sessionIdleTtlMs);
+      if (session) {
+        return {
+          ...session,
+          rawToken: bearerToken,
+          authTransport: 'bearer',
+          source: 'bearer'
+        };
+      }
+    }
+
+    // URL query tokens are restricted to non-production Bearer compatibility mode
+    // (or explicit allowWsQueryToken) to prevent session tokens from leaking into production proxy logs.
+    if (!config.isProd || config.allowWsQueryToken) {
       try {
         const parsedUrl = new URL(req.url || '/', 'http://localhost');
-        queryToken = parsedUrl.searchParams.get('token');
+        const queryToken = parsedUrl.searchParams.get('token');
+        if (queryToken) {
+          const session = repo.verifySessionToken(queryToken, config.sessionIdleTtlMs);
+          if (session) {
+            return {
+              ...session,
+              rawToken: queryToken,
+              authTransport: 'query',
+              source: 'query'
+            };
+          }
+        }
       } catch {
-        queryToken = null;
+        // ignore malformed URL
       }
     }
 
-    const candidates = [cookieToken, bearerToken, queryToken].filter(Boolean);
-    for (const token of candidates) {
-      const session = repo.verifySessionToken(token, config.sessionIdleTtlMs);
-      if (session) {
-        return { ...session, rawToken: token };
-      }
-    }
     return null;
   }
 
   return {
     resolveRequestSession,
+    verifyCsrfForRequest,
     requireAuth,
     requireAdmin,
     authenticateWsUpgrade

@@ -14,7 +14,7 @@ warn() { printf '[LCI-SFM] WARNING: %s\n' "$*" >&2; }
 
 # Supports: curl -fsSL <raw-install-url> | sudo bash
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P || true)"
-if [[ $EUID -ne 0 ]]; then
+if [[ "${LCI_SKIP_ROOT_CHECK:-0}" != "1" && $EUID -ne 0 ]]; then
   die "Run this installer with sudo, e.g. curl .../install.sh | sudo bash"
 fi
 
@@ -39,16 +39,38 @@ PROJECT_DIR="$SCRIPT_DIR"
 cd "$PROJECT_DIR"
 
 log "Installing required host tools (Docker is installed only if missing)"
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y ca-certificates curl git openssl python3
+if [[ "${LCI_SKIP_APT:-0}" != "1" ]]; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y ca-certificates curl git openssl python3 util-linux
 
-if ! command -v docker >/dev/null 2>&1; then
-  apt-get install -y docker.io docker-compose-v2
+  if ! command -v docker >/dev/null 2>&1; then
+    apt-get install -y docker.io docker-compose-v2
+  fi
+  systemctl enable --now docker
 fi
-systemctl enable --now docker
+
+# Acquire shared deployment lock so install.sh and update.sh never race concurrently.
+LOCK_DIR="/var/lock"
+[[ -d "$LOCK_DIR" ]] || LOCK_DIR="/run/lock"
+[[ -d "$LOCK_DIR" ]] || LOCK_DIR="/tmp"
+DEPLOY_LOCK_FILE="${LCI_DEPLOY_LOCK_FILE:-$LOCK_DIR/lci-sfm-deploy.lock}"
+exec 9>"$DEPLOY_LOCK_FILE"
+flock -n 9 || die "Another LCI-SFM install or update operation is already running (lock: $DEPLOY_LOCK_FILE)."
+
 docker compose version >/dev/null 2>&1 || die "Docker Compose plugin is missing. Install docker-compose-v2 and rerun."
 docker info >/dev/null 2>&1 || die "Docker daemon is not responding."
+
+validate_ipv4() {
+  local ip="$1"
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  local IFS='.'
+  read -r o1 o2 o3 o4 <<< "$ip"
+  for octet in "$o1" "$o2" "$o3" "$o4"; do
+    (( 10#$octet >= 0 && 10#$octet <= 255 )) || return 1
+  done
+  return 0
+}
 
 # Choose the IPv4 address used for LAN web access; allow explicit override.
 SERVER_IP="${LCI_SERVER_IP:-}"
@@ -56,7 +78,7 @@ if [[ -z "$SERVER_IP" ]]; then
   SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
 fi
 [[ -n "$SERVER_IP" ]] || die "Could not detect the server IPv4 address. Rerun with LCI_SERVER_IP=your.lan.ip."
-[[ "$SERVER_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "Invalid IPv4 address: $SERVER_IP"
+validate_ipv4 "$SERVER_IP" || die "Invalid IPv4 address: $SERVER_IP"
 log "Detected server IPv4: $SERVER_IP"
 
 # Keep existing .env and credentials untouched on reruns.
@@ -84,6 +106,7 @@ values = {
     "MQTT_BIND_IP": "127.0.0.1",
     "ALLOWED_ORIGINS": "http://" + os.environ["SERVER_IP"],
     "SESSION_SECURE_COOKIE": "false",
+    "ALLOW_BEARER_COMPAT": "false",
     "NODE_ENV": "production",
 }
 lines = text.splitlines()
@@ -133,11 +156,14 @@ else
 fi
 
 # Keep host-specific secrets out of Git without modifying tracked repository files.
-EXCLUDE_FILE=".git/info/exclude"
-touch "$EXCLUDE_FILE"
-for entry in "/.env" "/DEPLOYMENT-CREDENTIALS.txt" "/mosquitto/passwd" "/mosquitto/device-credentials.txt" "/backups/"; do
-  grep -Fxq "$entry" "$EXCLUDE_FILE" || printf '%s\n' "$entry" >> "$EXCLUDE_FILE"
-done
+if [[ -d .git ]]; then
+  mkdir -p .git/info
+  EXCLUDE_FILE=".git/info/exclude"
+  touch "$EXCLUDE_FILE"
+  for entry in "/.env" "/DEPLOYMENT-CREDENTIALS.txt" "/mosquitto/passwd" "/mosquitto/device-credentials.txt" "/backups/"; do
+    grep -Fxq "$entry" "$EXCLUDE_FILE" || printf '%s\n' "$entry" >> "$EXCLUDE_FILE"
+  done
+fi
 chmod 600 .env
 
 # Set Mosquitto bind-mounted secret/ACL files to the broker's UID and restrictive
@@ -177,7 +203,9 @@ else
 fi
 
 # Mosquitto runs as UID/GID 1883. The files are bind-mounted read-only by Compose.
-chown 1883:1883 mosquitto/passwd mosquitto/acl
+if [[ "${LCI_SKIP_ROOT_CHECK:-0}" != "1" ]]; then
+  chown 1883:1883 mosquitto/passwd mosquitto/acl
+fi
 chmod 600 mosquitto/passwd mosquitto/acl
 
 log "Building frontend and running lint/tests inside Node.js 24 container"
@@ -186,19 +214,22 @@ docker run --rm -e HOME=/tmp -e npm_config_cache=/tmp/npm-cache \
   'npm ci --no-audit --no-fund && npm run lint && npm test && npm run build'
 
 [[ -s dist/index.html ]] || die "Frontend build did not create dist/index.html."
+chmod 755 "$PROJECT_DIR/dist"
+find "$PROJECT_DIR/dist" -type d -exec chmod 755 {} +
+find "$PROJECT_DIR/dist" -type f -exec chmod 644 {} +
 [[ -f nginx/nginx.conf ]] || die "nginx/nginx.conf is missing."
 docker compose config -q
 
 log "Starting the stack (MQTT broker, backend, then frontend)"
 docker compose up -d mqtt-service
-sleep 3
+sleep "${LCI_STARTUP_GRACE_SEC:-3}"
 if ! docker compose ps --status running --services | grep -Fxq mqtt-service; then
   docker compose logs --tail=80 mqtt-service
   die "Mosquitto did not remain running. Review the logs above."
 fi
 
 docker compose up -d --build backend
-sleep 3
+sleep "${LCI_STARTUP_GRACE_SEC:-3}"
 if ! docker compose ps --status running --services | grep -Fxq backend; then
   docker compose logs --tail=100 backend
   die "Backend did not remain running. Review the logs above."
@@ -208,24 +239,27 @@ docker compose up -d --build frontend_dashboard
 docker compose ps
 
 log "Checking backend liveness (/api/health/live) inside its container"
-if ! docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"; then
+if ! docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/live', { signal: AbortSignal.timeout(5000) }).then(async r => { if (!r.ok) process.exit(1); const d = await r.json(); process.exit(d && d.ok === true && d.status === 'live' ? 0 : 1); }).catch(() => process.exit(1))"; then
   printf '\nBackend liveness check failed. Recent logs:\n' >&2
   docker compose logs --tail=100 backend >&2
   die "Backend liveness check failed. Fix the reported issue and rerun install.sh or update.sh."
 fi
 
-log "Waiting up to 60 seconds for backend operational readiness (/api/health/ready: SQLite + MQTT)"
+READINESS_TIMEOUT_SEC="${LCI_READINESS_TIMEOUT_SEC:-60}"
+READINESS_POLL_SEC="${LCI_READINESS_POLL_SEC:-3}"
+log "Waiting up to ${READINESS_TIMEOUT_SEC} seconds for backend operational readiness (/api/health/ready: SQLite + MQTT)"
 READY=0
-for _ in $(seq 1 20); do
-  if docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))" >/dev/null 2>&1; then
+DEADLINE=$((SECONDS + READINESS_TIMEOUT_SEC))
+while (( SECONDS < DEADLINE )); do
+  if docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/ready', { signal: AbortSignal.timeout(5000) }).then(async r => { if (r.status !== 200) process.exit(1); const d = await r.json(); const sqlOk = d?.sqlite?.ok === true; const mqttOk = d?.mqtt?.enabled === false ? d?.mqtt?.state === 'standby' : (d?.mqtt?.connected === true && d?.mqtt?.subscriptions_ready !== false && d?.mqtt?.state === 'connected'); process.exit(d?.ok === true && d?.status === 'ready' && sqlOk && mqttOk ? 0 : 1); }).catch(() => process.exit(1))" >/dev/null 2>&1; then
     READY=1
     break
   fi
-  sleep 3
+  sleep "$READINESS_POLL_SEC"
 done
 if [[ "$READY" -ne 1 ]]; then
-  printf '\nBackend readiness check timed out after 60 seconds. Last readiness payload:\n' >&2
-  docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/ready').then(async r => console.error(await r.text())).catch(e => console.error(e.message))" >&2 || true
+  printf '\nBackend readiness check timed out after %s seconds. Last readiness payload:\n' "$READINESS_TIMEOUT_SEC" >&2
+  docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/ready', { signal: AbortSignal.timeout(5000) }).then(async r => console.error(await r.text())).catch(e => console.error(e.message))" >&2 || true
   docker compose logs --tail=120 backend mqtt-service >&2 || true
   die "Backend operational readiness check (/api/health/ready) failed. Verify SQLite and Mosquitto MQTT credentials/logs and rerun."
 fi
@@ -237,7 +271,25 @@ if ! curl --connect-timeout 3 --max-time 10 -fsS "http://$FRONTEND_BIND_IP/" -o 
   docker compose logs --tail=100 frontend_dashboard >&2
   die "Frontend HTTP check failed at http://$FRONTEND_BIND_IP/."
 fi
-if ! curl --connect-timeout 3 --max-time 10 -fsS "http://$FRONTEND_BIND_IP/api/health/ready" -o /dev/null; then
+READY_JSON="$(curl --connect-timeout 3 --max-time 10 -fsS "http://$FRONTEND_BIND_IP/api/health/ready" || true)"
+if [[ -z "$READY_JSON" ]] || ! python3 - "$READY_JSON" <<'PYREADY'
+import json, sys
+data = json.loads(sys.argv[1])
+sql_ok = data.get("sqlite", {}).get("ok") is True
+mqtt = data.get("mqtt", {})
+mqtt_ok = (
+    mqtt.get("state") == "standby"
+    if mqtt.get("enabled") is False
+    else (
+        mqtt.get("connected") is True
+        and mqtt.get("subscriptions_ready") is not False
+        and mqtt.get("state") == "connected"
+    )
+)
+if data.get("ok") is not True or data.get("status") != "ready" or not sql_ok or not mqtt_ok:
+    raise SystemExit(1)
+PYREADY
+then
   docker compose logs --tail=100 frontend_dashboard backend mqtt-service >&2
   die "Reverse-proxied readiness check failed at http://$FRONTEND_BIND_IP/api/health/ready."
 fi

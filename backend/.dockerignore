@@ -1,0 +1,15 @@
+.git
+node_modules
+data
+backups
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.bak
+*.log
+.env
+.env.*
+DEPLOYMENT-CREDENTIALS.txt

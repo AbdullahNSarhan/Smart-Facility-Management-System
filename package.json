@@ -13,8 +13,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "node --check app.js && node --check backend/src/server.js && node --check backend/src/app.js && node --check backend/src/routes/apiRoutes.js && node --check backend/src/repositories/sqliteRepository.js && node --check backend/src/mqtt/mqttClient.js && node --check backend/src/services/commandCoordinator.js",
-    "test": "node --test backend/test/backend.test.js",
+    "lint": "node --check app.js && node --check backend/src/server.js && node --check backend/src/app.js && node --check backend/src/config/env.js && node --check backend/src/db/database.js && node --check backend/src/db/backup.js && node --check backend/src/middleware/auth.js && node --check backend/src/middleware/security.js && node --check backend/src/mqtt/topics.js && node --check backend/src/mqtt/mqttClient.js && node --check backend/src/repositories/sqliteRepository.js && node --check backend/src/routes/apiRoutes.js && node --check backend/src/services/commandCoordinator.js && node --check backend/src/utils/crypto.js && node --check backend/src/utils/logger.js && node --check backend/src/validators/schemas.js && node --check backend/src/websocket/wsServer.js && node --check backend/test/backend.test.js",
+    "test": "NODE_ENV=test node --test backend/test/backend.test.js",
     "db:backup": "node backend/src/db/backup.js backup",
     "db:restore": "node backend/src/db/backup.js restore"
   },

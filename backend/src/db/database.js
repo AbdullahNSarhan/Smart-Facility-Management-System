@@ -11,9 +11,11 @@ const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
 export class SqliteDatabase {
   constructor(dbPath) {
     this.dbPath = dbPath;
+    this.migrationError = null;
     if (dbPath !== ':memory:') {
       const dir = path.dirname(dbPath);
       fs.mkdirSync(dir, { recursive: true });
+      fs.accessSync(dir, fs.constants.W_OK);
     }
     this.db = new DatabaseSync(dbPath);
     this.isOpen = true;
@@ -56,35 +58,41 @@ export class SqliteDatabase {
     };
   }
 
-  runMigrations() {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        version TEXT PRIMARY KEY,
-        applied_at TEXT NOT NULL
+  runMigrations(customMigrationsDir = MIGRATIONS_DIR) {
+    try {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version TEXT PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        );
+      `);
+
+      const files = fs
+        .readdirSync(customMigrationsDir)
+        .filter((f) => f.endsWith('.sql'))
+        .sort();
+
+      const checkStmt = this.db.prepare('SELECT version FROM schema_migrations WHERE version = ?');
+      const insertStmt = this.db.prepare(
+        'INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)'
       );
-    `);
 
-    const files = fs
-      .readdirSync(MIGRATIONS_DIR)
-      .filter((f) => f.endsWith('.sql'))
-      .sort();
+      for (const file of files) {
+        const existing = checkStmt.get(file);
+        if (existing) continue;
 
-    const checkStmt = this.db.prepare('SELECT version FROM schema_migrations WHERE version = ?');
-    const insertStmt = this.db.prepare(
-      'INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)'
-    );
-
-    for (const file of files) {
-      const existing = checkStmt.get(file);
-      if (existing) continue;
-
-      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
-      const applyMigration = this.transaction(() => {
-        this.db.exec(sql);
-        insertStmt.run(file, new Date().toISOString());
-      });
-      applyMigration();
-      logger.info('Applied SQLite migration', { migration: file });
+        const sql = fs.readFileSync(path.join(customMigrationsDir, file), 'utf8');
+        const applyMigration = this.transaction(() => {
+          this.db.exec(sql);
+          insertStmt.run(file, new Date().toISOString());
+        });
+        applyMigration();
+        logger.info('Applied SQLite migration', { migration: file });
+      }
+      this.migrationError = null;
+    } catch (err) {
+      this.migrationError = err?.message || String(err);
+      throw err;
     }
   }
 
@@ -146,30 +154,52 @@ export class SqliteDatabase {
    */
   backupTo(destinationPath) {
     const absDest = path.resolve(destinationPath);
-    fs.mkdirSync(path.dirname(absDest), { recursive: true });
+    const destDir = path.dirname(absDest);
+    fs.mkdirSync(destDir, { recursive: true, mode: 0o700 });
     if (fs.existsSync(absDest)) {
       fs.unlinkSync(absDest);
     }
     const escapedPath = absDest.replace(/'/g, "''");
     this.db.exec(`VACUUM INTO '${escapedPath}';`);
+    fs.chmodSync(absDest, 0o600);
     return absDest;
   }
 
   healthCheck() {
     try {
       if (!this.isOpen) return { ok: false, error: 'database_closed' };
+      if (this.migrationError) {
+        return { ok: false, error: `migration_failed: ${this.migrationError}` };
+      }
       const row = this.db.prepare('SELECT 1 AS ok').get();
       const jm = this.db.prepare('PRAGMA journal_mode;').get();
       const fk = this.db.prepare('PRAGMA foreign_keys;').get();
       const migrations = this.db
         .prepare('SELECT version, applied_at FROM schema_migrations ORDER BY version ASC')
         .all();
+      const journalMode = String(jm?.journal_mode || 'unknown').toLowerCase();
+      const foreignKeys = Number(fk?.foreign_keys ?? 0);
+      const expectedWal = this.dbPath !== ':memory:';
+      const journalOk = expectedWal ? journalMode === 'wal' : true;
+      const fkOk = foreignKeys === 1;
+      const ok = row?.ok === 1 && journalOk && fkOk && migrations.length > 0;
       return {
-        ok: row?.ok === 1,
+        ok,
         journal_mode: jm?.journal_mode || 'unknown',
-        foreign_keys: fk?.foreign_keys ?? 0,
+        foreign_keys: foreignKeys,
         migrationsApplied: migrations.length,
-        latestMigration: migrations.length > 0 ? migrations[migrations.length - 1].version : null
+        latestMigration: migrations.length > 0 ? migrations[migrations.length - 1].version : null,
+        ...(ok
+          ? {}
+          : {
+              error: !journalOk
+                ? `unexpected_journal_mode:${journalMode}`
+                : !fkOk
+                  ? 'foreign_keys_disabled'
+                  : migrations.length === 0
+                    ? 'no_migrations_applied'
+                    : 'health_check_failed'
+            })
       };
     } catch (err) {
       return { ok: false, error: err.message };

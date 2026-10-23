@@ -427,7 +427,11 @@ function getWsAuthQuery() {
     typeof sessionStorage !== 'undefined'
       ? sessionStorage.getItem('lci_session_token') || ''
       : '';
-  if (token && !token.startsWith('UNVERIFIED-') && token !== 'COOKIE_SESSION') {
+  const isSameOrigin =
+    typeof window !== 'undefined' &&
+    window.location?.host &&
+    server_host === window.location.host;
+  if (!isSameOrigin && token && !token.startsWith('UNVERIFIED-') && token !== 'COOKIE_SESSION') {
     return `?token=${encodeURIComponent(token)}`;
   }
   return '';
@@ -2882,23 +2886,32 @@ export function formatReadinessSummary(data) {
         ? 'DEGRADED'
         : (data?.checks?.sqlite || 'unknown');
   const mqttStateRaw = String(data?.mqtt?.state || '').toLowerCase();
+  const subsReady = data?.mqtt?.subscriptions_ready !== false;
   const mqttStatus =
-    mqttStateRaw === 'connected'
-      ? 'Connected'
-      : mqttStateRaw === 'standby' || mqttStateRaw === 'disabled'
-        ? 'Standby'
-        : mqttStateRaw === 'disconnected'
-          ? 'Disconnected'
-          : typeof data?.mqtt?.connected === 'boolean'
-            ? (data.mqtt.connected && data?.mqtt?.enabled !== false
-                ? 'Connected'
-                : (data.mqtt.enabled === false ? 'Standby' : 'Disconnected'))
-            : (data?.checks?.mqtt || 'unknown');
+    data?.mqtt?.enabled === true && data?.mqtt?.connected === true && !subsReady
+      ? 'Subs Degraded'
+      : mqttStateRaw === 'degraded'
+        ? 'Subs Degraded'
+        : mqttStateRaw === 'connected'
+          ? 'Connected'
+          : mqttStateRaw === 'standby' || mqttStateRaw === 'disabled'
+            ? 'Standby'
+            : mqttStateRaw === 'disconnected'
+              ? 'Disconnected'
+              : typeof data?.mqtt?.connected === 'boolean'
+                ? (data.mqtt.connected && data?.mqtt?.enabled !== false
+                    ? (subsReady ? 'Connected' : 'Subs Degraded')
+                    : (data.mqtt.enabled === false ? 'Standby' : 'Disconnected'))
+                : (data?.checks?.mqtt || 'unknown');
   const isDegraded =
     data?.ok === false ||
     data?.status === 'degraded' ||
+    (data?.status !== undefined && data?.status !== 'ready') ||
     data?.sqlite?.ok === false ||
-    (data?.mqtt?.enabled === true && data?.mqtt?.connected === false);
+    (data?.mqtt?.enabled === true && data?.mqtt?.connected !== true) ||
+    (data?.mqtt?.enabled === true && data?.mqtt?.subscriptions_ready === false) ||
+    mqttStateRaw === 'disconnected' ||
+    mqttStateRaw === 'degraded';
   const prefix = isDegraded ? 'DEGRADED · ' : '';
   return `${prefix}SQLite: ${sqliteStatus} · MQTT: ${mqttStatus}`;
 }
@@ -2912,7 +2925,11 @@ async function probeBackendReadiness() {
     if (res.ok || res.status === 503) {
       httpApiReachable = true;
       lastHttpApiSuccessTimestamp = Date.now();
-      lastBackendReadySummary = formatReadinessSummary(data);
+      const effectivePayload =
+        res.status === 503 && (!data || typeof data !== 'object' || data.ok !== false)
+          ? { ...(data && typeof data === 'object' ? data : {}), ok: false, status: 'degraded' }
+          : data;
+      lastBackendReadySummary = formatReadinessSummary(effectivePayload);
     } else {
       lastBackendReadySummary = `HTTP ${res.status}`;
     }

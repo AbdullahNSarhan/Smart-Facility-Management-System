@@ -110,7 +110,7 @@ npm run preview
 ```
 
 - `npm run lint` runs `node --check` on `app.js` and the backend modules.
-- `npm test` runs the 21-test Node.js integration and contract suite (`backend/test/backend.test.js`).
+- `npm test` runs the 28-test Node.js integration, security, rollback, and contract suite (`backend/test/backend.test.js`).
 - `npm run build` generates the production static bundle in `dist/`.
 - `npm run preview` serves the production build locally.
 
@@ -274,9 +274,9 @@ The following table documents the verified HTTP and WebSocket interface between 
 | Method | Route | Purpose & contract |
 |---|---|---|
 | `GET` | `/api/health/live` | Process liveness probe. Returns HTTP `200` (`{ ok: true, status: "live" }`) while the Node.js process is alive, independent of MQTT connectivity. Used by the Docker `backend` container healthcheck. |
-| `GET` | `/api/health/ready` | Operational readiness probe. Evaluates SQLite health (`sqlite.ok`, `sqlite.journal_mode`) and MQTT state (`mqtt.enabled`, `mqtt.connected`, `mqtt.state`). Returns HTTP `200` (`status: "ready"`) when SQLite is healthy and MQTT is either connected (`state: "connected"`) or intentionally disabled via `MQTT_ENABLED=false` (`state: "standby"`). Returns HTTP `503` (`status: "degraded"`) if SQLite fails or if MQTT is enabled (`MQTT_ENABLED=true`) while disconnected (`state: "disconnected"`). |
+| `GET` | `/api/health/ready` | Operational readiness probe. Evaluates SQLite health (`sqlite.ok`, `sqlite.journal_mode`, `sqlite.foreign_keys`) and MQTT state (`mqtt.enabled`, `mqtt.connected`, `mqtt.subscriptions_ready`, `mqtt.state`). Returns HTTP `200` (`status: "ready"`) when SQLite is healthy and MQTT is either connected with verified topic subscriptions (`state: "connected"`, `subscriptions_ready: true`) or intentionally disabled via `MQTT_ENABLED=false` (`state: "standby"`). Returns HTTP `503` (`status: "degraded"`) if SQLite fails, if MQTT is enabled while disconnected, or if required MQTT subscriptions fail (`subscriptions_ready: false`). |
 | `POST` | `/api/auth/login` | Body: `{ "username": "...", "password": "..." }`. Sets an `HttpOnly; SameSite=Strict` session cookie (`lci_sid`), returns `csrfToken`, `role`, `username`, and (when `ALLOW_BEARER_COMPAT=true`) `token`. HTTP 401/403 means credentials are rejected. |
-| `POST` | `/api/auth/logout` | Revokes the active server-side session in SQLite, clears the session cookie, and terminates associated WebSocket streams. |
+| `POST` | `/api/auth/logout` | Revokes the active server-side session in SQLite (requires valid `X-CSRF-Token` when cookie-authenticated), clears the session cookie, and terminates associated WebSocket streams. |
 | `GET` | `/api/auth/session` | Validates the active cookie or Bearer session and returns operator identity, `role`, and `csrfToken`. |
 | `GET` | `/api/logs/access_logs` | Returns access log rows (requires authenticated Viewer or Admin session). |
 | `GET` | `/api/logs/camera_events` | Returns camera-event rows (requires authenticated Viewer or Admin session). |
@@ -290,7 +290,7 @@ The following table documents the verified HTTP and WebSocket interface between 
 | `POST` | `/api/users/role` | Updates target user role (`Admin` or `Viewer`) and revokes existing sessions for that user. |
 | `POST` | `/api/users/delete` | Body: `{ "id": <userId> }`. Deletes the target operator (preventing self-deletion or deleting the last Admin) and revokes their sessions. |
 
-Authenticated requests use the `HttpOnly` session cookie (`lci_sid`) in same-origin deployments and include `X-CSRF-Token` on all state-changing requests (`POST`/`PUT`/`PATCH`/`DELETE`), with optional `Authorization: Bearer <token>` support when `ALLOW_BEARER_COMPAT=true`. The Node.js backend validates the session and independently authorizes every protected operation. Frontend checks are not an authorization boundary.
+Authenticated requests use the `HttpOnly` session cookie (`lci_sid`) in same-origin deployments and include `X-CSRF-Token` on all state-changing requests (`POST`/`PUT`/`PATCH`/`DELETE`), with optional `Authorization: Bearer <token>` support when `ALLOW_BEARER_COMPAT=true` (disabled by default in production). The Node.js backend validates the session and independently authorizes every protected operation. Frontend checks are not an authorization boundary.
 
 ### Hardware command values
 
@@ -366,7 +366,7 @@ The root `docker-compose.yml` deploys the three core appliance services (`fronte
 
 1. Build the static frontend with `npm run build` (handled automatically in a Node.js 24 container by `install.sh` and `update.sh`).
 2. `frontend_dashboard` mounts only `./dist:/usr/share/nginx/html:ro` and `./nginx/nginx.conf:/etc/nginx/nginx.conf:ro`. Markdown architecture documents, `.env` files, SQLite databases, and source files are never mounted into Nginx.
-3. `backend` uses `GET /api/health/live` for its Docker container health check so `frontend_dashboard` can start even if the MQTT broker is restarting, while `install.sh`, `update.sh`, CI, and View 5 query `GET /api/health/ready` to verify operational readiness (SQLite WAL + MQTT connectivity).
+3. `backend` uses `GET /api/health/live` for its Docker container health check so `frontend_dashboard` can start even if the MQTT broker is restarting, while `install.sh`, `update.sh`, CI, and View 5 query `GET /api/health/ready` to verify operational readiness (SQLite WAL + MQTT connectivity and subscriptions).
 4. Keep `FRONTEND_BIND_IP` and `MQTT_BIND_IP` bound to `127.0.0.1` for local loopback testing, or bind them explicitly to the server's static private LAN IP when LAN access is required and host firewall rules (`DOCKER-USER`) are in place.
 5. The Python/OpenCV vision service (`lci_sfm_docker_deployment_architecture.md`) and ESP32 node firmware are deployed separately from the 3-service `docker-compose.yml`.
 
@@ -386,9 +386,9 @@ The root `docker-compose.yml` deploys the three core appliance services (`fronte
 ### Implemented in the Node.js backend (`backend/src/`)
 
 - **Time-bucketed environment aggregation (`GET /api/telemetry/aggregate`):** Supports `range` (`1h`, `6h`, `24h`, `7d`) and `bucket` (`1m`, `5m`, `15m`, `1h`) over `environmental_telemetry`.
-- **Liveness vs. Readiness separation (`GET /api/health/live`, `GET /api/health/ready`):** `/api/health/live` returns HTTP `200` while the backend process is responsive. `/api/health/ready` reports `sqlite` (`ok`, `journal_mode`, `foreign_keys`) and `mqtt` (`enabled`, `connected`, `state`), returning HTTP `200` when SQLite is healthy and MQTT is connected (or `state: "standby"` when `MQTT_ENABLED=false`), and HTTP `503` (`status: "degraded"`) when SQLite fails or an enabled MQTT broker is disconnected. Surfaced in View 5 (`#diag-ready-state`).
+- **Liveness vs. Readiness separation (`GET /api/health/live`, `GET /api/health/ready`):** `/api/health/live` returns HTTP `200` while the backend process is responsive. `/api/health/ready` reports `sqlite` (`ok`, `journal_mode`, `foreign_keys`) and `mqtt` (`enabled`, `connected`, `subscriptions_ready`, `state`), returning HTTP `200` when SQLite is healthy and MQTT is connected with verified topic subscriptions (or `state: "standby"` when `MQTT_ENABLED=false`), and HTTP `503` (`status: "degraded"`) when SQLite fails, an enabled MQTT broker is disconnected, or subscriptions fail (`Subs Degraded`). Surfaced in View 5 (`#diag-ready-state`).
 - **Password & PIN hashing (`backend/src/utils/crypto.js`):** Uses Node's `crypto.scryptSync` (`scrypt$N$r$p$salt$key`) with timing-safe verification. Plaintext passwords, PINs, and hashes are never returned by `/api/logs/system_users`.
-- **Session & CSRF protection (`backend/src/middleware/auth.js`):** Issues `HttpOnly; SameSite=Strict` session cookies (`lci_sid`), enforces `X-CSRF-Token` on cookie-authenticated mutations, and supports `Authorization: Bearer <token>` compatibility.
+- **Session & CSRF protection (`backend/src/middleware/auth.js`):** Issues `HttpOnly; SameSite=Strict` session cookies (`lci_sid`), enforces `X-CSRF-Token` on cookie-authenticated mutations (including when a request also carries an `Authorization: Bearer` header), and disables Bearer/query-token compatibility by default in production.
 
 ### Remaining hardware / architectural boundaries
 
@@ -402,12 +402,14 @@ The root `docker-compose.yml` deploys the three core appliance services (`fronte
 
 ```bash
 npm ci --no-audit --no-fund
+npm --prefix backend ci --no-audit --no-fund
 npm run lint
 npm test
+npm --prefix backend test
 npm run build
 ```
 
-These install deterministic dependencies from `package-lock.json`, verify JavaScript syntax across frontend and backend files, run the 21 automated backend API/WebSocket/RBAC/CSRF/readiness/frontend-contract tests, and build the production bundle in `dist/`.
+These install deterministic dependencies from `package-lock.json` and `backend/package-lock.json`, verify JavaScript syntax across frontend and backend files, run the 28 automated backend API/WebSocket/RBAC/CSRF/readiness/rollback/frontend-contract tests, and build the production bundle in `dist/`.
 
 For a deployed Docker Compose stack, check health using the configured `FRONTEND_BIND_IP` (which defaults to `127.0.0.1` in `.env.example`, or the server's LAN IP when deployed via `install.sh`):
 

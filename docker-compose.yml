@@ -33,6 +33,7 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - HOST=0.0.0.0
+      - TRUST_PROXY=1
       - SQLITE_DB_PATH=/app/data/lci_sfm.db
       - MQTT_BROKER_URL=mqtt://mqtt-service:1883
       - SERVE_FRONTEND=false
@@ -45,7 +46,7 @@ services:
       - lci_internal_net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health/live', { signal: AbortSignal.timeout(3000) }).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 15s
       timeout: 4s
       retries: 3

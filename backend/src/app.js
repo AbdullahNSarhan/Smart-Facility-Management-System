@@ -47,13 +47,16 @@ export function createBackendContext(configOverrides = {}) {
     config,
     repo,
     wsGateway,
-    commandCoordinator
+    commandCoordinator,
+    dnsLookup: configOverrides.dnsLookup,
+    mqttConnect: configOverrides.mqttConnect
   });
 
   commandCoordinator.setMqttService(mqttService);
 
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', config.trustProxy);
   app.use(requestContextMiddleware);
   app.use(securityHeadersMiddleware(config));
   app.use(express.json({ limit: '64kb' }));

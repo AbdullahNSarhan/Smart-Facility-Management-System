@@ -65,6 +65,7 @@ export function securityHeadersMiddleware(config) {
 export function createRateLimiter({
   windowMs = 60 * 1000,
   maxRequests = 15,
+  maxEntries = 5000,
   keyPrefix = 'rl',
   message = 'Too many requests, please retry after cooldown window.'
 } = {}) {
@@ -75,23 +76,27 @@ export function createRateLimiter({
     const ip = req.ip || req.socket?.remoteAddress || 'unknown';
     const usernamePart =
       req.body && typeof req.body.username === 'string'
-        ? `:${req.body.username.trim().toLowerCase()}`
+        ? `:${req.body.username.trim().toLowerCase().slice(0, 64)}`
         : '';
     const key = `${keyPrefix}:${ip}${usernamePart}`;
 
     let entry = buckets.get(key);
     if (!entry || now >= entry.resetAt) {
+      if (buckets.size >= maxEntries) {
+        for (const [k, v] of buckets.entries()) {
+          if (now >= v.resetAt) buckets.delete(k);
+        }
+        while (buckets.size >= maxEntries) {
+          const oldestKey = buckets.keys().next().value;
+          if (oldestKey === undefined) break;
+          buckets.delete(oldestKey);
+        }
+      }
       entry = { count: 0, resetAt: now + windowMs };
       buckets.set(key, entry);
     }
 
     entry.count += 1;
-
-    if (buckets.size > 5000) {
-      for (const [k, v] of buckets.entries()) {
-        if (now >= v.resetAt) buckets.delete(k);
-      }
-    }
 
     const remaining = Math.max(0, maxRequests - entry.count);
     res.setHeader('X-RateLimit-Limit', String(maxRequests));

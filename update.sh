@@ -12,7 +12,9 @@ log() { printf '\n[LCI-SFM] %s\n' "$*"; }
 warn() { printf '[LCI-SFM] WARNING: %s\n' "$*" >&2; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-[[ $EUID -eq 0 ]] || die "Run with sudo: sudo $PROJECT_DIR/update.sh"
+if [[ "${LCI_SKIP_ROOT_CHECK:-0}" != "1" && $EUID -ne 0 ]]; then
+  die "Run with sudo: sudo $PROJECT_DIR/update.sh"
+fi
 [[ -d .git ]] || die "This directory is not a Git checkout."
 for cmd in git docker curl flock mktemp python3; do
   have "$cmd" || die "Required command is missing: $cmd"
@@ -24,9 +26,13 @@ docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required."
 [[ -f mosquitto/acl && -f mosquitto/mosquitto.conf ]] || die "Mosquitto configuration is incomplete."
 [[ -f docker-compose.yml && -f nginx/nginx.conf && -f backend/Dockerfile ]] || die "One or more required deployment files are missing."
 
-# Prevent two update runs from racing over Git, the database, or Docker Compose.
-exec 9>/run/lock/lci-sfm-update.lock
-flock -n 9 || die "Another LCI-SFM update appears to be running."
+# Prevent concurrent install.sh or update.sh runs from racing over Git, SQLite, or Docker Compose.
+LOCK_DIR="/var/lock"
+[[ -d "$LOCK_DIR" ]] || LOCK_DIR="/run/lock"
+[[ -d "$LOCK_DIR" ]] || LOCK_DIR="/tmp"
+DEPLOY_LOCK_FILE="${LCI_DEPLOY_LOCK_FILE:-$LOCK_DIR/lci-sfm-deploy.lock}"
+exec 9>"$DEPLOY_LOCK_FILE"
+flock -n 9 || die "Another LCI-SFM install or update operation appears to be running (lock: $DEPLOY_LOCK_FILE)."
 
 if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
   git status --short >&2
@@ -40,6 +46,7 @@ git fetch --prune origin "$BRANCH" || die "Could not fetch origin/$BRANCH. Check
 git show-ref --verify --quiet "refs/remotes/origin/$BRANCH" || die "Remote branch origin/$BRANCH was not found."
 
 CURRENT_FULL="$(git rev-parse HEAD)"
+PREV_COMMIT="$CURRENT_FULL"
 REMOTE_FULL="$(git rev-parse "origin/$BRANCH")"
 CURRENT_SHORT="$(git rev-parse --short "$CURRENT_FULL")"
 REMOTE_SHORT="$(git rev-parse --short "$REMOTE_FULL")"
@@ -58,17 +65,40 @@ log "Testing the candidate commit in an isolated temporary worktree before chang
 
 TMP_DIR="$(mktemp -d /tmp/lci-sfm-update.XXXXXX)"
 TEST_TREE="$TMP_DIR/source"
-PREVIOUS_INDEX_BACKUP="$TMP_DIR/previous-index.html"
+PREVIOUS_DIST_BACKUP="$TMP_DIR/previous-dist"
 WORKTREE_ADDED=0
-HAD_PREVIOUS_INDEX=0
+HAD_PREVIOUS_DIST=0
 FRONTEND_ARTIFACT_PUBLISHED=0
+GIT_FAST_FORWARDED=0
+COMPOSE_DEPLOY_STARTED=0
+UPDATE_SUCCEEDED=0
+
 cleanup() {
   local rc=$?
-  if [[ "$rc" -ne 0 && "${FRONTEND_ARTIFACT_PUBLISHED:-0}" -eq 1 &&
-        "${HAD_PREVIOUS_INDEX:-0}" -eq 1 &&
-        -s "${PREVIOUS_INDEX_BACKUP:-/nonexistent}" ]]; then
-    install -m 0644 "$PREVIOUS_INDEX_BACKUP" "$PROJECT_DIR/dist/index.html" || true
-    warn "Restored the previous frontend index after a failed deployment check."
+  if [[ "$rc" -ne 0 && "${UPDATE_SUCCEEDED:-0}" -ne 1 ]]; then
+    if [[ "${FRONTEND_ARTIFACT_PUBLISHED:-0}" -eq 1 && "${HAD_PREVIOUS_DIST:-0}" -eq 1 && -d "${PREVIOUS_DIST_BACKUP:-/nonexistent}" ]]; then
+      rm -rf -- "$PROJECT_DIR/dist"
+      cp -a -- "$PREVIOUS_DIST_BACKUP" "$PROJECT_DIR/dist" || true
+      chmod 755 "$PROJECT_DIR/dist" || true
+      find "$PROJECT_DIR/dist" -type d -exec chmod 755 {} + 2>/dev/null || true
+      find "$PROJECT_DIR/dist" -type f -exec chmod 644 {} + 2>/dev/null || true
+      warn "Restored the complete previous dist/ directory after a failed deployment check."
+    fi
+    if [[ "${GIT_FAST_FORWARDED:-0}" -eq 1 && -n "${PREV_COMMIT:-}" ]]; then
+      if [[ -z "$(git -C "$PROJECT_DIR" status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
+        git -C "$PROJECT_DIR" reset --hard "$PREV_COMMIT" >/dev/null 2>&1 || true
+        warn "Rolled back Git working tree to previous commit $CURRENT_SHORT ($PREV_COMMIT) so a retry will not falsely report Already up to date."
+      else
+        warn "Skipped automatic Git rewind because local modifications were detected after merge; inspect git status."
+      fi
+    fi
+    if [[ "${COMPOSE_DEPLOY_STARTED:-0}" -eq 1 ]]; then
+      warn "Redeploying previous known-good container state after deployment check failure..."
+      docker compose up -d --build >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${BACKUP_PATH:-}" && -s "${BACKUP_PATH:-/nonexistent}" ]]; then
+      warn "Verified pre-update SQLite backup preserved at: $BACKUP_PATH"
+    fi
   fi
   if [[ "$WORKTREE_ADDED" -eq 1 ]]; then
     git -C "$PROJECT_DIR" worktree remove --force "$TEST_TREE" >/dev/null 2>&1 || true
@@ -140,23 +170,27 @@ else
 fi
 
 # Keep the existing Mosquitto UID/GID and least-privilege file modes.
-chown 1883:1883 mosquitto/passwd mosquitto/acl || die "Could not set Mosquitto file ownership."
+if [[ "${LCI_SKIP_ROOT_CHECK:-0}" != "1" ]]; then
+  chown 1883:1883 mosquitto/passwd mosquitto/acl || die "Could not set Mosquitto file ownership."
+fi
 chmod 600 mosquitto/passwd mosquitto/acl || die "Could not set Mosquitto file permissions."
 
-# Keep the previous index so the error trap can restore it if a later deployment
-# check fails. Old content-hashed assets are retained, so the previous index remains usable.
-if [[ -s "$PROJECT_DIR/dist/index.html" ]]; then
-  cp -p "$PROJECT_DIR/dist/index.html" "$PREVIOUS_INDEX_BACKUP"
-  HAD_PREVIOUS_INDEX=1
+# Preserve the entire previous dist/ directory so the error trap can restore all assets
+# and index.html if any post-merge deployment or readiness check fails.
+if [[ -d "$PROJECT_DIR/dist" ]]; then
+  cp -a -- "$PROJECT_DIR/dist" "$PREVIOUS_DIST_BACKUP"
+  HAD_PREVIOUS_DIST=1
 fi
 
 log "Fast-forwarding the deployment checkout to $REMOTE_SHORT."
 git merge --ff-only "$REMOTE_FULL" || die "Fast-forward failed. No reset was attempted."
+GIT_FAST_FORWARDED=1
 
 # The frontend is served from a bind-mounted dist/ directory; Compose does not build it.
 # Publish the exact dist/ artifact produced by the candidate build, copying index.html last
 # so users continue to receive the previous entry point until all new assets are present.
 log "Publishing the tested frontend build artifact."
+FRONTEND_ARTIFACT_PUBLISHED=1
 mkdir -p "$PROJECT_DIR/dist"
 # umask 077 is intentional for secrets, but the static asset tree must be
 # traversable/readable by the unprivileged Nginx worker.
@@ -164,35 +198,39 @@ chmod 755 "$PROJECT_DIR/dist"
 shopt -s dotglob nullglob
 for artifact in "$TEST_TREE/dist"/*; do
   [[ "${artifact##*/}" == "index.html" ]] && continue
+  rm -rf -- "$PROJECT_DIR/dist/${artifact##*/}"
   cp -a -- "$artifact" "$PROJECT_DIR/dist/"
 done
 shopt -u dotglob nullglob
 find "$PROJECT_DIR/dist" -type d -exec chmod 755 {} +
 find "$PROJECT_DIR/dist" -type f -exec chmod 644 {} +
 install -m 0644 "$TEST_TREE/dist/index.html" "$PROJECT_DIR/dist/index.html" || die "Could not publish the tested frontend index. Database backup: $BACKUP_PATH"
-FRONTEND_ARTIFACT_PUBLISHED=1
 
 log "Rebuilding and recreating services. Persistent Docker volumes will not be removed."
+COMPOSE_DEPLOY_STARTED=1
 docker compose up -d --build || {
   docker compose ps >&2 || true
   docker compose logs --tail=120 >&2 || true
   die "Docker Compose deployment failed. Database backup: $BACKUP_PATH"
 }
 
-log "Waiting up to 90 seconds for backend operational readiness (/api/health/ready: SQLite + MQTT)."
+READINESS_TIMEOUT_SEC="${LCI_READINESS_TIMEOUT_SEC:-90}"
+READINESS_POLL_SEC="${LCI_READINESS_POLL_SEC:-3}"
+log "Waiting up to ${READINESS_TIMEOUT_SEC} seconds for backend operational readiness (/api/health/ready: SQLite + MQTT)."
 READY=0
-for _ in $(seq 1 30); do
-  if docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))" >/dev/null 2>&1; then
+DEADLINE=$((SECONDS + READINESS_TIMEOUT_SEC))
+while (( SECONDS < DEADLINE )); do
+  if docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/ready', { signal: AbortSignal.timeout(5000) }).then(async r => { if (r.status !== 200) process.exit(1); const d = await r.json(); const sqlOk = d?.sqlite?.ok === true; const mqttOk = d?.mqtt?.enabled === false ? d?.mqtt?.state === 'standby' : (d?.mqtt?.connected === true && d?.mqtt?.subscriptions_ready !== false && d?.mqtt?.state === 'connected'); process.exit(d?.ok === true && d?.status === 'ready' && sqlOk && mqttOk ? 0 : 1); }).catch(() => process.exit(1))" >/dev/null 2>&1; then
     READY=1
     break
   fi
-  sleep 3
+  sleep "$READINESS_POLL_SEC"
 done
 if [[ "$READY" -ne 1 ]]; then
-  printf '\nBackend readiness check timed out after 90 seconds. Last readiness payload:\n' >&2
-  docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/ready').then(async r => console.error(await r.text())).catch(e => console.error(e.message))" >&2 || true
+  printf '\nBackend readiness check timed out after %s seconds. Last readiness payload:\n' "$READINESS_TIMEOUT_SEC" >&2
+  docker compose exec -T backend node -e "fetch('http://127.0.0.1:3000/api/health/ready', { signal: AbortSignal.timeout(5000) }).then(async r => console.error(await r.text())).catch(e => console.error(e.message))" >&2 || true
   docker compose logs --tail=150 backend mqtt-service >&2 || true
-  die "Backend readiness check failed. Previous frontend index restored if applicable, and the database backup remains at $BACKUP_PATH; automatic database restore was intentionally not attempted."
+  die "Backend readiness check failed. Previous dist/ and Git commit ($CURRENT_SHORT) will be restored automatically, and the database backup remains at $BACKUP_PATH; automatic database restore was intentionally not attempted."
 fi
 
 FRONTEND_BIND_IP="$(sed -n 's/^FRONTEND_BIND_IP=//p' .env | tail -n1)"
@@ -203,8 +241,27 @@ if ! curl --connect-timeout 3 --max-time 10 --retry 3 --retry-delay 2 -fsS \
   docker compose logs --tail=150 frontend_dashboard backend >&2 || true
   die "Frontend HTTP check failed. Database backup remains at $BACKUP_PATH."
 fi
-if ! curl --connect-timeout 3 --max-time 10 --retry 3 --retry-delay 2 -fsS \
-  "http://$FRONTEND_BIND_IP/api/health/ready" -o /dev/null; then
+
+READY_JSON="$(curl --connect-timeout 3 --max-time 10 --retry 3 --retry-delay 2 -fsS \
+  "http://$FRONTEND_BIND_IP/api/health/ready" || true)"
+if [[ -z "$READY_JSON" ]] || ! python3 - "$READY_JSON" <<'PYREADY'
+import json, sys
+data = json.loads(sys.argv[1])
+sql_ok = data.get("sqlite", {}).get("ok") is True
+mqtt = data.get("mqtt", {})
+mqtt_ok = (
+    mqtt.get("state") == "standby"
+    if mqtt.get("enabled") is False
+    else (
+        mqtt.get("connected") is True
+        and mqtt.get("subscriptions_ready") is not False
+        and mqtt.get("state") == "connected"
+    )
+)
+if data.get("ok") is not True or data.get("status") != "ready" or not sql_ok or not mqtt_ok:
+    raise SystemExit(1)
+PYREADY
+then
   docker compose logs --tail=150 frontend_dashboard backend mqtt-service >&2 || true
   die "Reverse-proxied readiness check failed at http://$FRONTEND_BIND_IP/api/health/ready. Database backup remains at $BACKUP_PATH."
 fi
@@ -216,6 +273,7 @@ for service in mqtt-service backend frontend_dashboard; do
   fi
 done
 
+UPDATE_SUCCEEDED=1
 log "Deployment checks passed."
 printf '\n============================================================\n'
 printf 'LCI-SFM update completed successfully\n'
@@ -228,5 +286,5 @@ docker compose ps
 printf '\nSafety notes:\n'
 printf -- '- No Docker volumes were deleted.\n'
 printf -- '- .env and MQTT credentials were kept local.\n'
-printf -- '- No git reset/clean or automatic database restore was used.\n'
-printf -- '- If a post-deployment check fails, inspect logs and use the backup/recovery procedure; application/schema rollback is not automatic.\n'
+printf -- '- Automatic database overwrite was not used; pre-update backup is preserved at %s.\n' "$BACKUP_PATH"
+printf -- '- If a post-merge deployment check fails, update.sh automatically restores the previous dist/ bundle, rewinds the clean checkout to %s, and redeploys the previous containers while keeping the database backup intact.\n' "$CURRENT_SHORT"

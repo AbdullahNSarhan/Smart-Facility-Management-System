@@ -381,7 +381,7 @@ curl -fsS http://<SERVER_LAN_IP>/api/health/live
 curl -fsS http://<SERVER_LAN_IP>/api/health/ready
 ```
 
-The liveness response (`/api/health/live`) returns HTTP `200` (`ok: true`, `status: "live"`) whenever the Node.js process is responsive. The readiness response (`/api/health/ready`) returns HTTP `200` (`ok: true`, `status: "ready"`) only when SQLite is healthy (`sqlite.ok: true`, `journal_mode: "wal"`) **and** MQTT satisfies the configured readiness policy (`mqtt.connected: true`, `mqtt.state: "connected"` when `MQTT_ENABLED=true`, or `mqtt.state: "standby"` when `MQTT_ENABLED=false`). If SQLite fails or an enabled MQTT broker is disconnected, `/api/health/ready` returns HTTP `503` (`ok: false`, `status: "degraded"`).
+The liveness response (`/api/health/live`) returns HTTP `200` (`ok: true`, `status: "live"`) whenever the Node.js process is responsive. The readiness response (`/api/health/ready`) returns HTTP `200` (`ok: true`, `status: "ready"`) only when SQLite is healthy (`sqlite.ok: true`, `journal_mode: "wal"`, `foreign_keys: 1`) **and** MQTT satisfies the configured readiness policy (`mqtt.connected: true`, `mqtt.subscriptions_ready: true`, `mqtt.state: "connected"` when `MQTT_ENABLED=true`, or `mqtt.state: "standby"` when `MQTT_ENABLED=false`). If SQLite fails, an enabled MQTT broker is disconnected, or required topic subscriptions fail (`subscriptions_ready: false`), `/api/health/ready` returns HTTP `503` (`ok: false`, `status: "degraded"`).
 
 Then verify manually:
 1. Open `http://<SERVER_LAN_IP>/` from an authorized client.
@@ -432,7 +432,7 @@ Replace `<BACKUP_FILE>.db` with the actual backup filename. Verify readiness, lo
 
 ## 13. Updating the deployment
 
-For production installations deployed at `/opt/lci-sfm`, run the guarded updater script, which validates the candidate commit in a temporary worktree, creates and verifies an online SQLite backup (`PRAGMA integrity_check`), publishes the tested `dist/` bundle, recreates the containers, and polls `/api/health/ready`:
+For production installations deployed at `/opt/lci-sfm`, run the guarded updater script, which acquires the shared lock (`/var/lock/lci-sfm-deploy.lock`), validates the candidate commit in a temporary worktree, creates and verifies an online SQLite backup (`PRAGMA integrity_check` + `system_users` schema check), backs up the full `dist/` directory, publishes the tested `dist/` bundle, recreates the containers, and polls `/api/health/ready` (`ok: true`, `status: "ready"`, `sqlite.ok: true`, `mqtt.connected: true`, `mqtt.subscriptions_ready: true`):
 
 ```bash
 sudo /opt/lci-sfm/update.sh
@@ -445,8 +445,10 @@ cd /opt/lci-sfm
 git status --short
 git pull --ff-only
 npm ci --no-audit --no-fund
+npm --prefix backend ci --no-audit --no-fund
 npm run lint
 npm test
+npm --prefix backend test
 npm run build
 docker compose config -q
 docker compose up -d --build
@@ -455,7 +457,7 @@ docker compose ps
 
 Inspect changes to `.env.example`, database migrations, Compose, Nginx, MQTT ACLs, and firmware topics before deploying. Keep local `.env` and `mosquitto/passwd` private. Never run `docker compose down -v` during routine upgrades; it can delete persistent volumes.
 
-If an update fails, capture service logs, preserve the database and backups, and roll back to a reviewed Git commit. Avoid destructive reset commands on a host with local configuration/data.
+If a post-merge step in `update.sh` fails, the script's recovery trap restores the previous `dist/` directory, rewinds the Git checkout to the previous commit (`PREV_COMMIT`) when the working tree is clean, and attempts to re-bring up the previous containers while preserving the pre-update database backup in `/opt/lci-sfm/backups/`. Always capture service logs and verify database state before re-attempting an upgrade.
 
 ## 14. Troubleshooting
 

@@ -1,6 +1,6 @@
 {
-  "summary":  "Final release hardening and verification plan for LCI-SFM covering strict liveness vs. readiness semantics (including MQTT connectivity and standby states), installer/updater operational readiness polling, documentation and LAN verification alignment, and expanded regression test coverage.",
-  "updatedAt":  "2026-10-23T20:13:29.885321479Z",
+  "summary":  "Plan to resolve the EAI_AGAIN MQTT DNS retry log warning captured by the runtime error monitor during test/preview runs while preserving strict health-check and readiness reporting.",
+  "updatedAt":  "2026-10-23T21:07:40.353433285Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

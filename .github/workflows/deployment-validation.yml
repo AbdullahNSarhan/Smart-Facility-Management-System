@@ -41,6 +41,8 @@ jobs:
           test "$(git ls-files -s -- update.sh | awk '{print $1}')" = "100755"
           bash -n install.sh update.sh
           test -f .env.example
+          test -f .dockerignore
+          test -f backend/.dockerignore
           test -f package-lock.json
           test -f backend/package-lock.json
           test -f docker-compose.yml
@@ -55,14 +57,18 @@ jobs:
             fi
           done
 
-      - name: Install frontend dependencies
-        run: npm ci --no-audit --no-fund
+      - name: Install frontend and backend dependencies
+        run: |
+          npm ci --no-audit --no-fund
+          npm --prefix backend ci --no-audit --no-fund
 
       - name: Run lint
         run: npm run lint
 
-      - name: Run automated tests
-        run: npm test
+      - name: Run automated tests (root and backend)
+        run: |
+          npm test
+          npm --prefix backend test
 
       - name: Build frontend
         run: npm run build
@@ -153,6 +159,7 @@ jobs:
               or data.get("status") != "ready"
               or data.get("sqlite", {}).get("ok") is not True
               or data.get("mqtt", {}).get("connected") is not True
+              or data.get("mqtt", {}).get("subscriptions_ready") is not True
               or data.get("mqtt", {}).get("state") != "connected"
           ):
               raise SystemExit(f"Backend readiness/SQLite/MQTT check failed: {data!r}")

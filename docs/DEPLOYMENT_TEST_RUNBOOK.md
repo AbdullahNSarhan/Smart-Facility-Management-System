@@ -35,7 +35,7 @@ Then run the guarded updater:
 sudo /opt/lci-sfm/update.sh
 ```
 
-If the test server is already at the exact remote commit, the updater intentionally exits without rebuilding or restarting anything. After merging a new commit, it should test that candidate in a temporary worktree, verify Compose configuration, create and check a SQLite backup, fast-forward the checkout, publish the tested `dist/` build, redeploy, and check readiness and the dashboard URL.
+If the test server is already at the exact remote commit, the updater intentionally exits without rebuilding or restarting anything. After merging a new commit, it acquires the shared lock (`/var/lock/lci-sfm-deploy.lock`), tests that candidate in a temporary worktree (`npm ci`, `npm --prefix backend ci`, `npm run lint`, `npm test`, `npm --prefix backend test`, `npm run build`), verifies Compose configuration, creates and checks a SQLite backup, backs up the existing `dist/` directory, fast-forwards the checkout, publishes the tested `dist/` build, redeploys, and checks readiness (`ok: true`, `status: "ready"`, `sqlite.ok: true`, `mqtt.connected: true`, `mqtt.subscriptions_ready: true`) and the dashboard URL.
 
 After a successful update, manually log in to the dashboard and confirm that expected test data is present. If your test setup includes MQTT devices, check broker authentication and actual device telemetry separately; a healthy SQLite/API endpoint is not proof that physical devices are connected.
 
@@ -50,9 +50,9 @@ docker compose logs --tail=150 backend mqtt-service frontend_dashboard
 ls -lah backups/
 ```
 
-Do **not** run `docker compose down -v`, `git clean`, or a casual `git reset --hard`. These can remove persistent data or local files. The updater prints the backup path when it has created one. Preserve that file and run an SQLite integrity check before relying on it.
+Do **not** run `docker compose down -v`, `git clean`, or an unreviewed `git reset --hard`. These can remove persistent data or local files. The updater prints the backup path when it has created one. Preserve that file and run an SQLite integrity check before relying on it.
 
-After a failure that happens after the new frontend entry point was published, the script attempts to restore the previous `dist/index.html`; it retains old content-hashed assets for that purpose. This is not a full application rollback: the Git checkout is not automatically rewound and the database is not automatically restored. Database migrations may have changed the schema, so code and database rollback must be planned together. Test restore procedures on an isolated copy of the test database before using them for recovery.
+If a failure happens after the candidate commit was merged or after the new `dist/` bundle was published, `update.sh`'s recovery trap automatically restores the full previous `dist/` directory backup, rewinds the Git checkout to the previous commit (`PREV_COMMIT`) when HEAD is still at the candidate commit and the working tree has no local edits, and attempts to re-bring up the previous container definitions (`docker compose up -d --build`). The live SQLite database is not automatically overwritten during rollback because new migrations may have executed; the verified pre-update backup (`backups/lci_sfm_pre_update_*.db`) is preserved on disk so operators can inspect and restore it explicitly if needed.
 
 ## Before using the main server
 

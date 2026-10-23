@@ -50,6 +50,7 @@ describe('LCI-SFM Production Node.js Backend Integration Suite', () => {
       NODE_ENV: 'test',
       PORT: 0,
       HOST: '127.0.0.1',
+      TRUST_PROXY: 'false',
       SQLITE_DB_PATH: dbPath,
       MQTT_ENABLED: 'false',
       ALLOW_BEARER_COMPAT: 'true',
@@ -785,6 +786,702 @@ describe('LCI-SFM Production Node.js Backend Integration Suite', () => {
     const jsIds = [...new Set([...js.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]))];
     const missingIds = jsIds.filter((id) => !seen.has(id));
     assert.deepEqual(missingIds, [], `Missing DOM IDs referenced by app.js: ${missingIds.join(', ')}`);
+  });
+
+  // --------------------------------------------------------------------------
+  // 9. SECURITY HARDENING: COOKIE+BEARER CSRF BYPASS, IDLE/ABS EXPIRY, RATE LIMIT
+  // --------------------------------------------------------------------------
+  it('blocks CSRF bypass when a valid session cookie is sent alongside an invalid or valid Bearer header', async () => {
+    // Re-authenticate as sfm_chief_admin to get fresh cookie, token, and csrfToken
+    const loginRes = await request(ctx.app)
+      .post('/api/auth/login')
+      .send({ username: 'sfm_chief_admin', password: 'Updated-Str0ng-Pass#2026' });
+    assert.equal(loginRes.status, 200);
+    const freshCookie = loginRes.headers['set-cookie'][0].split(';')[0];
+    const freshToken = loginRes.body.token;
+    const freshCsrf = loginRes.body.csrfToken;
+
+    // 1. Valid cookie + invalid/arbitrary Bearer token + NO CSRF -> MUST be 403 CSRF_INVALID
+    const bypassAttempt1 = await request(ctx.app)
+      .post('/api/provision/user')
+      .set('Cookie', freshCookie)
+      .set('Authorization', 'Bearer arbitrary-invalid-attacker-token')
+      .send({
+        username: 'attacker_op',
+        password: '123456',
+        role: 'Admin',
+        rfid: 'DE:AD:BE:EF',
+        pin: '123456'
+      });
+    assert.equal(bypassAttempt1.status, 403);
+    assert.equal(bypassAttempt1.body.code, 'CSRF_INVALID');
+
+    // 2. Valid cookie + valid Bearer token + NO CSRF -> MUST be 403 CSRF_INVALID because cookie authenticated the request
+    const bypassAttempt2 = await request(ctx.app)
+      .post('/api/provision/user')
+      .set('Cookie', freshCookie)
+      .set('Authorization', `Bearer ${freshToken}`)
+      .send({
+        username: 'attacker_op2',
+        password: '123456',
+        role: 'Admin',
+        rfid: 'DE:AD:BE:E0',
+        pin: '123456'
+      });
+    assert.equal(bypassAttempt2.status, 403);
+    assert.equal(bypassAttempt2.body.code, 'CSRF_INVALID');
+
+    // 3. Valid cookie + wrong CSRF token -> 403 CSRF_INVALID
+    const wrongCsrfAttempt = await request(ctx.app)
+      .post('/api/provision/user')
+      .set('Cookie', freshCookie)
+      .set('X-CSRF-Token', 'wrong-csrf-token-value')
+      .send({
+        username: 'attacker_op3',
+        password: '123456',
+        role: 'Viewer',
+        rfid: 'DE:AD:BE:E1',
+        pin: '123456'
+      });
+    assert.equal(wrongCsrfAttempt.status, 403);
+    assert.equal(wrongCsrfAttempt.body.code, 'CSRF_INVALID');
+
+    // 4. Invalid cookie + valid Bearer token (when allowBearerCompat=true) -> allowed as bearer
+    const fallbackBearerRes = await request(ctx.app)
+      .get('/api/auth/session')
+      .set('Cookie', 'lci_sid=invalid-expired-cookie-token')
+      .set('Authorization', `Bearer ${freshToken}`);
+    assert.equal(fallbackBearerRes.status, 200);
+    assert.equal(fallbackBearerRes.body.username, 'sfm_chief_admin');
+
+    // 5. Invalid cookie + invalid Bearer token -> 401 UNAUTHORIZED
+    const bothInvalidRes = await request(ctx.app)
+      .get('/api/auth/session')
+      .set('Cookie', 'lci_sid=invalid-cookie')
+      .set('Authorization', 'Bearer invalid-bearer');
+    assert.equal(bothInvalidRes.status, 401);
+
+    // 6. Cookie-authenticated logout without CSRF token -> 403 CSRF_INVALID (prevents forced logout CSRF)
+    const logoutNoCsrf = await request(ctx.app)
+      .post('/api/auth/logout')
+      .set('Cookie', freshCookie);
+    assert.equal(logoutNoCsrf.status, 403);
+    assert.equal(logoutNoCsrf.body.code, 'CSRF_INVALID');
+
+    // 7. Cookie-authenticated logout WITH valid CSRF token -> 200 OK
+    const logoutValidCsrf = await request(ctx.app)
+      .post('/api/auth/logout')
+      .set('Cookie', freshCookie)
+      .set('X-CSRF-Token', freshCsrf);
+    assert.equal(logoutValidCsrf.status, 200);
+  });
+
+  it('defaults ALLOW_BEARER_COMPAT to false in production and rejects Bearer/query tokens when disabled', () => {
+    const prodConfig = loadConfig({
+      NODE_ENV: 'production',
+      LCI_BOOTSTRAP_ADMIN_USERNAME: 'sfm_prod_admin',
+      LCI_BOOTSTRAP_ADMIN_PASSWORD: 'Prod-Random-Bootstrap-Secret-32Chars!',
+      MQTT_ENABLED: 'false'
+    });
+    assert.equal(prodConfig.allowBearerCompat, false);
+
+    const authStrict = createAuthMiddleware(
+      {
+        verifySessionToken(token) {
+          return token === 'valid-tok'
+            ? { sessionId: 's1', csrfToken: 'csrf1', user: { id: 1, username: 'op', role: 'Admin' } }
+            : null;
+        }
+      },
+      {
+        isProd: true,
+        sessionCookieName: 'lci_sid',
+        allowBearerCompat: false,
+        sessionIdleTtlMs: 60000
+      }
+    );
+
+    // Bearer-only request must be rejected when allowBearerCompat is false
+    const bearerSession = authStrict.resolveRequestSession({
+      headers: { authorization: 'Bearer valid-tok' }
+    });
+    assert.equal(bearerSession, null);
+  });
+
+  it('enforces idle and absolute session expiration and prevents X-Forwarded-For rate-limit spoofing', async () => {
+    const adminUser = ctx.repo.findUserByUsername('sfm_chief_admin');
+    // 1. Create a session with 10ms TTL and verify it expires immediately
+    const shortSession = ctx.repo.createSession({
+      userId: adminUser.id,
+      ttlMs: -1000
+    });
+    assert.equal(ctx.repo.verifySessionToken(shortSession.rawToken, 60000), null);
+
+    // 2. Create a session and verify idle timeout revokes it when idleTtlMs is exceeded
+    const idleSession = ctx.repo.createSession({
+      userId: adminUser.id,
+      ttlMs: 3600000
+    });
+    // Backdate last_seen_at by 10 minutes
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    ctx.db
+      .prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?')
+      .run(tenMinAgo, idleSession.sessionId);
+    assert.equal(ctx.repo.verifySessionToken(idleSession.rawToken, 5 * 60 * 1000), null);
+
+    // 3. Verify rate limiter cannot be bypassed via spoofed X-Forwarded-For headers when trustProxy=false
+    for (let i = 0; i < 15; i++) {
+      await request(ctx.app)
+        .post('/api/auth/login')
+        .set('X-Forwarded-For', `203.0.113.${i + 1}`)
+        .send({ username: 'rate_limit_probe_user', password: 'bad' });
+    }
+    const limitedRes = await request(ctx.app)
+      .post('/api/auth/login')
+      .set('X-Forwarded-For', '198.51.100.99')
+      .send({ username: 'rate_limit_probe_user', password: 'bad' });
+    assert.equal(limitedRes.status, 429);
+    assert.equal(limitedRes.body.code, 'RATE_LIMITED');
+    assert.ok(limitedRes.headers['retry-after']);
+  });
+
+  // --------------------------------------------------------------------------
+  // 10. MQTT TRANSIENT DNS RETRY & SUBSCRIPTION READINESS VERIFICATION
+  // --------------------------------------------------------------------------
+  it('recovers from transient MQTT DNS lookup failures via bounded backoff and verifies topic subscription readiness', async () => {
+    const { EventEmitter } = await import('node:events');
+    const { MqttService } = await import('../src/mqtt/mqttClient.js');
+
+    let dnsCalls = 0;
+    let connectCalls = 0;
+    let fakeClient = null;
+    let simulateSubErrorTopic = null;
+    let simulateSubRejectQosTopic = null;
+
+    const mockDnsLookup = (_host, cb) => {
+      dnsCalls += 1;
+      if (dnsCalls < 3) {
+        const err = new Error('getaddrinfo EAI_AGAIN mqtt-service');
+        err.code = 'EAI_AGAIN';
+        setImmediate(() => cb(err));
+        return;
+      }
+      setImmediate(() => cb(null, '172.18.0.5', 4));
+    };
+
+    const mockMqttConnect = () => {
+      connectCalls += 1;
+      const emitter = new EventEmitter();
+      emitter.connected = false;
+      emitter.subscribe = (topic, opts, cb) => {
+        setImmediate(() => {
+          if (simulateSubErrorTopic === topic) {
+            cb(new Error('ACL_DENIED'));
+          } else if (simulateSubRejectQosTopic === topic) {
+            cb(null, [{ topic, qos: 128 }]);
+          } else {
+            cb(null, [{ topic, qos: opts?.qos ?? 0 }]);
+          }
+        });
+      };
+      emitter.end = (_force, _opts, cb) => {
+        emitter.connected = false;
+        if (cb) setImmediate(cb);
+      };
+      fakeClient = emitter;
+      setImmediate(() => {
+        emitter.connected = true;
+        emitter.emit('connect');
+      });
+      return emitter;
+    };
+
+    const mqttSvc = new MqttService({
+      config: {
+        mqttEnabled: true,
+        mqttBrokerUrl: 'mqtt://mqtt-service:1883',
+        mqttClientId: 'test-dns-retry-client',
+        mqttConnectTimeoutMs: 500,
+        mqttReconnectPeriodMs: 500,
+        mqttDnsRetryBaseMs: 50,
+        mqttDnsRetryMaxMs: 200
+      },
+      repo: ctx.repo,
+      wsGateway: null,
+      commandCoordinator: null,
+      dnsLookup: mockDnsLookup,
+      mqttConnect: mockMqttConnect
+    });
+
+    mqttSvc.connect();
+
+    // Wait for 2 failed DNS attempts + 3rd successful DNS attempt + subscription callbacks
+    await new Promise((resolve, reject) => {
+      const deadline = Date.now() + 3000;
+      const timer = setInterval(() => {
+        const status = mqttSvc.getHealthStatus();
+        if (status.connected && status.subscriptions_ready) {
+          clearInterval(timer);
+          resolve();
+        } else if (Date.now() > deadline) {
+          clearInterval(timer);
+          reject(new Error(`Timed out waiting for MQTT DNS retry recovery: ${JSON.stringify(status)}`));
+        }
+      }, 25);
+    });
+
+    assert.equal(dnsCalls, 3, 'Should retry DNS until 3rd attempt succeeds');
+    assert.equal(connectCalls, 1, 'Must create exactly one singleton MQTT client');
+    const healthyStatus = mqttSvc.getHealthStatus();
+    assert.equal(healthyStatus.enabled, true);
+    assert.equal(healthyStatus.connected, true);
+    assert.equal(healthyStatus.subscriptions_ready, true);
+    assert.equal(healthyStatus.state, 'connected');
+    assert.equal(healthyStatus.subscribed_topics.length, 6);
+
+    // Simulate reconnect where one required topic receives SUBACK 0x80 (128) failure grant
+    simulateSubRejectQosTopic = 'lecf/env/telemetry';
+    fakeClient.emit('connect');
+    await new Promise((r) => setTimeout(r, 40));
+
+    const degradedSubStatus = mqttSvc.getHealthStatus();
+    assert.equal(degradedSubStatus.connected, true);
+    assert.equal(degradedSubStatus.subscriptions_ready, false);
+    assert.equal(degradedSubStatus.state, 'degraded');
+    assert.ok(degradedSubStatus.failed_subscriptions['lecf/env/telemetry']);
+    assert.equal(
+      formatReadinessSummary({
+        ok: false,
+        status: 'degraded',
+        sqlite: { ok: true, journal_mode: 'wal' },
+        mqtt: degradedSubStatus
+      }),
+      'DEGRADED · SQLite: OK (WAL) · MQTT: Subs Degraded'
+    );
+
+    // Clear subscription failure and simulate clean reconnect
+    simulateSubRejectQosTopic = null;
+    simulateSubErrorTopic = null;
+    fakeClient.emit('connect');
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(mqttSvc.getHealthStatus().subscriptions_ready, true);
+    assert.equal(mqttSvc.getHealthStatus().state, 'connected');
+
+    await mqttSvc.close();
+    assert.equal(mqttSvc.isConnected(), false);
+  });
+
+  // --------------------------------------------------------------------------
+  // 11. SQLITE PATH VALIDATION, MIGRATION ROLLBACK & BACKUP/RESTORE HARDENING
+  // --------------------------------------------------------------------------
+  it('enforces fail-fast SQLite path validation, migration rollback on error, and backup/restore integrity checks', async () => {
+    const { SqliteDatabase } = await import('../src/db/database.js');
+
+    // 1. Passing a directory as SQLITE_DB_PATH must throw FATAL CONFIG ERROR and never silently fall back
+    const dirAsDbPath = path.join(tmpDir, 'directory_not_a_db_file');
+    fs.mkdirSync(dirAsDbPath, { recursive: true });
+    assert.throws(
+      () =>
+        loadConfig({
+          NODE_ENV: 'production',
+          SQLITE_DB_PATH: dirAsDbPath,
+          LCI_BOOTSTRAP_ADMIN_USERNAME: 'sfm_admin',
+          LCI_BOOTSTRAP_ADMIN_PASSWORD: 'V3ryLongRandomBootstrapSecretValue_2026!',
+          MQTT_ENABLED: 'false'
+        }),
+      /FATAL CONFIG ERROR: SQLite database path/
+    );
+
+    // 2. Invalid MQTT_BROKER_URL protocol must throw FATAL CONFIG ERROR when MQTT_ENABLED=true
+    assert.throws(
+      () =>
+        loadConfig({
+          NODE_ENV: 'development',
+          MQTT_ENABLED: 'true',
+          MQTT_BROKER_URL: 'http://not-an-mqtt-broker:1883'
+        }),
+      /FATAL CONFIG ERROR: Unsupported MQTT_BROKER_URL/
+    );
+
+    // 3. Invalid FRONTEND_BIND_IP must throw FATAL CONFIG ERROR
+    assert.throws(
+      () =>
+        loadConfig({
+          NODE_ENV: 'development',
+          FRONTEND_BIND_IP: '999.168.1.1',
+          MQTT_ENABLED: 'false'
+        }),
+      /FATAL CONFIG ERROR: FRONTEND_BIND_IP/
+    );
+
+    // 4. Corrupt / non-SQLite backup file must be rejected by restoreDatabaseBackup without touching target
+    const corruptBackupPath = path.join(tmpDir, 'corrupt_backup.db');
+    fs.writeFileSync(corruptBackupPath, 'NOT_A_VALID_SQLITE_HEADER_BYTES');
+    const safeTargetPath = path.join(tmpDir, 'safe_target.db');
+    const validBackupPath = path.join(tmpDir, 'backups', 'hot_backup.db');
+    fs.copyFileSync(validBackupPath, safeTargetPath);
+
+    assert.throws(
+      () => restoreDatabaseBackup(corruptBackupPath, safeTargetPath),
+      /failed|not a database|file is not a database/i
+    );
+
+    // 5. Refuse overwriting target when refuseIfActiveWal=true and -wal file exists
+    fs.writeFileSync(`${safeTargetPath}-wal`, 'simulated-active-wal');
+    assert.throws(
+      () => restoreDatabaseBackup(validBackupPath, safeTargetPath, { refuseIfActiveWal: true }),
+      /active WAL\/SHM files exist/
+    );
+    fs.unlinkSync(`${safeTargetPath}-wal`);
+
+    // 6. Failed SQLite migration rolls back and marks healthCheck as ok: false
+    const badMigDir = path.join(tmpDir, 'bad_migrations');
+    fs.mkdirSync(badMigDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(badMigDir, '001_broken.sql'),
+      'CREATE TABLE test_mig (id INTEGER PRIMARY KEY); INVALID SQL SYNTAX HERE;'
+    );
+    const migTestDb = new SqliteDatabase(path.join(tmpDir, 'mig_fail.db'));
+    assert.throws(() => migTestDb.runMigrations(badMigDir));
+    const migHealth = migTestDb.healthCheck();
+    assert.equal(migHealth.ok, false);
+    assert.match(String(migHealth.error), /migration_failed/);
+    migTestDb.close();
+  });
+
+  // --------------------------------------------------------------------------
+  // 12. COMMAND COORDINATOR EDGE CASES (NODE MISMATCH, UNKNOWN ID, DUPLICATE ACK)
+  // --------------------------------------------------------------------------
+  it('rejects command ACKs from mismatched nodes or unknown command_ids and ignores duplicate ACKs', async () => {
+    ctx.mqttService.config.mqttEnabled = true;
+    ctx.mqttService.connected = true;
+    ctx.mqttService.client = { connected: true };
+    ctx.mqttService.publishCommand = async () => true;
+
+    const adminUser = ctx.repo.findUserByUsername('sfm_chief_admin');
+    const dispatchRes = await ctx.commandCoordinator.dispatchCommand({
+      command: 'EMERGENCY_DOOR_UNLOCK',
+      state: 'OPEN',
+      actor: { id: adminUser.id, username: adminUser.username },
+      requestId: 'req-edge-case-1',
+      waitForAckMs: 20
+    });
+    assert.equal(dispatchRes.httpStatus, 200);
+    const cmdId = dispatchRes.body.command_id;
+    assert.equal(dispatchRes.body.target_node, 'node1');
+
+    // 1. Telemetry from env_02 with door_state='OPEN' MUST NOT confirm node1's pending command
+    ctx.commandCoordinator.handleObservedState('env_02', { door_state: 'OPEN' });
+    assert.equal(ctx.repo.getCommandAudit(cmdId).lifecycle_state, 'published');
+
+    // 2. ACK from wrong node (env_02 instead of node1) MUST be rejected with NODE_MISMATCH
+    const wrongNodeAck = ctx.commandCoordinator.handleCommandAck({
+      command_id: cmdId,
+      node_id: 'env_02',
+      status: 'executed',
+      observed_state: 'OPEN'
+    });
+    assert.equal(wrongNodeAck.ok, false);
+    assert.equal(wrongNodeAck.reason, 'NODE_MISMATCH');
+    assert.equal(ctx.repo.getCommandAudit(cmdId).lifecycle_state, 'published');
+
+    // 3. ACK for unknown command_id MUST be rejected with UNKNOWN_COMMAND_ID
+    const unknownAck = ctx.commandCoordinator.handleCommandAck({
+      command_id: '00000000-0000-0000-0000-000000000000',
+      node_id: 'node1',
+      status: 'executed',
+      observed_state: 'OPEN'
+    });
+    assert.equal(unknownAck.ok, false);
+    assert.equal(unknownAck.reason, 'UNKNOWN_COMMAND_ID');
+
+    // 4. Valid ACK from node1 transitions command to state_confirmed
+    const validAck = ctx.commandCoordinator.handleCommandAck({
+      command_id: cmdId,
+      node_id: 'node1',
+      status: 'executed',
+      observed_state: 'OPEN'
+    });
+    assert.equal(validAck.ok, true);
+    assert.equal(validAck.duplicate, false);
+    assert.equal(validAck.lifecycle_state, 'state_confirmed');
+
+    // 5. Duplicate ACK for the same command_id is ignored idempotently
+    const dupAck = ctx.commandCoordinator.handleCommandAck({
+      command_id: cmdId,
+      node_id: 'node1',
+      status: 'failed',
+      message: 'late duplicate frame'
+    });
+    assert.equal(dupAck.ok, true);
+    assert.equal(dupAck.duplicate, true);
+    assert.equal(ctx.repo.getCommandAudit(cmdId).lifecycle_state, 'state_confirmed');
+  });
+
+  // --------------------------------------------------------------------------
+  // 13. DEPLOYMENT & UPDATE SCRIPT RECOVERY, ROLLBACK & LOCK CONTENTION TESTS
+  // --------------------------------------------------------------------------
+  it('rolls back dist/ and Git HEAD to PREV_COMMIT when update.sh fails post-merge readiness and enforces shared lockfile', async () => {
+    const { execFileSync, spawn } = await import('node:child_process');
+    const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
+
+    const simRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lci-sfm-update-sim-'));
+    const bareRemote = path.join(simRoot, 'origin.git');
+    const deployedCheckout = path.join(simRoot, 'deployed');
+    const mockBinDir = path.join(simRoot, 'bin');
+    const stateDir = path.join(simRoot, 'state');
+    const lockFile = path.join(simRoot, 'lci-sfm-deploy.lock');
+
+    fs.mkdirSync(mockBinDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    try {
+      // Create a valid SQLite database to serve as the simulated container DB for backup verification
+      const containerDbPath = path.join(stateDir, 'container_lci_sfm.db');
+      fs.copyFileSync(dbPath, containerDbPath);
+
+      // Write mock docker binary that simulates candidate build, SQLite backup, compose up, and configurable readiness
+      const mockDockerPath = path.join(mockBinDir, 'docker');
+      fs.writeFileSync(
+        mockDockerPath,
+        `#!/usr/bin/env bash
+set -e
+CMD="$1"
+shift || true
+
+if [[ "$CMD" == "info" ]]; then
+  exit 0
+fi
+
+if [[ "$CMD" == "compose" ]]; then
+  for arg in "$@"; do
+    if [[ "$arg" == "version" || "$arg" == "config" || "$arg" == "logs" ]]; then
+      exit 0
+    fi
+    if [[ "$arg" == "ps" ]]; then
+      printf "mqtt-service\\nbackend\\nfrontend_dashboard\\n"
+      exit 0
+    fi
+    if [[ "$arg" == "up" ]]; then
+      echo "compose_up" >> "${stateDir}/docker_events.log"
+      exit 0
+    fi
+    if [[ "$arg" == "exec" ]]; then
+      if [[ "\${MOCK_READY_FAIL:-0}" == "1" ]]; then
+        exit 1
+      fi
+      exit 0
+    fi
+  done
+  exit 0
+fi
+
+if [[ "$CMD" == "inspect" ]]; then
+  exit 0
+fi
+
+if [[ "$CMD" == "exec" ]]; then
+  CONTAINER="$1"
+  shift
+  if [[ "$1" == "test" && "$2" == "-s" ]]; then
+    test -s "${containerDbPath}"
+    exit $?
+  fi
+  if [[ "$1" == "node" && "$2" == "/app/backend/src/db/backup.js" ]]; then
+    cp "${containerDbPath}" "${stateDir}/in_container_backup.db"
+    exit 0
+  fi
+  if [[ "$1" == "rm" ]]; then
+    rm -f "${stateDir}/in_container_backup.db"
+    exit 0
+  fi
+  exit 0
+fi
+
+if [[ "$CMD" == "cp" ]]; then
+  DEST="$2"
+  cp "${stateDir}/in_container_backup.db" "$DEST"
+  exit 0
+fi
+
+if [[ "$CMD" == "run" ]]; then
+  # Extract mounted worktree path from -v <path>:/workspace
+  WORKTREE_PATH=""
+   prev=""
+  for a in "$@"; do
+    if [[ "$prev" == "-v" ]]; then
+      WORKTREE_PATH="\${a%%:/workspace}"
+    fi
+    prev="$a"
+  done
+  if [[ "\${MOCK_CANDIDATE_FAIL:-0}" == "1" ]]; then
+    echo "Simulated candidate test failure" >&2
+    exit 42
+  fi
+  if [[ -n "$WORKTREE_PATH" ]]; then
+    mkdir -p "$WORKTREE_PATH/dist/assets"
+    echo "/* new candidate bundle v2 */" > "$WORKTREE_PATH/dist/assets/app-v2.js"
+    echo "<html><body>Candidate V2</body></html>" > "$WORKTREE_PATH/dist/index.html"
+  fi
+  exit 0
+fi
+
+exit 0
+`,
+        { mode: 0o755 }
+      );
+
+      // Write mock curl binary for post-readiness HTTP checks
+      const mockCurlPath = path.join(mockBinDir, 'curl');
+      fs.writeFileSync(
+        mockCurlPath,
+        `#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ "$arg" == *"/api/health/ready"* ]]; then
+    printf '{"ok":true,"status":"ready","sqlite":{"ok":true,"journal_mode":"wal"},"mqtt":{"enabled":true,"connected":true,"subscriptions_ready":true,"state":"connected"}}'
+    exit 0
+  fi
+done
+exit 0
+`,
+        { mode: 0o755 }
+      );
+
+      // Initialize bare remote and deployed checkout
+      execFileSync('git', ['init', '--bare', '--quiet', bareRemote]);
+      execFileSync('git', ['-C', bareRemote, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+      execFileSync('git', ['init', '--quiet', deployedCheckout]);
+      execFileSync('git', ['-C', deployedCheckout, 'config', 'user.name', 'Test Release Bot']);
+      execFileSync('git', ['-C', deployedCheckout, 'config', 'user.email', 'bot@example.invalid']);
+      execFileSync('git', ['-C', deployedCheckout, 'checkout', '--quiet', '-b', 'main']);
+
+      // Copy required deployment files into deployedCheckout
+      fs.mkdirSync(path.join(deployedCheckout, 'mosquitto'), { recursive: true });
+      fs.mkdirSync(path.join(deployedCheckout, 'nginx'), { recursive: true });
+      fs.mkdirSync(path.join(deployedCheckout, 'backend'), { recursive: true });
+      fs.copyFileSync(path.join(repoRoot, 'update.sh'), path.join(deployedCheckout, 'update.sh'));
+      fs.chmodSync(path.join(deployedCheckout, 'update.sh'), 0o755);
+      fs.copyFileSync(path.join(repoRoot, 'docker-compose.yml'), path.join(deployedCheckout, 'docker-compose.yml'));
+      fs.copyFileSync(path.join(repoRoot, 'nginx', 'nginx.conf'), path.join(deployedCheckout, 'nginx', 'nginx.conf'));
+      fs.copyFileSync(path.join(repoRoot, 'backend', 'Dockerfile'), path.join(deployedCheckout, 'backend', 'Dockerfile'));
+      fs.copyFileSync(path.join(repoRoot, 'mosquitto', 'acl'), path.join(deployedCheckout, 'mosquitto', 'acl'));
+      fs.copyFileSync(path.join(repoRoot, 'mosquitto', 'mosquitto.conf'), path.join(deployedCheckout, 'mosquitto', 'mosquitto.conf'));
+      fs.writeFileSync(path.join(deployedCheckout, 'README.md'), '# V1 Initial Release\n');
+
+      execFileSync('git', ['-C', deployedCheckout, 'add', '.']);
+      execFileSync('git', ['-C', deployedCheckout, 'commit', '--quiet', '-m', 'chore: initial release v1']);
+      execFileSync('git', ['-C', deployedCheckout, 'remote', 'add', 'origin', bareRemote]);
+      execFileSync('git', ['-C', deployedCheckout, 'push', '--quiet', '-u', 'origin', 'main']);
+
+      const baseCommit = execFileSync('git', ['-C', deployedCheckout, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+      // Create local untracked runtime files (.env, mosquitto/passwd, dist/) and exclude them in .git/info/exclude
+      fs.writeFileSync(path.join(deployedCheckout, '.env'), 'FRONTEND_BIND_IP=127.0.0.1\n', { mode: 0o600 });
+      fs.writeFileSync(path.join(deployedCheckout, 'mosquitto', 'passwd'), 'lci_backend:hash\n', { mode: 0o600 });
+      fs.mkdirSync(path.join(deployedCheckout, 'dist', 'assets'), { recursive: true });
+      fs.writeFileSync(path.join(deployedCheckout, 'dist', 'assets', 'app-v1.js'), '/* original bundle v1 */');
+      fs.writeFileSync(path.join(deployedCheckout, 'dist', 'index.html'), '<html><body>Original V1</body></html>');
+      fs.writeFileSync(
+        path.join(deployedCheckout, '.git', 'info', 'exclude'),
+        '/.env\n/mosquitto/passwd\n/dist/\n/backups/\n'
+      );
+
+      // Push a V2 commit to origin/main
+      const producerClone = path.join(simRoot, 'producer');
+      execFileSync('git', ['clone', '--quiet', '--branch', 'main', bareRemote, producerClone]);
+      execFileSync('git', ['-C', producerClone, 'config', 'user.name', 'Test Release Bot']);
+      execFileSync('git', ['-C', producerClone, 'config', 'user.email', 'bot@example.invalid']);
+      fs.writeFileSync(path.join(producerClone, 'README.md'), '# V2 Candidate Release\n');
+      execFileSync('git', ['-C', producerClone, 'add', 'README.md']);
+      execFileSync('git', ['-C', producerClone, 'commit', '--quiet', '-m', 'feat: release v2']);
+      execFileSync('git', ['-C', producerClone, 'push', '--quiet', 'origin', 'main']);
+      const v2Commit = execFileSync('git', ['-C', producerClone, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+      const baseEnv = {
+        ...process.env,
+        PATH: `${mockBinDir}:${process.env.PATH}`,
+        LCI_SKIP_ROOT_CHECK: '1',
+        LCI_DEPLOY_LOCK_FILE: lockFile,
+        LCI_READINESS_TIMEOUT_SEC: '2',
+        LCI_READINESS_POLL_SEC: '1'
+      };
+
+      // Scenario A: Post-merge readiness check fails -> update.sh MUST restore full dist/ AND rewind Git HEAD to baseCommit!
+      let postMergeFailed = false;
+      try {
+        execFileSync('bash', [path.join(deployedCheckout, 'update.sh')], {
+          cwd: deployedCheckout,
+          env: { ...baseEnv, MOCK_READY_FAIL: '1' },
+          stdio: 'pipe'
+        });
+      } catch (err) {
+        postMergeFailed = true;
+        const stderrOut = String(err.stderr || '') + String(err.stdout || '');
+        assert.match(stderrOut, /Restored the complete previous dist\/ directory/);
+        assert.match(stderrOut, /Rolled back Git working tree to previous commit/);
+      }
+      assert.equal(postMergeFailed, true, 'update.sh must exit non-zero when readiness check fails');
+
+      // Verify Git HEAD was rolled back to baseCommit (NOT left at v2Commit!)
+      const headAfterRollback = execFileSync('git', ['-C', deployedCheckout, 'rev-parse', 'HEAD'], {
+        encoding: 'utf8'
+      }).trim();
+      assert.equal(headAfterRollback, baseCommit, 'Git HEAD must be rewound to PREV_COMMIT after post-merge failure');
+
+      // Verify full dist/ directory was restored (app-v1.js present, app-v2.js removed, index.html is Original V1)
+      assert.equal(
+        fs.readFileSync(path.join(deployedCheckout, 'dist', 'index.html'), 'utf8'),
+        '<html><body>Original V1</body></html>'
+      );
+      assert.equal(fs.existsSync(path.join(deployedCheckout, 'dist', 'assets', 'app-v1.js')), true);
+      assert.equal(fs.existsSync(path.join(deployedCheckout, 'dist', 'assets', 'app-v2.js')), false);
+
+      // Verify SQLite backup was created and preserved in backups/
+      const backupsAfterRollback = fs
+        .readdirSync(path.join(deployedCheckout, 'backups'))
+        .filter((name) => name.endsWith('.db'));
+      assert.equal(backupsAfterRollback.length, 1);
+
+      // Scenario B: Now re-run update.sh when readiness succeeds -> because Git HEAD was rolled back,
+      // update.sh does NOT falsely say "Already up to date" and deploys V2 cleanly!
+      const successOut = execFileSync('bash', [path.join(deployedCheckout, 'update.sh')], {
+        cwd: deployedCheckout,
+        env: { ...baseEnv, MOCK_READY_FAIL: '0' },
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      assert.match(successOut, /LCI-SFM update completed successfully/);
+      const headAfterSuccess = execFileSync('git', ['-C', deployedCheckout, 'rev-parse', 'HEAD'], {
+        encoding: 'utf8'
+      }).trim();
+      assert.equal(headAfterSuccess, v2Commit);
+      assert.equal(
+        fs.readFileSync(path.join(deployedCheckout, 'dist', 'index.html'), 'utf8').trim(),
+        '<html><body>Candidate V2</body></html>'
+      );
+      assert.equal(fs.existsSync(path.join(deployedCheckout, 'dist', 'assets', 'app-v2.js')), true);
+
+      // Scenario C: Shared lock contention prevents concurrent update.sh execution
+      const lockHolder = spawn('flock', ['-x', lockFile, '-c', 'sleep 5']);
+      await new Promise((r) => setTimeout(r, 150));
+      let lockBlocked = false;
+      try {
+        execFileSync('bash', [path.join(deployedCheckout, 'update.sh')], {
+          cwd: deployedCheckout,
+          env: baseEnv,
+          stdio: 'pipe'
+        });
+      } catch (err) {
+        lockBlocked = true;
+        const stderrOut = String(err.stderr || '');
+        assert.match(stderrOut, /Another LCI-SFM install or update operation appears to be running/);
+      } finally {
+        lockHolder.kill('SIGTERM');
+      }
+      assert.equal(lockBlocked, true, 'Concurrent update.sh must fail fast when lock is held');
+    } finally {
+      fs.rmSync(simRoot, { recursive: true, force: true });
+    }
   });
 });
 
