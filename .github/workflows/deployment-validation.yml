@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: [main, "fix/deployment-readiness-hardening"]
 
 permissions:
   contents: read
@@ -19,6 +19,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  bootstrap-lockfiles:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/deployment-readiness-hardening'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the deployment-readiness branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Generate and commit the initial npm lockfiles
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          npm install --prefix backend --package-lock-only --ignore-scripts --no-audit --no-fund
+          git add package-lock.json backend/package-lock.json
+          if git diff --cached --quiet; then
+            echo "Lockfiles are already present and unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Add npm lockfiles for reproducible builds"
+          git push origin HEAD:fix/deployment-readiness-hardening
+
   validate-and-smoke-test:
     runs-on: ubuntu-latest
     timeout-minutes: 35
