@@ -4,7 +4,7 @@ umask 077
 
 REPO_URL="https://github.com/AbdullahNSarhan/Smart-Facility-Management-System.git"
 INSTALL_DIR="/opt/lci-sfm"
-BRANCH="${LCI_BRANCH:-main}"
+BRANCH="${LCI_BRANCH:-deployment/automated-install-update}"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '\n[LCI-SFM] %s\n' "$*"; }
