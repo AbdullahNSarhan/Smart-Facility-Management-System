@@ -241,8 +241,8 @@ jobs:
           git -C "$GUARD_DIR" push --quiet origin updater-guard-test
           git -C "$GUARD_DIR" reset --hard --quiet "$BASE_COMMIT"
 
-          install -m 600 .env "$GUARD_DIR/.env"
-          install -m 600 mosquitto/passwd "$GUARD_DIR/mosquitto/passwd"
+          sudo install -m 600 .env "$GUARD_DIR/.env"
+          sudo install -m 600 mosquitto/passwd "$GUARD_DIR/mosquitto/passwd"
 
           if sudo "$GUARD_DIR/update.sh" >"$GUARD_LOG" 2>&1; then
             cat "$GUARD_LOG"
