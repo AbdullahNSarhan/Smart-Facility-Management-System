@@ -159,7 +159,7 @@ EOF
   chmod 600 "$CREDENTIALS_FILE"
   docker pull eclipse-mosquitto:2.0
   # The temporary container is removed after writing the password hashes.
-  docker run --rm --user 0:0 --entrypoint sh -v "$PROJECT_DIR/mosquitto:/mosquitto/config" \\
+  docker run --rm --user 0:0 --entrypoint sh -v "$PROJECT_DIR/mosquitto:/mosquitto/config" \
     eclipse-mosquitto:2.0 -ec '
       mosquitto_passwd -c -b /mosquitto/config/passwd lci_backend "$1"
       mosquitto_passwd -b /mosquitto/config/passwd node1_access "$2"
