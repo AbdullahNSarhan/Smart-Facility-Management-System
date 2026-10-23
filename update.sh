@@ -14,7 +14,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 [[ $EUID -eq 0 ]] || die "Run with sudo: sudo $PROJECT_DIR/update.sh"
 [[ -d .git ]] || die "This directory is not a Git checkout."
-for cmd in git docker curl flock mktemp; do
+for cmd in git docker curl flock mktemp python3; do
   have "$cmd" || die "Required command is missing: $cmd"
 done
 docker info >/dev/null 2>&1 || die "Docker daemon is not responding."
@@ -114,7 +114,18 @@ if docker inspect "$BACKEND_CONTAINER" >/dev/null 2>&1 && docker exec "$BACKEND_
     || warn "Could not remove the temporary in-container backup file."
   [[ -s "$BACKUP_PATH" ]] || die "Database backup is empty or missing. Deployment cancelled."
   chmod 600 "$BACKUP_PATH"
-  log "Database backup saved: $BACKUP_PATH"
+  python3 - "$BACKUP_PATH" <<'PYSQL' || die "SQLite integrity check failed for the backup. Deployment cancelled."
+import sqlite3, sys
+path = sys.argv[1]
+con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+try:
+    result = con.execute("PRAGMA integrity_check").fetchone()
+    if not result or result[0] != "ok":
+        raise SystemExit(f"SQLite integrity_check failed: {result!r}")
+finally:
+    con.close()
+PYSQL
+  log "Database backup passed SQLite integrity_check: $BACKUP_PATH"
 else
   die "A running backend and non-empty SQLite database were not found. Refusing an update without a verified backup."
 fi
