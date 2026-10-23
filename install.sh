@@ -208,10 +208,19 @@ if [[ "${LCI_SKIP_ROOT_CHECK:-0}" != "1" ]]; then
 fi
 chmod 600 mosquitto/passwd mosquitto/acl
 
-log "Building frontend and running lint/tests inside Node.js 24 container"
+# Build a dedicated validator with the host binaries required by integration tests.
+# The plain node:24-alpine image lacks git (and may lack bash/flock), causing
+# spawnSync git ENOENT before Compose services are ever started.
+[[ -f deployment/validation.Dockerfile ]] || die "Deployment validation Dockerfile is missing."
+log "Preparing Node.js 24 validation image (git, bash, flock)"
+docker build -t lci-sfm-validator:node24 -f "$PROJECT_DIR/deployment/validation.Dockerfile" "$PROJECT_DIR/deployment" \
+  || die "Could not build the Node.js validation image."
+
+log "Building frontend and running lint/tests inside the deployment validation container"
 docker run --rm -e HOME=/tmp -e npm_config_cache=/tmp/npm-cache \
-  -v "$PROJECT_DIR:/workspace" -w /workspace node:24-alpine sh -lc \
-  'npm ci --no-audit --no-fund && npm run lint && npm test && npm run build'
+  -v "$PROJECT_DIR:/workspace" -w /workspace lci-sfm-validator:node24 sh -lc \
+  'npm ci --no-audit --no-fund && npm run lint && npm test && npm run build' \
+  || die "Frontend dependency installation, lint, tests or build failed; Compose services have not been started."
 
 [[ -s dist/index.html ]] || die "Frontend build did not create dist/index.html."
 chmod 755 "$PROJECT_DIR/dist"
@@ -221,21 +230,21 @@ find "$PROJECT_DIR/dist" -type f -exec chmod 644 {} +
 docker compose config -q
 
 log "Starting the stack (MQTT broker, backend, then frontend)"
-docker compose up -d mqtt-service
+docker compose up -d mqtt-service || { docker compose ps >&2 || true; docker compose logs --tail=100 mqtt-service >&2 || true; die "MQTT container failed to start."; }
 sleep "${LCI_STARTUP_GRACE_SEC:-3}"
 if ! docker compose ps --status running --services | grep -Fxq mqtt-service; then
   docker compose logs --tail=80 mqtt-service
   die "Mosquitto did not remain running. Review the logs above."
 fi
 
-docker compose up -d --build backend
+docker compose up -d --build backend || { docker compose ps >&2 || true; docker compose logs --tail=100 backend mqtt-service >&2 || true; die "Backend container build or start failed."; }
 sleep "${LCI_STARTUP_GRACE_SEC:-3}"
 if ! docker compose ps --status running --services | grep -Fxq backend; then
   docker compose logs --tail=100 backend
   die "Backend did not remain running. Review the logs above."
 fi
 
-docker compose up -d --build frontend_dashboard
+docker compose up -d --build frontend_dashboard || { docker compose ps >&2 || true; docker compose logs --tail=100 frontend_dashboard backend mqtt-service >&2 || true; die "Nginx frontend container failed to start."; }
 docker compose ps
 
 log "Checking backend liveness (/api/health/live) inside its container"

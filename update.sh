@@ -52,7 +52,22 @@ CURRENT_SHORT="$(git rev-parse --short "$CURRENT_FULL")"
 REMOTE_SHORT="$(git rev-parse --short "$REMOTE_FULL")"
 
 if [[ "$CURRENT_FULL" == "$REMOTE_FULL" ]]; then
-  log "Already up to date ($CURRENT_SHORT). No build, backup, or restart needed."
+  # A current Git HEAD does not prove that the installer ever finished or that
+  # the stack is healthy. Never report success when deployment is incomplete.
+  if [[ ! -s "$PROJECT_DIR/dist/index.html" ]]; then
+    die "Source is up to date ($CURRENT_SHORT), but dist/index.html is missing. Run: sudo bash $PROJECT_DIR/install.sh"
+  fi
+  if ! docker compose config -q || ! docker compose ps --status running --services | grep -Fxq mqtt-service || ! docker compose ps --status running --services | grep -Fxq backend || ! docker compose ps --status running --services | grep -Fxq frontend_dashboard; then
+    docker compose ps >&2 || true
+    die "Source is up to date ($CURRENT_SHORT), but the Compose stack is not fully running. Run: sudo bash $PROJECT_DIR/install.sh"
+  fi
+  FRONTEND_IP="$(sed -n 's/^FRONTEND_BIND_IP=//p' .env | tail -n1)"
+  FRONTEND_IP="${FRONTEND_IP:-127.0.0.1}"
+  if ! curl --connect-timeout 3 --max-time 8 -fsS "http://$FRONTEND_IP/api/health/ready" -o /dev/null; then
+    docker compose logs --tail=80 frontend_dashboard backend mqtt-service >&2 || true
+    die "Source is up to date ($CURRENT_SHORT), but the application is not ready. Run: sudo bash $PROJECT_DIR/install.sh"
+  fi
+  log "Source is up to date ($CURRENT_SHORT) and the running deployment passes basic checks. No update needed."
   exit 0
 fi
 
@@ -120,10 +135,14 @@ install -m 600 .env "$TEST_TREE/.env"
 install -m 600 mosquitto/passwd "$TEST_TREE/mosquitto/passwd"
 install -m 600 mosquitto/acl "$TEST_TREE/mosquitto/acl"
 
-# Test and compile candidate source without touching the live containers or database.
+# Test in the same git/bash/flock-capable Alpine image used by install.sh.
+# Use the candidate Dockerfile from the worktree before publishing any changes.
+[[ -f "$TEST_TREE/deployment/validation.Dockerfile" ]] || die "Candidate deployment validation Dockerfile is missing."
+docker build -t lci-sfm-validator:node24 -f "$TEST_TREE/deployment/validation.Dockerfile" "$TEST_TREE/deployment" \
+  || die "Could not build candidate deployment validation image."
 docker run --rm \
   -e HOME=/tmp -e npm_config_cache=/tmp/npm-cache \
-  -v "$TEST_TREE:/workspace" -w /workspace node:24-alpine sh -lc \
+  -v "$TEST_TREE:/workspace" -w /workspace lci-sfm-validator:node24 sh -lc \
   'npm ci --no-audit --no-fund && npm run lint && npm test && npm run build' \
   || die "Candidate lint, tests, dependency installation, or frontend build failed. Live containers have not been redeployed."
 
