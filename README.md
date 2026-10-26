@@ -1,45 +1,67 @@
-# LCI-SFM — Smart Facility Management System
+# LCI-SFM · Smart Facility Management
 
-LCI-SFM (Light Current Infrastructure for Smart Facility Management) is an edge-first facility monitoring and access-control project. Its operator dashboard brings together environmental telemetry, smart access, biometric camera status, event logs, endpoint configuration, and diagnostics for a local wired network.
+**A local operations console for one smart room, one door and three wired edge nodes.**
 
-The frontend is an air-gapped-friendly static web application built with HTML, CSS, and vanilla JavaScript ES modules. It communicates with the Node.js Central Backend HTTP API (`/api/*`) and WebSocket streams (`/ws/telemetry`, `/ws/mfa`), backed by SQLite (WAL) and Eclipse Mosquitto MQTT; the frontend does not replace the backend, database, or edge-controller firmware.
+LCI-SFM — *Light Current Infrastructure for Smart Facility Management* — connects access control, environmental monitoring and camera capture to a shared dashboard. The graduation demonstrator runs on a local server, with an architecture that can accommodate more rooms later.
 
-## Main capabilities
+The browser uses the Node.js API; SQLite owns persistent records; Mosquitto carries device messages. Device firmware owns local execution and reports its results. The dashboard distinguishes a saved record, a published command and a device-reported state.
 
-- **Operations overview:** facility status, recent events, telemetry cards, and device topology.
-- **Smart access:** door and lock state, three-factor checkpoints for the documented 2-out-of-3 MFA flow, and biometric snapshot status.
-- **Environment:** temperature, humidity, smoke/gas readings, live trend charts, stored telemetry history, and fan/light control.
-- **Events and audit:** SQLite-backed access, camera, environment, and system-error tables with client-side search, time/severity filters, sorting, pagination, record inspection, and CSV export.
-- **Diagnostics:** separate evidence-based status for the central service (`/api/health/ready` SQLite/MQTT readiness) and individual edge nodes.
-- **Administration:** user provisioning and role management, administrator credential changes, and server/node endpoint configuration, subject to a verified Admin session.
-- **Operator experience:** dark/light themes, responsive navigation, confirmation dialogs for consequential actions, progressive disclosure of technical metadata, and accessible status messaging.
+## What you can manage
 
-## Architecture at a glance
+| Area | Capabilities |
+|---|---|
+| Operations | Live telemetry, historical trends, access events and system diagnostics |
+| People | Create and edit people, search and paginate the directory, suspend/reactivate authorization |
+| Physical credentials | Assign cards manually or through a compatible door reader; set/reset six-digit PINs; block or revoke credentials |
+| Dashboard accounts | Separate Admin and Viewer accounts, independent passwords, role changes and last-admin protection |
+| Devices | Three-node registry, names and private LAN addresses, last observation, freshness, reported firmware and capabilities |
+| Shared settings | Facility/room names, node addresses and dashboard warning thresholds; persisted centrally with revision checks |
+| Controls | Existing allowlisted door, fan, light and control-mode commands, with command history and correlated acknowledgements |
+| Camera | Authenticated backend JPEG proxy using the registered Node 3 address; no browser-to-camera route required |
+| Accountability | Administration audit, access/event explorer, filters and CSV export for existing event tables |
+| Deployment | Docker Compose, Ubuntu installer/updater, SQLite backup/restore and automated software checks |
 
-```text
-Browser / Frontend (index.html + styles.css + app.js)
-    |-- Same-origin HTTP API (/api/*) & WebSockets (/ws/telemetry, /ws/mfa)
-    v
-Nginx Reverse Proxy (nginx/nginx.conf, mounts compiled ./dist only)
-    |
-    v
-Node.js Central Backend (backend/src/server.js) ---- SQLite WAL (data/lci_sfm.db)
-    |                                                   |-- system_users (scrypt hashes)
-    |                                                   |-- sessions (SHA-256 verifiers + CSRF)
-    |                                                   |-- access_logs, camera_events
-    |                                                   |-- environmental_telemetry, command_audit
-    +---- Eclipse Mosquitto 2.0 (mosquitto/mosquitto.conf + ACL) <---- Wired Ethernet Edge Nodes
-    |
-    +---- Python/OpenCV Biometric Service <---- Node 3 Camera Snapshots
+### Implementation boundaries
 
-Node 1: smart access / RFID / keypad / magnetic lock
-Node 2: environmental sensors / fan and auxiliary-light relays
-Node 3: PIR-triggered OV2640 camera / biometric capture
+| Capability | Current evidence / limit |
+|---|---|
+| Shared configuration, people and credentials | Implemented and covered by automated backend tests |
+| Reader enrollment | Server/UI flow implemented; real reader must implement and advertise `RFID_ENROLL_V1` |
+| Credential/device policy synchronization | **Pending firmware integration.** Assignments, PIN resets, blocks and suspensions do not update a physical reader yet |
+| Node IP editing | Changes the **registered address** in SQLite and the running backend. Does not change the device's static IP, DHCP lease, gateway or subnet |
+| Fan/light/door control | MQTT command coordination exists; requires compatible device firmware. A reported state is not independent physical feedback |
+| Sensor measurements | Displayed with freshness. MQ-2 values are uncalibrated **raw readings**, not certified gas PPM |
+| Face recognition/enrollment | Camera capture is available; a complete Vision service, biometric enrollment and liveness are not deployed |
+| Multi-room operation | Future extension. This release manages exactly one room, one door and three nodes |
+
+See [Management Guide](docs/FACILITY_MANAGEMENT.md) for workflows, API contracts, upgrade behavior and the selected roadmap.
+
+## Console preview
+
+The screenshots use sample records and disconnected hardware; UNKNOWN is intentional.
+
+![Shared device registry and room configuration](docs/screenshots/devices-room.webp)
+
+[People and credentials preview](docs/screenshots/people-credentials.webp)
+
+## Architecture
+
+```mermaid
+flowchart TD
+    Browser["Browser dashboard"] -->|"HTTP + WebSockets"| Nginx["Nginx"]
+    Nginx --> API["Node.js / Express"]
+    API --> DB["SQLite WAL"]
+    API <-->|"MQTT"| Broker["Mosquitto"]
+    Broker <--> Access["Node 1 · access"]
+    Broker <--> Env["Node 2 · environment"]
+    API -->|"Fixed JPEG capture path"| Camera["Node 3 · camera"]
 ```
 
-## Quick start — development & testing
+The frontend uses HTML, CSS and vanilla JavaScript modules, bundled locally by Vite. Runtime assets use no CDN. Browser code contains no MQTT credentials. Dashboard accounts (`system_users`) and physical occupants (`people`, `physical_credentials`) are separate domains.
 
-Requirements: Node.js 22.5+ / 24 LTS (uses built-in `node:sqlite` and `crypto.scrypt`).
+## Run locally
+
+Requirements: **Node.js 24 recommended**, npm, and Git. Node.js must support built-in `node:sqlite` (minimum declared version: 22.5).
 
 ```bash
 git clone https://github.com/AbdullahNSarhan/Smart-Facility-Management-System.git
@@ -48,92 +70,102 @@ npm ci
 npm run dev
 ```
 
-`npm run dev` starts the unified Node.js Express + WebSocket + SQLite backend on port **3000** (`0.0.0.0`) with Vite middleware mounted for same-origin frontend operation. For a fresh development setup, do not copy the production `.env.example` first; its production secret checks intentionally require real credentials. Development mode has a local-only bootstrap credential configured by the code. Never use development credentials in production.
+Open **http://localhost:3000**. Fresh development databases bootstrap username `admin` with password `LCI-Dev-Admin-2026!`, unless overridden by `LCI_BOOTSTRAP_ADMIN_USERNAME` / `LCI_BOOTSTRAP_ADMIN_PASSWORD`. These are development credentials only.
 
-### Validation, Testing & Database Operations
-
-```bash
-npm test           # Run the 28-test full-stack & backend integration suite (Auth, CSRF, RBAC, SQLite, MQTT, WS, Commands, Readiness, Rollback, DOM & Contracts)
-npm --prefix backend test # Run the same 28-test suite from the backend workspace
-npm run lint       # Verify syntax across frontend and backend ES modules
-npm run build      # Build production static frontend bundle into dist/
-npm run db:backup  # Perform online SQLite hot backup via VACUUM INTO
-npm run db:restore # Restore SQLite database after PRAGMA integrity_check verification
-```
-
-## Production Docker Compose Deployment
-
-The `docker-compose.yml` orchestrates three hardened services on an internal bridge network (`lci_internal_net`):
-1. **`frontend_dashboard` (`nginx:alpine`)**: Mounts **only** compiled `./dist` assets (never the repository root) and reverse-proxies `/api/*` and `/ws/*` to `http://backend:3000`.
-2. **`backend` (`node:24-alpine`)**: Runs as non-root `node` user, applies SQLite migrations at `/app/data/lci_sfm.db` (persistent `sqlite_data` volume), and connects a singleton MQTT client to `mqtt-service`.
-3. **`mqtt-service` (`eclipse-mosquitto:2.0`)**: Enforces `allow_anonymous false`, password authentication (`mosquitto/passwd`), and per-identity topic ACLs (`mosquitto/acl`).
+For software-only exploration without a broker:
 
 ```bash
-# 1. Build static frontend assets into ./dist
-npm run build
-
-# 2. Create the production environment file, then edit every placeholder/secret
-cp .env.example .env
-chmod 600 .env
-nano .env
-
-# 3. Generate mosquitto/passwd interactively (see mosquitto/README.md)
-# Do this before starting the broker. Set .env MQTT_PASSWORD to the same lci_backend password.
-
-# 4. Start the broker first, then the application
-docker compose config -q
-docker compose up -d mqtt-service
-docker compose logs --tail=100 mqtt-service
-docker compose up -d --build backend
-docker compose up -d --build frontend_dashboard
-docker compose ps
+MQTT_ENABLED=false npm run dev
 ```
 
-For the complete server preparation, private-LAN binding, firewall, verification, backup/restore, and update process, follow [Deployment Guide](docs/DEPLOYMENT_GUIDE.md). The example bind IPs default to `127.0.0.1`; change them to the server's actual static private LAN IP only when LAN access is required and firewall rules are in place.
+Missing devices remain unknown; software-only mode does not manufacture telemetry or acknowledge hardware commands. Do not copy `.env.example` unchanged before development: production checks intentionally reject placeholder secrets.
 
-## Automated Ubuntu Server Deployment
+## First configuration
 
-For a fresh Ubuntu Server on a trusted private LAN, the repository includes `install.sh` and `update.sh`. The installer acquires a shared deployment lock (`/var/lock/lci-sfm-deploy.lock`), installs missing host prerequisites, clones this repository to `/opt/lci-sfm`, generates local production secrets and Mosquitto credentials, runs frontend and backend lint/tests/build inside Node.js 24, validates Compose, and starts the services. It preserves an existing `.env` and Mosquitto password file on reruns.
+1. Sign in as Admin and open **Devices & Room**.
+2. Set facility/room names, device labels and each device's private LAN IPv4 address. Addresses must be distinct; the registry currently accepts RFC1918 addresses with a host octet from 1–254.
+3. Save shared settings. A revision conflict means another operator saved first: refresh the page, review their values and retry.
+4. Configure each physical device or DHCP reservation to match its registered address. MQTT routing still uses server-configured device IDs and allowlisted topics.
+5. Open **People & Credentials**, create a person and assign credentials. Their device state remains **pending** until a policy channel is implemented and tested.
+6. Use **Administration** to create independent dashboard accounts. A door PIN is never used as the dashboard password in this workflow.
 
-Run the installer from the server:
+The quick endpoint dialog and Administration IP form use the same shared node registry. The **Central Gateway Host** is a browser-specific connection preference; changing it ends the current console session and requires signing in to the selected server.
+
+## Validation
+
+```bash
+npm test                 # Backend/auth/MQTT/management/camera boundary integration tests
+npm --prefix backend test
+npm run lint             # JavaScript syntax validation
+npm run build            # Production assets -> dist/
+npm run db:backup        # See deployment guide for destination/options
+npm run db:restore       # See deployment guide; stop application before restore
+```
+
+Tests cover CSRF/RBAC, revision conflicts, restart persistence, credential secrecy, PIN reset, reader ownership/nonce/expiry/replay handling, command correlation, camera response boundaries and deployment rollback. Software tests do not establish hardware reliability.
+
+## Production deployment
+
+The three-service Compose stack consists of **Nginx**, **Node.js** and **Mosquitto**. SQLite persists in a named volume. Nginx mounts only compiled `dist/` assets. Vision is not a fourth deployed service in this release.
+
+### Existing Ubuntu automation
+
+For a fresh Ubuntu server on a trusted private LAN:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AbdullahNSarhan/Smart-Facility-Management-System/main/install.sh | sudo bash
 ```
 
-The generated administrator and MQTT credentials are stored in root-protected local files under `/opt/lci-sfm`; keep them private and provision device credentials securely. The dashboard URL is printed at the end of installation. MQTT remains bound to loopback by default until LAN device access is deliberately configured.
+The installer prepares dependencies, creates local production secrets, validates the application and starts Compose. Generated credentials stay in root-protected files under `/opt/lci-sfm`. Read [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) before installation or connecting physical loads.
 
-Update later with:
+After changes have been merged into your deployment branch:
 
 ```bash
 sudo /opt/lci-sfm/update.sh
 ```
 
-The update script acquires the shared deployment lock (`/var/lock/lci-sfm-deploy.lock`), refuses a dirty Git checkout, validates the candidate commit in a temporary worktree, creates and verifies an online SQLite backup (`PRAGMA integrity_check`) when the backend is running, fast-forwards the current branch, publishes the tested `dist/` bundle, and recreates the Compose stack without deleting persistent volumes. If a post-merge deployment or readiness check fails, `update.sh` automatically restores the previous `dist/` directory, rewinds the Git checkout to the previous commit when still on the candidate commit with a clean working tree, and attempts to re-bring up the previous containers while preserving the verified SQLite backup. Review `docs/DEPLOYMENT_GUIDE.md` before connecting physical hardware. The current HTTP/MQTT configuration is intended only for a trusted private network, not public internet exposure.
+The updater validates a candidate checkout, preserves configuration and persistent volumes, creates a verified online database backup when the backend is running, and attempts rollback after deployment/readiness failure. It refuses a dirty checkout. Do not use `docker compose down -v` to troubleshoot.
 
-## Default endpoints
+### Manual Compose setup
 
-When served behind Nginx or `npm run dev`, the frontend automatically targets the same-origin host (`window.location.host`) while allowing field engineers to override the target gateway or edge node IPs in the UI.
+```bash
+npm ci
+npm run build
+cp .env.example .env
+chmod 600 .env
+# Edit .env: replace all placeholders and configure private-LAN binding.
+# Generate mosquitto/passwd using mosquitto/README.md before starting the broker.
+docker compose config -q
+docker compose up -d mqtt-service
+docker compose up -d --build backend
+docker compose up -d --build frontend_dashboard
+docker compose ps
+```
+
+By default the example bind addresses are loopback. Configure actual private LAN binding and firewall rules when devices/workstations need access. The current HTTP/MQTT deployment assumes a trusted private network. Production secrets and TLS termination belong in deployment configuration, not browser settings.
+
+## Default address map
 
 | Component | Default |
 |---|---|
-| Same-Origin / Gateway HTTP API | `http://<host>/api/*` (or `http://192.168.43.225:1880`) |
-| Telemetry WebSocket | `ws://<host>/ws/telemetry` |
-| MFA WebSocket | `ws://<host>/ws/mfa` |
-| Node 1 — smart access | `192.168.43.11` |
-| Node 2 — environment | `192.168.43.12` |
-| Node 3 — biometric camera | `192.168.43.13` |
-| Node 3 snapshot | `http://192.168.43.13/capture.jpg` |
+| HTTP API | Same origin: `/api/*`; management: `/api/v1/*` |
+| WebSockets | Same origin: `/ws/telemetry`, `/ws/mfa` |
+| Access node | `node1` · `192.168.43.11` |
+| Environment node | `env_02` · `192.168.43.12` |
+| Camera node | `node3` · `192.168.43.13` |
+| Browser snapshot endpoint | `/api/v1/devices/node3/snapshot` |
+
+Environment variables seed the node registry **only on first database creation**. Once saved, SQLite settings take precedence across restarts. Editing an address does not change MQTT identity or topic permissions.
 
 ## Documentation
 
-- [Implementation Plan & Contract Matrix](docs/IMPLEMENTATION_PLAN_AND_MATRIX.md) — verified vs. proposed topic registry, route matrix, and runtime architecture notes.
-- [Frontend Documentation](docs/FRONTEND_DOCUMENTATION.md) — views, operator workflows, authentication behavior, endpoint contracts, telemetry fields, deployment, validation, and known limitations.
-- [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) — prepare Ubuntu, install Docker, configure production secrets, provision Mosquitto credentials, deploy the stack, verify it, and back up/restore SQLite.
-- [Backend Architecture](docs/BACKEND_ARCHITECTURE.md) — Node.js, Mosquitto/MQTT, SQLite, WebSockets, authentication, command lifecycle, security, deployment, and open firmware dependencies.
-- [Mosquitto Broker & ACL Guide](mosquitto/README.md) — provisioning per-node broker credentials and least-privilege topic ACLs.
-- [Hardware & Embedded Systems Architecture](hardware_embedded_systems_architecture_reference_lci_sfm.md)
-- [Programming & Software Concepts Guide](lci_sfm_ai_software_development_programming_concepts_guide.md)
-- [System Workflows & Logic](lci_sfm_comprehensive_workflows_system_logic.md)
-- [Docker Deployment Architecture](lci_sfm_docker_deployment_architecture.md)
+- [Facility Management & Feature Decisions](docs/FACILITY_MANAGEMENT.md) — current workflows, new endpoints, data migration and future priorities.
+- [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) — secrets, LAN setup, install/update, backup/restore.
+- [Backend Architecture](docs/BACKEND_ARCHITECTURE.md) — original service architecture and command lifecycle.
+- [Frontend Documentation](docs/FRONTEND_DOCUMENTATION.md) — dashboard views and existing integrations.
+- [Pre-Hardware Interface Handoff](docs/PRE_HARDWARE_INTERFACE_HANDOFF.md) — MQTT/device acceptance conditions.
+- [Mosquitto ACL Guide](mosquitto/README.md) — separate service/device credentials.
+- [Hardware Reference](hardware_embedded_systems_architecture_reference_lci_sfm.md)
+- [System Workflows](lci_sfm_comprehensive_workflows_system_logic.md)
 
+The management guide supersedes older descriptions of browser-only node IPs and combined operator/person provisioning. Existing historical documents may describe proposed hardware behavior; code and physical acceptance evidence determine what currently works.

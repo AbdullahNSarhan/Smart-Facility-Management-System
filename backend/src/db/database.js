@@ -113,9 +113,9 @@ export class SqliteDatabase {
       .get();
     const activeAdminCount = Number(adminCountRow?.cnt || 0);
 
-    // If an active Admin already exists AND the requested bootstrap username already exists,
-    // only sync password if it is still in its initial 'server_bootstrapped' state.
-    if (activeAdminCount > 0 && existingTargetUser && existingTargetUser.provisioning_status !== 'server_bootstrapped') {
+    // Bootstrap is one-time. A restart must not undo a rotated password or
+    // recreate the original account after the administrator changes its name.
+    if (activeAdminCount > 0) {
       return { bootstrapped: false, reason: 'admin_already_exists' };
     }
 

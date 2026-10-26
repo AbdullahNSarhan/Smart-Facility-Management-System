@@ -1,3 +1,4 @@
+import { mountFacilityConsole } from './facility-console.js';
 /**
  * LCI-SFM Enterprise BMS / HMI Operations Console Application Logic (ES6 Module)
  * - Air-Gapped 3-File Frontend Architecture (index.html, styles.css, app.js)
@@ -506,7 +507,8 @@ let activeChartMode = 'live'; // 'live' | 'sqlite' | 'agg'
 let currentControlMode = 'AUTO';
 
 // Provisioning Face Capture State
-let capturedFaceUrlForProvision = '';
+let centralSettings = null;
+let displayThresholds = { temperature_warning: 30, gas_warning_raw: 250, gas_critical_raw: 400 };
 
 // Pending Confirmation Action Callback
 let pendingConfirmCallback = null;
@@ -559,6 +561,7 @@ export function showToast(title, message, type = 'info') {
 
   toast.appendChild(titleEl);
   toast.appendChild(msgEl);
+  while (container.children.length >= 3) container.firstElementChild.remove();
   container.appendChild(toast);
   updateToastToolbar();
 
@@ -684,6 +687,9 @@ function applyRBACPermissions() {
     sectionView6.classList.remove('hidden');
   }
 
+  document.getElementById('nav-item-view-7')?.classList.toggle('hidden', !isAdmin);
+  document.getElementById('view-7')?.classList.toggle('hidden', !isAdmin);
+  if (!isAdmin) document.getElementById('view-7')?.classList.remove('active');
   syncManualControlsPanel();
 }
 
@@ -706,6 +712,7 @@ function syncManualControlsPanel() {
 }
 
 function lockAndLogoutSystem() {
+  clearAllToasts();
   if (isServerAuthVerified()) {
     fetchWithTimeout(`${getNodeRedHttp()}/api/auth/logout`, {
       method: 'POST',
@@ -865,7 +872,7 @@ function renderUserManagementTable() {
   }
 
   if (system_users.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7">${getEmptyTableIllustrationHTML(
+    tbody.innerHTML = `<tr><td colspan="5">${getEmptyTableIllustrationHTML(
       'No User Records Loaded from SQLite "system_users"',
       `Verify connection to ${getNodeRedHttp()}/api/logs/system_users or provision a new operator credential.`
     )}</td></tr>`;
@@ -876,25 +883,13 @@ function renderUserManagementTable() {
     .map(u => {
       const uid = u.id;
       const uname = u.username || u.name || '';
-      const rfid = u.rfid || '—';
-      const hasPin = Boolean(
-        u.pin_configured ||
-        (u.pin !== undefined && u.pin !== null && String(u.pin).length > 0)
-      );
-      const faceLinked = Boolean(u.face_linked || u.faceLinked);
       const role = u.role === 'Admin' ? 'Admin' : 'Viewer';
 
       return `
         <tr>
           <td class="tabular-nums">#${escapeHTML(uid)}</td>
           <td><strong>${escapeHTML(uname)}</strong></td>
-          <td><code>${escapeHTML(rfid)}</code></td>
-          <td><span class="text-muted" title="PIN &amp; password hashes are never exposed in plaintext">•••••• ${hasPin ? '(Set)' : '(Hash)'}</span></td>
-          <td>
-            <span class="status-tag ${faceLinked ? 'status-nominal' : 'status-unknown'}">
-              ${faceLinked ? 'Linked (Node 3)' : 'Not Linked'}
-            </span>
-          </td>
+          <td>${u.enabled ? 'Enabled' : 'Disabled'}</td>
           <td>
             <span class="status-tag ${role === 'Admin' ? 'status-nominal' : 'status-info'}">${escapeHTML(role)}</span>
           </td>
@@ -925,10 +920,12 @@ function switchActiveView(viewId) {
     'view-3': 'Environment & Actuator Control',
     'view-4': 'Events, Alarms & SQLite Audit Logs',
     'view-5': 'System Health & Device Diagnostics',
-    'view-6': 'Administration & User Provisioning'
+    'view-6': 'Dashboard Administration',
+    'view-7': 'People & Credentials',
+    'view-8': 'Devices & Room'
   };
 
-  if (viewId === 'view-6' && !isPrivilegedAdmin()) {
+  if (['view-6', 'view-7'].includes(viewId) && !isPrivilegedAdmin()) {
     showToast('Access Restricted', 'Administration requires a server-verified Admin session.', 'error');
     return;
   }
@@ -1256,125 +1253,22 @@ function mountAuthenticatedViewListeners() {
     fetchSystemUsers();
   }, { signal });
 
-  // View 6: Capture Face from Node 3 inside Provisioning Form
-  const captureFaceBtn = document.getElementById('prov-capture-face-btn');
-  const facePreviewImg = document.getElementById('prov-face-preview-img');
-  const facePlaceholder = document.getElementById('prov-face-placeholder');
-  const faceStatusText = document.getElementById('prov-face-status-text');
-
-  captureFaceBtn?.addEventListener('click', () => {
-    if (!isPrivilegedAdmin()) return;
-    if (!isValidIPv4(ip_node3)) {
-      showToast('Invalid Node 3 IP', 'Configure a valid IPv4 address for Node 3 first.', 'error');
-      return;
-    }
-
-    const snapshotUrl = `http://${ip_node3}/capture.jpg?t=${Date.now()}`;
-    if (faceStatusText) faceStatusText.textContent = 'Requesting Frame...';
-
-    facePreviewImg.onload = () => {
-      capturedFaceUrlForProvision = snapshotUrl;
-      lastNode3CaptureTimestamp = Date.now();
-      node3ProbeStatus = 'ONLINE';
-      facePreviewImg.classList.remove('hidden');
-      if (facePlaceholder) facePlaceholder.classList.add('hidden');
-      showToast('Face Frame Captured', `Verified JPEG frame from Node 3 (${ip_node3}).`, 'success');
-      updateHeartbeatDiagnosticsUI();
-    };
-
-    facePreviewImg.onerror = () => {
-      capturedFaceUrlForProvision = '';
-      node3ProbeStatus = 'UNREACHABLE';
-      facePreviewImg.classList.add('hidden');
-      if (facePlaceholder) facePlaceholder.classList.remove('hidden');
-      if (faceStatusText) faceStatusText.textContent = 'Camera Unreachable';
-      showToast('Node 3 Unreachable', `Could not retrieve capture.jpg from http://${ip_node3}/capture.jpg.`, 'error');
-      updateHeartbeatDiagnosticsUI();
-    };
-
-    facePreviewImg.src = snapshotUrl;
-  }, { signal });
-
-  // View 6: User Provisioning Form Submission (POST /api/provision/user -> SQLite system_users)
-  document.getElementById('user-provision-form')?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    if (!isPrivilegedAdmin()) {
-      showToast('Unauthorized', 'User provisioning requires a server-verified Admin session.', 'error');
-      return;
-    }
-
-    const cleanUsername = sanitizeInput(document.getElementById('prov_name').value);
-    const cleanRfid = sanitizeInput(document.getElementById('prov_rfid').value).toUpperCase();
-    const cleanPinStr = sanitizeInput(document.getElementById('prov_pin').value);
-    const cleanRole = document.getElementById('prov_role')?.value === 'Admin' ? 'Admin' : 'Viewer';
-
-    if (!SAFE_NAME_REGEX.test(cleanUsername)) {
-      showToast('Validation Error', 'Username must be 2–64 alphanumeric characters.', 'error');
-      return;
-    }
-    if (!isValidHexRFID(cleanRfid)) {
-      showToast('Validation Error', 'RFID UID must match hex format XX:XX:XX:XX (e.g. A4:9F:21:0B).', 'error');
-      return;
-    }
-    if (!isValidSixDigitPin(cleanPinStr)) {
-      showToast('Validation Error', 'Keypad PIN must be an exact 6-digit integer (000000–999999).', 'error');
-      return;
-    }
-
-    const strictPayload = {
-      username: String(cleanUsername),
-      password: String(cleanPinStr),
-      role: cleanRole,
-      rfid: String(cleanRfid),
-      pin: Number.parseInt(cleanPinStr, 10),
-      face_linked: Boolean(capturedFaceUrlForProvision)
-    };
-
-    const submitBtn = document.getElementById('prov-submit-btn');
-    if (submitBtn) submitBtn.disabled = true;
-
-    try {
-      const res = await fetchWithTimeout(`${getNodeRedHttp()}/api/provision/user`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify(strictPayload)
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      httpApiReachable = true;
-      lastHttpApiSuccessTimestamp = Date.now();
-      capturedFaceUrlForProvision = '';
-      facePreviewImg?.classList.add('hidden');
-      facePlaceholder?.classList.remove('hidden');
-      if (faceStatusText) faceStatusText.textContent = 'No Face Linked';
-      e.target.reset();
-
-      pushActivityEvent('ADMIN', `Provisioned User in SQLite: ${cleanUsername} (${cleanRole})`);
-      showToast('User Provisioned', `${cleanUsername} saved to SQLite system_users.`, 'success');
-      await fetchSystemUsers();
-    } catch {
-      showToast('Provisioning Failed', `Could not reach ${getNodeRedHttp()}/api/provision/user. Database was not modified.`, 'error');
-    } finally {
-      if (submitBtn) submitBtn.disabled = !isPrivilegedAdmin();
-    }
-  }, { signal });
-
   // View 6: Admin Profile Form (Update Admin Username & Password in SQLite)
   document.getElementById('admin-profile-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!isPrivilegedAdmin()) return;
 
     const newUsername = sanitizeInput(document.getElementById('admin_new_username').value);
-    const newPassword = sanitizeInput(document.getElementById('admin_new_password').value);
+    const newPassword = document.getElementById('admin_new_password').value;
     const confirmPassEl = document.getElementById('admin_confirm_password');
-    const confirmPassword = confirmPassEl ? sanitizeInput(confirmPassEl.value) : newPassword;
+    const confirmPassword = confirmPassEl ? confirmPassEl.value : newPassword;
 
     if (!SAFE_NAME_REGEX.test(newUsername)) {
       showToast('Validation Error', 'Admin Username must be 2–32 alphanumeric characters.', 'error');
       return;
     }
-    if (newPassword.length < 6) {
-      showToast('Validation Error', 'Admin Password must be at least 6 characters.', 'error');
+    if (newPassword.length < 12) {
+      showToast('Validation Error', 'Admin Password must be at least 12 characters.', 'error');
       return;
     }
     if (confirmPassEl && newPassword !== confirmPassword) {
@@ -1420,11 +1314,11 @@ function mountAuthenticatedViewListeners() {
     showToast('Current Host Populated', `Central server field set to ${defaultBrowserHost}. Click Save & Reconnect to apply.`, 'info');
   }, { signal });
 
-  document.getElementById('settings-ip-form')?.addEventListener('submit', (e) => {
+  document.getElementById('settings-ip-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!isPrivilegedAdmin()) return;
     const rawHost = document.getElementById('set_server_host')?.value || server_host;
-    saveNodeIPs(
+    await saveNodeIPs(
       document.getElementById('set_ip_node1').value,
       document.getElementById('set_ip_node2').value,
       document.getElementById('set_ip_node3').value,
@@ -1684,7 +1578,7 @@ function checkNodeIPsOnStartup() {
   syncIPInputs();
 }
 
-function saveNodeIPs(rawN1, rawN2, rawN3, rawServerHost = server_host) {
+async function saveNodeIPs(rawN1, rawN2, rawN3, rawServerHost = server_host) {
   const n1 = sanitizeInput(rawN1);
   const n2 = sanitizeInput(rawN2);
   const n3 = sanitizeInput(rawN3);
@@ -1699,25 +1593,57 @@ function saveNodeIPs(rawN1, rawN2, rawN3, rawServerHost = server_host) {
     return false;
   }
 
-  const hostChanged = srv !== server_host;
-  ip_node1 = n1;
-  ip_node2 = n2;
-  ip_node3 = n3;
-  server_host = srv;
-
-  localStorage.setItem('ip_node1', ip_node1);
-  localStorage.setItem('ip_node2', ip_node2);
-  localStorage.setItem('ip_node3', ip_node3);
-  localStorage.setItem('lci_server_host', server_host);
-
-  syncIPInputs();
-  showToast('Endpoints Updated', `Server: ${server_host} · Nodes: ${ip_node1}, ${ip_node2}, ${ip_node3}`, 'success');
-
-  if (hostChanged && isAuthenticated()) {
-    probeBackendReadiness();
-    connectWebSockets();
+  if (!isPrivilegedAdmin()) return false;
+  try {
+    const current = centralSettings || (await managementApi('/settings')).settings;
+    const payload = {
+      revision: current.revision, facility_name: current.facility_name, room_name: current.room_name,
+      nodes: { node1: { ...current.nodes.node1, ip: n1 }, node2: { ...current.nodes.node2, ip: n2 }, node3: { ...current.nodes.node3, ip: n3 } },
+      display_thresholds: current.display_thresholds
+    };
+    const saved = await managementApi('/settings', { method: 'PUT', body: payload });
+    applyCentralSettings(saved.settings);
+    document.dispatchEvent(new CustomEvent('lci-settings-updated', { detail: saved.settings }));
+    const hostChanged = srv !== server_host;
+    if (hostChanged) {
+      // End the current session at its original host before changing the gateway.
+      lockAndLogoutSystem();
+      server_host = srv;
+      safeStorageSet('lci_server_host', server_host);
+      centralSettings = null;
+      syncIPInputs();
+    }
+    showToast('Shared Addresses Saved', hostChanged ? 'Gateway changed. Sign in to the selected server.' : 'Node addresses saved centrally. Configure the physical device network separately.', 'success');
+    return true;
+  } catch (error) {
+    showToast('Settings Not Saved', error.message, 'error');
+    return false;
   }
-  return true;
+}
+
+async function managementApi(path, options = {}) {
+  const res = await fetchWithTimeout(`${getNodeRedHttp()}/api/v1${path}`, {
+    ...options, headers: getAuthHeaders(),
+    ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) })
+  }, 8000);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function applyCentralSettings(settings) {
+  centralSettings = settings;
+  ip_node1 = settings.nodes.node1.ip;
+  ip_node2 = settings.nodes.node2.ip;
+  ip_node3 = settings.nodes.node3.ip;
+  displayThresholds = settings.display_thresholds;
+  syncIPInputs();
+  if (tempChart) {
+    tempChart.warningThreshold = displayThresholds.temperature_warning;
+    tempChart.thresholdLabel = 'Display warning';
+    tempChart.draw();
+  }
+  updateFacilityStatusAndFreshness();
 }
 
 function syncIPInputs() {
@@ -1758,7 +1684,7 @@ function syncIPInputs() {
   setText('diag-effective-ws-mfa', `${getWsProtocol()}//${server_host}/ws/mfa`);
 }
 
-function refreshCameraSnapshot(userInitiated = false) {
+async function refreshCameraSnapshot(userInitiated = false) {
   const img = document.getElementById('biometric-camera-img');
   const fallback = document.getElementById('camera-fallback-overlay');
   const fallbackTitle = document.getElementById('camera-fallback-title');
@@ -1810,7 +1736,15 @@ function refreshCameraSnapshot(userInitiated = false) {
     updateHeartbeatDiagnosticsUI();
   };
 
-  img.src = `http://${ip_node3}/capture.jpg?t=${Date.now()}`;
+  try {
+    const response = await fetchWithTimeout(`${getNodeRedHttp()}/api/v1/devices/node3/snapshot?t=${Date.now()}`, { headers: getAuthHeaders() }, 6000);
+    if (!response.ok) throw new Error('Snapshot unavailable');
+    const objectUrl = URL.createObjectURL(await response.blob());
+    const loaded = img.onload, failed = img.onerror;
+    img.onload = () => { URL.revokeObjectURL(objectUrl); loaded(); };
+    img.onerror = () => { URL.revokeObjectURL(objectUrl); failed(); };
+    img.src = objectUrl;
+  } catch { img.onerror?.(); }
 }
 
 // ============================================================================
@@ -1912,7 +1846,7 @@ export function handleTelemetryPayload(payload) {
   const snapTemp = document.getElementById('snap-temp');
   if (snapTemp) {
     snapTemp.textContent = `${temperature.toFixed(1)} °C`;
-    snapTemp.className = `card-value tabular-nums ${temperature > 30 ? 'text-amber' : 'text-cyber'}`;
+    snapTemp.className = `card-value tabular-nums ${temperature > displayThresholds.temperature_warning ? 'text-amber' : 'text-cyber'}`;
   }
 
   const snapHum = document.getElementById('snap-hum');
@@ -1921,15 +1855,15 @@ export function handleTelemetryPayload(payload) {
     snapHum.className = 'card-value tabular-nums text-cyber';
   }
 
-  const isEmergency = smoke_gas_level >= 400;
+  const isEmergency = smoke_gas_level >= displayThresholds.gas_critical_raw;
   const snapSmoke = document.getElementById('snap-smoke');
   if (snapSmoke) {
-    snapSmoke.textContent = `${smoke_gas_level} PPM`;
-    snapSmoke.className = `card-value tabular-nums ${isEmergency ? 'text-rose' : (smoke_gas_level >= 250 ? 'text-amber' : 'text-mint')}`;
+    snapSmoke.textContent = `${smoke_gas_level} raw`;
+    snapSmoke.className = `card-value tabular-nums ${isEmergency ? 'text-rose' : (smoke_gas_level >= displayThresholds.gas_warning_raw ? 'text-amber' : 'text-mint')}`;
   }
 
   const bannerSmoke = document.getElementById('banner-smoke-val');
-  if (bannerSmoke) bannerSmoke.textContent = `${smoke_gas_level} PPM`;
+  if (bannerSmoke) bannerSmoke.textContent = `${smoke_gas_level} raw`;
 
   const reedEl = document.getElementById('access-reed-state');
   if (reedEl) {
@@ -1950,7 +1884,7 @@ export function handleTelemetryPayload(payload) {
 
   const smokeValEl = document.getElementById('env-smoke-val');
   if (smokeValEl) {
-    smokeValEl.textContent = `${smoke_gas_level} PPM`;
+    smokeValEl.textContent = `${smoke_gas_level} raw`;
     smokeValEl.className = `gauge-num tabular-nums ${isEmergency ? 'text-rose' : 'text-mint'}`;
   }
 
@@ -1962,8 +1896,8 @@ export function handleTelemetryPayload(payload) {
   // Update View 3 Gauge Status Badges
   const tempStatus = document.getElementById('env-temp-status');
   if (tempStatus) {
-    tempStatus.textContent = temperature > 30 ? 'HIGH (>30°C AUTO-FAN)' : 'NOMINAL';
-    tempStatus.className = `status-tag ${temperature > 30 ? 'status-warning' : 'status-nominal'}`;
+    tempStatus.textContent = temperature > displayThresholds.temperature_warning ? 'ABOVE DISPLAY LIMIT' : 'NOMINAL';
+    tempStatus.className = `status-tag ${temperature > displayThresholds.temperature_warning ? 'status-warning' : 'status-nominal'}`;
   }
   const humStatus = document.getElementById('env-hum-status');
   if (humStatus) {
@@ -1972,8 +1906,8 @@ export function handleTelemetryPayload(payload) {
   }
   const smokeStatus = document.getElementById('env-smoke-status');
   if (smokeStatus) {
-    smokeStatus.textContent = isEmergency ? 'CRITICAL ALARM' : (smoke_gas_level >= 250 ? 'ELEVATED' : 'NOMINAL');
-    smokeStatus.className = `status-tag ${isEmergency ? 'status-critical' : (smoke_gas_level >= 250 ? 'status-warning' : 'status-nominal')}`;
+    smokeStatus.textContent = isEmergency ? 'CRITICAL ALARM' : (smoke_gas_level >= displayThresholds.gas_warning_raw ? 'ELEVATED' : 'NOMINAL');
+    smokeStatus.className = `status-tag ${isEmergency ? 'status-critical' : (smoke_gas_level >= displayThresholds.gas_warning_raw ? 'status-warning' : 'status-nominal')}`;
   }
 
   updateCircularGauge('gauge-arc-temp', temperature, 50);
@@ -2836,30 +2770,30 @@ function updateFacilityStatusAndFreshness() {
     return;
   }
 
-  const isSmokeCritical = smoke_gas_level >= 400;
-  const isSmokeElevated = smoke_gas_level >= 250 && smoke_gas_level < 400;
-  const isTempElevated = temperature > 30.0;
+  const isSmokeCritical = smoke_gas_level >= displayThresholds.gas_critical_raw;
+  const isSmokeElevated = smoke_gas_level >= displayThresholds.gas_warning_raw && smoke_gas_level < displayThresholds.gas_critical_raw;
+  const isTempElevated = temperature > displayThresholds.temperature_warning;
 
-  if (isSmokeCritical) {
+  if (isSmokeCritical && !isTelStale && wsTelemetryState === 'ONLINE') {
     banner.className = 'status-banner emergency';
     if (kicker) kicker.textContent = 'Critical Facility Alarm · Immediate Attention Required';
-    title.textContent = `Emergency Alert — High Smoke/Gas Detected (${smoke_gas_level} PPM)`;
+    title.textContent = `Display Alert — High MQ-2 Raw Reading (${smoke_gas_level} raw)`;
     if (subtitle) {
-      subtitle.textContent = `MQ-2 concentration exceeds 400 PPM threshold on Node 2 (${ip_node2}). Autonomous HVAC extraction and fail-safe egress protocols active.`;
+      subtitle.textContent = `MQ-2 raw reading exceeds the configured display limit on Node 2 (${ip_node2}). Calibration and physical actuator state are not established by this warning.`;
     }
   } else if (wsTelemetryState === 'OFFLINE' || isTelStale) {
     banner.className = 'status-banner warning';
     if (kicker) kicker.textContent = 'Telemetry Degraded · Stale Readings Displayed';
     title.textContent = `Telemetry Stream Interrupted — Last Frame ${formatAgeSeconds(lastTelemetryTimestamp)}`;
     if (subtitle) {
-      subtitle.textContent = `Displayed metrics reflect the last known frame prior to disconnection. Edge nodes continue local millis() autonomous execution.`;
+      subtitle.textContent = `Displayed metrics reflect the last known frame prior to disconnection. Local device behavior depends on its firmware policy.`;
     }
   } else if (isSmokeElevated || isTempElevated || system_errors.length > 0) {
     banner.className = 'status-banner warning';
     if (kicker) kicker.textContent = 'Facility Operating State · Warning / Threshold Active';
     const reasons = [];
-    if (isTempElevated) reasons.push(`Temperature ${temperature.toFixed(1)} °C (> 30.0 °C Auto-Fan Threshold)`);
-    if (isSmokeElevated) reasons.push(`Elevated Smoke/Gas (${smoke_gas_level} PPM)`);
+    if (isTempElevated) reasons.push(`Temperature ${temperature.toFixed(1)} °C (> ${displayThresholds.temperature_warning} °C display limit)`);
+    if (isSmokeElevated) reasons.push(`Elevated Smoke/Gas (${smoke_gas_level} raw)`);
     if (system_errors.length > 0) reasons.push(`${system_errors.length} System Error(s) Logged`);
     title.textContent = `Warning Condition — ${reasons.join(' · ')}`;
     if (subtitle) {
@@ -2870,7 +2804,7 @@ function updateFacilityStatusAndFreshness() {
     if (kicker) kicker.textContent = 'Facility Operating State · Verified Nominal';
     title.textContent = 'Normal Operations — All Thresholds Nominal';
     if (subtitle) {
-      subtitle.textContent = `Verified live telemetry from Node 2 (${ip_node2}) within nominal environmental bounds (Temp ${temperature.toFixed(1)} °C, Smoke ${smoke_gas_level} PPM).`;
+      subtitle.textContent = `Verified live telemetry from Node 2 (${ip_node2}) within nominal environmental bounds (Temp ${temperature.toFixed(1)} °C, Smoke ${smoke_gas_level} raw).`;
     }
   }
 }
@@ -3047,6 +2981,13 @@ function bootAuthenticatedSession() {
   applyRBACPermissions();
   mountAuthenticatedViewListeners();
   checkNodeIPsOnStartup();
+  if (isServerAuthVerified()) {
+    mountFacilityConsole({
+      api: managementApi, isAdmin: isPrivilegedAdmin, applySettings: applyCentralSettings,
+      notify: showToast, confirm: openConfirmModal, signal: authSessionAbortController.signal
+    });
+    document.addEventListener('lci-operators-updated', fetchSystemUsers, { signal: authSessionAbortController.signal });
+  }
   updateFacilityStatusAndFreshness();
   updateHeartbeatDiagnosticsUI();
   renderActivityFeed();
@@ -3073,7 +3014,7 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
       max: 50,
       unit: '°C',
       warningThreshold: 30,
-      thresholdLabel: 'Auto-Fan > 30°C',
+      thresholdLabel: 'Display warning',
       statsElId: 'temp-chart-stats'
     });
   }
@@ -3144,8 +3085,9 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     const rawUsername = document.getElementById('login_username')?.value || '';
     const rawPassword = document.getElementById('login_password')?.value || '';
 
-    const cleanUsername = sanitizeInput(rawUsername);
-    const cleanPassword = sanitizeInput(rawPassword);
+    const cleanUsername = rawUsername.trim();
+    // Passwords are opaque secrets; sanitization would change valid quotes/spaces.
+    const cleanPassword = rawPassword;
 
     if (!cleanUsername || !cleanPassword) {
       showToast('Credentials Required', 'Enter both operator username and password.', 'error');
@@ -3175,13 +3117,13 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
       }
 
       const authData = await response.json();
-      const token = sanitizeInput(String(authData.token || (authData.authenticated ? 'COOKIE_SESSION' : '')));
+      const token = String(authData.token || (authData.authenticated ? 'COOKIE_SESSION' : ''));
       if (!token) {
         throw new Error('Missing session token from backend');
       }
-      const csrfToken = sanitizeInput(String(authData.csrfToken || ''));
+      const csrfToken = String(authData.csrfToken || '');
       const role = authData.role === 'Admin' ? 'Admin' : 'Viewer';
-      const verifiedUser = sanitizeInput(String(authData.username || cleanUsername));
+      const verifiedUser = String(authData.username || cleanUsername);
 
       httpApiReachable = true;
       lastHttpApiSuccessTimestamp = Date.now();
@@ -3242,13 +3184,13 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   document.getElementById('close-ip-modal-x')?.addEventListener('click', closeIpModal);
   document.getElementById('cancel-ip-modal-btn')?.addEventListener('click', closeIpModal);
 
-  document.getElementById('startup-ip-form')?.addEventListener('submit', (e) => {
+  document.getElementById('startup-ip-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!isPrivilegedAdmin()) {
       showToast('Read-Only Session', 'Endpoint changes require a verified Admin session.', 'error');
       return;
     }
-    const ok = saveNodeIPs(
+    const ok = await saveNodeIPs(
       document.getElementById('modal_ip_node1').value,
       document.getElementById('modal_ip_node2').value,
       document.getElementById('modal_ip_node3').value,

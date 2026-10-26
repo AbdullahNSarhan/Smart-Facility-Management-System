@@ -1,3 +1,5 @@
+> **Management update:** Shared node settings, separate people/credentials, reader enrollment software, camera proxy and the new API are documented in [Facility Management](FACILITY_MANAGEMENT.md). That guide supersedes older browser-only IP and combined provisioning descriptions below. Device policy sync and Vision remain pending.
+
 # LCI-SFM Node.js Backend Implementation Plan & Contract Matrix
 
 ## 1. Implementation Plan (Milestones 1–11)

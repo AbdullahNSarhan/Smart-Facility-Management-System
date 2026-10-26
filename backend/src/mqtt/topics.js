@@ -8,6 +8,16 @@
  */
 
 export const MQTT_TOPICS = Object.freeze({
+  READER_ENROLL_COMMAND: {
+    topic: 'lecf/access/enrollment/command', status: 'PROPOSED_EXTENSION',
+    direction: 'publish', qos: 1, retain: false,
+    description: 'Non-actuating RFID reader scan request; requires RFID_ENROLL_V1 firmware'
+  },
+  READER_ENROLL_EVENT: {
+    topic: 'lecf/access/enrollment/event', status: 'PROPOSED_EXTENSION',
+    direction: 'subscribe', qos: 1,
+    description: 'Session and nonce bound READY/CARD/FAILED reader event'
+  },
   // Verified existing firmware / service topics
   ENV_TELEMETRY: {
     topic: 'lecf/env/telemetry',

@@ -1,3 +1,5 @@
+> **Management update:** Shared node settings, separate people/credentials, reader enrollment software, camera proxy and the new API are documented in [Facility Management](FACILITY_MANAGEMENT.md). That guide supersedes older browser-only IP and combined provisioning descriptions below. Device policy sync and Vision remain pending.
+
 # LCI-SFM: pre-hardware interface handoff (server acceptance)
 
 **Status:** Server-side contract baseline, **not** proof of physical hardware reliability. Maintainers must freeze these choices with each firmware/vision-service owner before production actuation.

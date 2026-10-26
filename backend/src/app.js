@@ -13,6 +13,8 @@ import { WsGateway } from './websocket/wsServer.js';
 import { MqttService } from './mqtt/mqttClient.js';
 import { CommandCoordinator } from './services/commandCoordinator.js';
 import { createApiRouter } from './routes/apiRoutes.js';
+import { FacilityManagement } from './services/facilityManagement.js';
+import { createManagementRouter } from './routes/managementRoutes.js';
 
 /**
  * Factory creating a self-contained LCI-SFM backend instance
@@ -54,6 +56,9 @@ export function createBackendContext(configOverrides = {}) {
 
   commandCoordinator.setMqttService(mqttService);
 
+  const management = new FacilityManagement({ db, repo, config, mqttService });
+  mqttService.management = management;
+
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy);
@@ -71,6 +76,7 @@ export function createBackendContext(configOverrides = {}) {
     commandCoordinator
   });
 
+  app.use('/api/v1', createManagementRouter({ management, authMiddleware, db, snapshotFetch: configOverrides.snapshotFetch }));
   app.use('/api', apiRouter);
   app.use(errorHandlerMiddleware);
 
@@ -104,6 +110,7 @@ export function createBackendContext(configOverrides = {}) {
   }
 
   return {
+    management,
     config,
     db,
     repo,
