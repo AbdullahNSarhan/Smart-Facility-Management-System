@@ -87,6 +87,7 @@ function resolveTrustProxy(rawTrustProxy) {
 export function loadConfig(overrides = {}) {
   const nodeEnv = overrides.NODE_ENV || process.env.NODE_ENV || 'development';
   const isProd = nodeEnv === 'production';
+  if(isProd && String(overrides.LCI_SIMULATOR_MODE ?? process.env.LCI_SIMULATOR_MODE)==='true')throw new Error('Simulator mode is forbidden in production');
 
   const explicitSqlitePath = overrides.SQLITE_DB_PATH ?? process.env.SQLITE_DB_PATH;
   const rawSqlitePath = explicitSqlitePath || DEFAULT_DB_PATH;
@@ -116,6 +117,8 @@ export function loadConfig(overrides = {}) {
   }
 
   const config = {
+    // Simulator is an explicit development-only process with a separate database.
+    simulatorMode: !isProd && String(overrides.LCI_SIMULATOR_MODE ?? process.env.LCI_SIMULATOR_MODE) === 'true',
     nodeEnv,
     isProd,
     port: Number(overrides.PORT ?? process.env.PORT ?? 3000),

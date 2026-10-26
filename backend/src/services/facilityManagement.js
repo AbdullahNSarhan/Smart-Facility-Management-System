@@ -48,10 +48,12 @@ export class FacilityManagement {
     const result = this.db.transaction(() => {
       const previous = this.settings();
       if (data.revision !== previous.revision) fail(409, 'REVISION_CONFLICT', 'Settings changed in another session. Refresh before saving.');
+      this.operations?.beforeLegacySync(data);
       const { revision, ...document } = data;
       this.db.prepare('UPDATE facility_settings SET revision = revision + 1, document = ?, updated_at = ?, updated_by = ? WHERE id = 1')
         .run(JSON.stringify(document), now(), actor.username);
       this.audit(actor, 'SETTINGS_UPDATED', 'room-001', { before: previous, after: document }, requestId);
+      this.operations?.syncLegacy(data);
       return this.settings();
     })();
     this.applyRuntimeIps(result);
@@ -61,7 +63,7 @@ export class FacilityManagement {
   devices() {
     const health = this.mqttService.getHealthStatus();
     const settings = this.settings();
-    return ['node1','node2','node3'].map(key => {
+    const baseline = ['node1','node2','node3'].map(key => {
       const deviceId = this.config[`${key}Id`];
       const observation = health.observed_nodes?.[deviceId];
       return {
@@ -74,6 +76,7 @@ export class FacilityManagement {
         address_status: 'REGISTERED_ONLY', policy_sync_status: 'FIRMWARE_INTEGRATION_REQUIRED'
       };
     });
+    return this.operations ? baseline.map(d=>({...d,...this.operations.device(d.device_id),key:d.key,capabilities:d.capabilities,capabilities_seen_at:d.capabilities_seen_at})) : baseline;
   }
 
   person(id) {

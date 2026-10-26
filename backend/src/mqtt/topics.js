@@ -8,6 +8,9 @@
  */
 
 export const MQTT_TOPICS = Object.freeze({
+  DEVICE_TELEMETRY: {topic:'lci/v1/devices/+/telemetry',status:'PROPOSED_EXTENSION',direction:'subscribe',qos:1,description:'Registered v1 device telemetry'},
+  DEVICE_HEARTBEAT: {topic:'lci/v1/devices/+/heartbeat',status:'PROPOSED_EXTENSION',direction:'subscribe',qos:1,description:'Registered v1 device heartbeat'},
+  DEVICE_ACK: {topic:'lci/v1/devices/+/ack',status:'PROPOSED_EXTENSION',direction:'subscribe',qos:1,description:'Registered v1 switch command ACK'},
   READER_ENROLL_COMMAND: {
     topic: 'lecf/access/enrollment/command', status: 'PROPOSED_EXTENSION',
     direction: 'publish', qos: 1, retain: false,

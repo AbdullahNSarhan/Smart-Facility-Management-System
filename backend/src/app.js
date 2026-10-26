@@ -15,6 +15,8 @@ import { CommandCoordinator } from './services/commandCoordinator.js';
 import { createApiRouter } from './routes/apiRoutes.js';
 import { FacilityManagement } from './services/facilityManagement.js';
 import { createManagementRouter } from './routes/managementRoutes.js';
+import { ReleaseOperations } from './services/releaseOperations.js';
+import { createOperationsRouter } from './routes/operationsRoutes.js';
 
 /**
  * Factory creating a self-contained LCI-SFM backend instance
@@ -58,6 +60,10 @@ export function createBackendContext(configOverrides = {}) {
 
   const management = new FacilityManagement({ db, repo, config, mqttService });
   mqttService.management = management;
+  const operations = new ReleaseOperations({db,management,config,mqttService,wsGateway,clock:configOverrides.clock,httpFetch:configOverrides.httpFetch});
+  management.operations = operations;
+  mqttService.operations = operations;
+  commandCoordinator.operations = operations;
 
   const app = express();
   app.disable('x-powered-by');
@@ -76,6 +82,7 @@ export function createBackendContext(configOverrides = {}) {
     commandCoordinator
   });
 
+  app.use('/api/v1', createOperationsRouter({operations,authMiddleware,db,snapshotFetch:configOverrides.snapshotFetch}));
   app.use('/api/v1', createManagementRouter({ management, authMiddleware, db, snapshotFetch: configOverrides.snapshotFetch }));
   app.use('/api', apiRouter);
   app.use(errorHandlerMiddleware);
@@ -96,6 +103,7 @@ export function createBackendContext(configOverrides = {}) {
   }
 
   async function stop() {
+    operations.close();
     commandCoordinator.shutdown();
     wsGateway.closeAll();
     await mqttService.close();
@@ -110,6 +118,7 @@ export function createBackendContext(configOverrides = {}) {
   }
 
   return {
+    operations,
     management,
     config,
     db,

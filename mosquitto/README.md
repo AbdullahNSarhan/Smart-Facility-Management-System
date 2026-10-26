@@ -52,3 +52,7 @@ The Compose file supports `MQTT_BIND_IP`. Keep it at `127.0.0.1` while testing l
 Docker-published ports can bypass ordinary UFW filtering depending on the host's networking setup. Review Docker's official firewall guidance and enforce restrictions in the appropriate `DOCKER-USER`/upstream firewall path: https://docs.docker.com/engine/install/ubuntu/#firewall-limitations
 
 Before starting Compose, verify that `mosquitto/passwd` exists. The Compose bind mount expects this file; do not create a directory named `passwd` in its place.
+
+## Additional v1 devices
+
+Register an immutable device ID in the console and provision a matching broker username on the host. The ACL now scopes `lci/v1/devices/%u/{telemetry,heartbeat,ack}` writes and `%u/command` reads to that authenticated username. Backend reads use its own scoped wildcard entries. Do not reuse backend credentials in devices. See the [v1 protocol and provisioning guide](../docs/RELEASE_CANDIDATE_GUIDE.md#broker-provisioning-for-an-additional-mqtt-device). Legacy service identities and `lecf/...` contracts remain supported.

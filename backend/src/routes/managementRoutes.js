@@ -24,7 +24,10 @@ export function createManagementRouter({ management, authMiddleware, db, snapsho
   router.get('/devices', requireAuth, (req, res) => ok(res, { devices: management.devices() }));
   router.get('/devices/node3/snapshot', requireAuth, createRateLimiter({ maxRequests: 30, keyPrefix: 'camera' }), async (req, res, next) => {
     try {
-      const jpeg = await readCameraSnapshot(management.settings().nodes.node3.ip, snapshotFetch);
+      if(management.operations?.simulation)return res.status(409).json({ok:false,error:'Physical camera capture is disabled in the isolated simulator'});
+      const device=management.operations?.device(management.config.node3Id);
+      if(device&&!device.enabled)return res.status(409).json({ok:false,error:'Camera node is disabled'});
+      const jpeg = await readCameraSnapshot(management.settings().nodes.node3.ip, snapshotFetch,device?{port:device.port,path:device.path}:{});
       res.type('image/jpeg').send(jpeg);
     } catch (err) { next(err); }
   });

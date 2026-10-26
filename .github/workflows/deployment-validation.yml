@@ -82,6 +82,11 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Test release console in Chromium (isolated app, no hardware)
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:ui
+
       # Reproduce the exact Linux container validation environment used by
       # install.sh and update.sh, not just the GitHub runner's toolchain.
       - name: Validate inside installer Docker image
@@ -143,7 +148,7 @@ jobs:
             -e MQTT_PASSWORD="$MQTT_PASSWORD" -e NODE2_PASSWORD="$NODE2_PASSWORD" \
             -v "$PWD/mosquitto:/mosquitto/config" \
             --entrypoint sh eclipse-mosquitto:2.0 \
-            -ec 'mosquitto_passwd -c -b /mosquitto/config/passwd lci_backend "$MQTT_PASSWORD"; mosquitto_passwd -b /mosquitto/config/passwd node2_env "$NODE2_PASSWORD"'
+            -ec 'mosquitto_passwd -c -b /mosquitto/config/passwd lci_backend "$MQTT_PASSWORD"; mosquitto_passwd -b /mosquitto/config/passwd node2_env "$NODE2_PASSWORD"; mosquitto_passwd -b /mosquitto/config/passwd ci_sensor "$NODE2_PASSWORD"; mosquitto_passwd -b /mosquitto/config/passwd ci_other "$NODE2_PASSWORD"'
           sudo chown 1883:1883 mosquitto/passwd mosquitto/acl
           sudo chmod 600 mosquitto/passwd mosquitto/acl
           test -s mosquitto/passwd
@@ -242,6 +247,14 @@ jobs:
           LCI_SIMULATOR_CI_ONLY=1 \
             CI_MQTT_NODE2_SECRET_FILE="$RUNNER_TEMP/ci-node2-password" \
             node scripts/ci-mqtt-contract-smoke.mjs
+
+      - name: Verify generic device protocol and broker identity isolation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LCI_SIMULATOR_CI_ONLY=1 \
+            CI_MQTT_NODE2_SECRET_FILE="$RUNNER_TEMP/ci-node2-password" \
+            node scripts/ci-device-v1-smoke.mjs
 
       - name: Test SQLite backup and integrity
         shell: bash

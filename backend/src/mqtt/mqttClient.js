@@ -253,8 +253,8 @@ export class MqttService {
         }
       });
 
-      this.client.on('message', (topic, messageBuffer) => {
-        this.handleIncomingMessage(topic, messageBuffer);
+      this.client.on('message', (topic, messageBuffer, packet) => {
+        this.handleIncomingMessage(topic, messageBuffer, {retained:Boolean(packet?.retain)});
       });
     });
   }
@@ -333,11 +333,12 @@ export class MqttService {
   /**
    * Processes and validates an incoming MQTT message from the broker (or test harness).
    */
-  handleIncomingMessage(topic, rawPayload) {
+  handleIncomingMessage(topic, rawPayload, options = {}) {
     this.lastActivityAt = new Date().toISOString();
     const payloadStr = Buffer.isBuffer(rawPayload)
       ? rawPayload.toString('utf8')
       : String(rawPayload);
+    if(Buffer.byteLength(payloadStr,'utf8')>65536)return {ok:false,error:'MQTT_PAYLOAD_TOO_LARGE'};
 
     let parsed;
     try {
@@ -357,6 +358,17 @@ export class MqttService {
     }
 
     try {
+      const generic=/^lci\/v1\/devices\/([a-z][a-z0-9_-]{0,47})\/(telemetry|heartbeat|ack)$/.exec(topic);
+      if(generic && this.operations) {
+        if(options.retained)return {ok:false,error:'RETAINED_FRAME_REJECTED'};
+        const [,id,kind]=generic,d=this.operations.device(id);
+        if(d.transport!=='MQTT_V1')return {ok:false,error:'TRANSPORT_MISMATCH'};
+        if(kind==='telemetry')return this.operations.ingest(id,parsed);
+        if(kind==='heartbeat')return this.operations.heartbeat(id,parsed);
+        return this.operations.acknowledgeCommand(id,parsed);
+      }
+      const legacySlot=topic.startsWith('lecf/env/')?'node2':topic.startsWith('lecf/access/')?'node1':null;
+      if(legacySlot && this.operations && !this.operations.device(this.config[`${legacySlot}Id`]).enabled)return {ok:false,error:'DEVICE_DISABLED'};
       if (topic === MQTT_TOPICS.ENV_TELEMETRY.topic) {
         return this._handleEnvTelemetry(topic, parsed);
       }
@@ -439,6 +451,7 @@ export class MqttService {
     };
 
     const insertResult = this.repo.insertEnvironmentalTelemetry(normalized);
+    if(!insertResult.duplicate && nodeId===this.config.node2Id)this.operations?.ingestLegacy(nodeId,normalized,{boot_id:normalized.boot_id,seq:normalized.seq});
     this.nodeHeartbeats.set(nodeId, {
       ...this.nodeHeartbeats.get(nodeId),
       status: 'ONLINE',
