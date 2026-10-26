@@ -4,6 +4,8 @@
 
 # 1. Central Node.js Backend Service (lci_backend)
 user lci_backend
+topic read lecf/access/enrollment/event
+topic write lecf/access/enrollment/command
 topic read lecf/env/telemetry
 topic read lecf/access/mfa_face
 topic read lecf/access/state
@@ -15,6 +17,8 @@ topic write lecf/env/command
 
 # 2. Node 1 — Smart Access & 2-of-3 MFA Controller (node1_access)
 user node1_access
+topic write lecf/access/enrollment/event
+topic read lecf/access/enrollment/command
 topic write lecf/access/state
 topic write lecf/access/command/ack
 topic write lecf/node1/heartbeat

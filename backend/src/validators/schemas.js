@@ -52,7 +52,7 @@ export const provisionUserSchema = z.object({
 export const adminProfileSchema = z.object({
   currentUsername: z.string().trim().min(1).max(64).optional(),
   newUsername: z.string().trim().regex(SAFE_USERNAME_REGEX, 'Admin username must be 2-64 valid characters'),
-  newPassword: z.string().min(6, 'Password must be at least 6 characters').max(128)
+  newPassword: z.string().min(12, 'Password must be at least 12 characters').max(128)
 });
 
 export const updateUserRoleSchema = z.object({
@@ -135,6 +135,8 @@ export const mqttCommandAckSchema = z.object({
 });
 
 export const mqttHeartbeatSchema = z.object({
+  firmware_version: z.string().max(64).optional(),
+  capabilities: z.array(z.string().max(64)).max(20).optional(),
   node_id: z.string().min(1).max(64),
   boot_id: z.string().max(64).optional(),
   seq: z.number().int().nonnegative().optional(),

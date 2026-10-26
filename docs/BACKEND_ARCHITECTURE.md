@@ -1,3 +1,5 @@
+> **Management update:** Shared node settings, separate people/credentials, reader enrollment software, camera proxy and the new API are documented in [Facility Management](FACILITY_MANAGEMENT.md). That guide supersedes older browser-only IP and combined provisioning descriptions below. Device policy sync and Vision remain pending.
+
 # LCI-SFM Backend Architecture & Integration Specification
 
 **Status:** Implemented in `backend/src/` and `docker-compose.yml` (originally authored as the Node-RED-to-Node.js migration specification)  

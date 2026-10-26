@@ -1,3 +1,4 @@
+import { getSubscribedTopics } from '../src/mqtt/topics.js';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -1037,7 +1038,7 @@ describe('LCI-SFM Production Node.js Backend Integration Suite', () => {
     assert.equal(healthyStatus.connected, true);
     assert.equal(healthyStatus.subscriptions_ready, true);
     assert.equal(healthyStatus.state, 'connected');
-    assert.equal(healthyStatus.subscribed_topics.length, 6);
+    assert.equal(healthyStatus.subscribed_topics.length, getSubscribedTopics().length);
 
     // Simulate reconnect where one required topic receives SUBACK 0x80 (128) failure grant
     simulateSubRejectQosTopic = 'lecf/env/telemetry';

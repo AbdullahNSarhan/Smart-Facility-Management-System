@@ -363,6 +363,9 @@ export class MqttService {
       if (topic === MQTT_TOPICS.ACCESS_MFA_FACE.topic) {
         return this._handleMfaFace(topic, parsed);
       }
+      if (topic === MQTT_TOPICS.READER_ENROLL_EVENT.topic) {
+        return this.management?.handleEnrollmentEvent(parsed) || { ok: false, error: 'MANAGEMENT_UNAVAILABLE' };
+      }
       if (topic === MQTT_TOPICS.ACCESS_STATE.topic) {
         return this._handleAccessState(topic, parsed);
       }
@@ -437,6 +440,7 @@ export class MqttService {
 
     const insertResult = this.repo.insertEnvironmentalTelemetry(normalized);
     this.nodeHeartbeats.set(nodeId, {
+      ...this.nodeHeartbeats.get(nodeId),
       status: 'ONLINE',
       last_seen_at: timestamp,
       seq: normalized.seq
@@ -546,6 +550,7 @@ export class MqttService {
     });
 
     this.nodeHeartbeats.set(nodeId, {
+      ...this.nodeHeartbeats.get(nodeId),
       status: 'ONLINE',
       last_seen_at: timestamp,
       seq: d.seq ?? null
@@ -607,6 +612,9 @@ export class MqttService {
     const d = validation.data;
     const nowIso = new Date().toISOString();
     this.nodeHeartbeats.set(d.node_id, {
+      firmware_version: d.firmware_version ?? null,
+      capabilities: topic === 'lecf/node1/heartbeat' && d.node_id === this.config.node1Id ? (d.capabilities || []) : [],
+      capabilities_seen_at: topic === 'lecf/node1/heartbeat' && d.node_id === this.config.node1Id ? nowIso : null,
       status: d.status,
       boot_id: d.boot_id ?? null,
       seq: d.seq ?? null,

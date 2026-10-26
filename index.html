@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <!-- Strict Air-Gapped Content Security Policy (Blocks all external scripts, fonts, frames, and CDNs) -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://192.168.43.225:1880 http://192.168.43.* http://192.168.* http://10.* http://172.16.* http://127.0.0.1:* http://localhost:*; connect-src 'self' ws: wss: ws://192.168.43.225:1880 http://192.168.43.225:1880 ws://192.168.* http://192.168.* ws://10.* http://10.* ws://172.16.* http://172.16.* ws://127.0.0.1:* http://127.0.0.1:* ws://localhost:* http://localhost:*; font-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http: https: ws: wss:; font-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self';" />
   <title>LCI-SFM · BMS / HMI Operations Console</title>
   <meta name="description" content="Air-gapped Light Current Infrastructure for Smart Facility Management (LCI-SFM) BMS/HMI Operations Console with real-time WebSocket telemetry, 2-of-3 MFA tracker, environmental actuation, and SQLite audit explorer." />
   <meta property="og:title" content="LCI-SFM · BMS / HMI Operations Console" />
@@ -210,12 +210,12 @@
       <form id="login-form" autocomplete="off" novalidate>
         <div class="field-group">
           <label for="login_username">Operator Username</label>
-          <input type="text" id="login_username" name="username" maxlength="32" placeholder="Enter operator username" autocomplete="username" required />
+          <input type="text" id="login_username" name="username" maxlength="64" placeholder="Enter operator username" autocomplete="username" required />
         </div>
 
         <div class="field-group">
           <label for="login_password">Password / Credential</label>
-          <input type="password" id="login_password" name="password" maxlength="64" placeholder="Enter operator password" autocomplete="current-password" required />
+          <input type="password" id="login_password" name="password" maxlength="128" placeholder="Enter operator password" autocomplete="current-password" required />
           <span class="input-hint">Credentials are verified by the central backend. Secret values are never displayed.</span>
         </div>
 
@@ -260,7 +260,7 @@
           </svg>
         </button>
       </div>
-      <p class="modal-desc">Browser-local endpoint settings for the Central Backend and independent PoE edge controllers.</p>
+      <p class="modal-desc">Node addresses are shared through the server. The gateway host is specific to this browser. Device network interfaces must be configured separately.</p>
 
       <form id="startup-ip-form" novalidate>
         <div class="field-group">
@@ -282,7 +282,7 @@
         <div class="field-group">
           <label for="modal_ip_node3">Node 3 — Biometric Camera Controller (<code>ip_node3</code>)</label>
           <input type="text" id="modal_ip_node3" placeholder="192.168.43.13" required />
-          <span class="input-hint">Direct optical capture endpoint: <code>http://&lt;ip_node3&gt;/capture.jpg</code></span>
+          <span class="input-hint">Backend-proxied camera source: <code>http://&lt;ip_node3&gt;/capture.jpg</code></span>
         </div>
         <div class="modal-actions-row">
           <button type="button" id="cancel-ip-modal-btn" class="btn-outline">Cancel</button>
@@ -425,6 +425,8 @@
           <span class="nav-label">Health &amp; Diagnostics</span>
         </button>
 
+        <button type="button" id="nav-item-view-7" class="nav-item" data-view="view-7"><span class="nav-icon" aria-hidden="true"><svg class="icon-18" width="18" height="18"><use href="#icon-users"></use></svg></span><span class="nav-label">People &amp; Credentials</span></button>
+        <button type="button" class="nav-item" data-view="view-8"><span class="nav-icon" aria-hidden="true"><svg class="icon-18" width="18" height="18"><use href="#icon-sliders"></use></svg></span><span class="nav-label">Devices &amp; Room</span></button>
         <div id="nav-divider-view-6" class="nav-divider" role="separator" aria-hidden="true"></div>
 
         <!-- Visually Separated Administration Nav Item (Strictly Hidden for Viewers) -->
@@ -582,7 +584,7 @@
           <div class="banner-meta">
             <div class="banner-metric-item">
               <span class="banner-metric-label">Smoke / Gas (MQ-2)</span>
-              <strong id="banner-smoke-val" class="tabular-nums">0 PPM</strong>
+              <strong id="banner-smoke-val" class="tabular-nums">0 raw</strong>
             </div>
             <div class="banner-metric-item">
               <span class="banner-metric-label">Active Streams</span>
@@ -660,10 +662,10 @@
               </span>
               <span id="fresh-smoke" class="metric-state-text">Awaiting Stream</span>
             </div>
-            <div id="snap-smoke" class="card-value text-muted tabular-nums">0 PPM</div>
+            <div id="snap-smoke" class="card-value text-muted tabular-nums">0 raw</div>
             <div class="stat-card-footer">
               <code class="card-var" title="Telemetry field: smoke_gas_level">smoke_gas_level</code>
-              <span class="stat-source">Alarm &ge; 400 PPM</span>
+              <span class="stat-source">Display critical &ge; configured raw limit</span>
             </div>
           </div>
 
@@ -1132,12 +1134,12 @@
                 <circle id="gauge-arc-smoke" cx="60" cy="60" r="50" class="gauge-arc stroke-mint" stroke-dasharray="314.16" stroke-dashoffset="314.16"></circle>
               </svg>
               <div class="gauge-center">
-                <strong id="env-smoke-val" class="gauge-num text-mint tabular-nums">0 PPM</strong>
+                <strong id="env-smoke-val" class="gauge-num text-mint tabular-nums">0 raw</strong>
               </div>
             </div>
             <div class="gauge-meta-footer">
               <code class="card-var">smoke_gas_level</code>
-              <span>Elevated &ge; 250 · Critical &ge; 400 PPM</span>
+              <span>Uncalibrated MQ-2 raw reading · display limits configurable</span>
             </div>
           </div>
         </div>
@@ -1202,7 +1204,7 @@
                 <span id="env-active-mode-badge" class="status-tag status-nominal">ACTIVE MODE: AUTO</span>
               </div>
               <p class="helper-note">
-                <strong>AUTO</strong> runs edge threshold logic (&gt; 30.0 °C or &ge; 400 PPM). Switch to <strong>MANUAL</strong> for direct relay overrides.
+                <strong>AUTO</strong> uses the device firmware policy. Dashboard limits do not change edge automation. Switch to <strong>MANUAL</strong> for direct relay overrides.
               </p>
             </div>
             <div class="override-controls">
@@ -1485,65 +1487,14 @@
            ==================================================================== -->
       <section id="view-6" class="view-section" aria-label="System Administration and User Provisioning">
         <div class="three-col-grid">
-          <!-- 1. User Provisioning Form with Node 3 Camera Face Capture (POST /api/provision/user) -->
           <div class="glass-card">
-            <div class="section-header-row">
-              <div>
-                <h3 class="section-heading">Access Credential Provisioning</h3>
-                <p class="helper-note">Enroll personnel credentials and optional biometric link. Secrets are hashed by the central backend.</p>
-              </div>
-            </div>
-            <form id="user-provision-form" autocomplete="off" novalidate>
-              <div class="field-group">
-                <label for="prov_name">Username / Personnel Identifier</label>
-                <input type="text" id="prov_name" class="rbac-protected-input" maxlength="64" placeholder="e.g. Eng. Tariq Al-Mansoor" required />
-                <span class="input-hint">2–64 alphanumeric characters.</span>
-              </div>
-              <div class="field-group">
-                <label for="prov_rfid">RFID Card UID (Hex Format <code>XX:XX:XX:XX</code>)</label>
-                <input type="text" id="prov_rfid" class="rbac-protected-input" maxlength="23" placeholder="e.g. A4:9F:21:0B" required />
-                <span class="input-hint">4 to 8 colon-separated hex bytes for RC522 whitelist.</span>
-              </div>
-              <div class="field-group">
-                <label for="prov_pin">6-Digit Keypad PIN &amp; Login Credential</label>
-                <input type="password" id="prov_pin" class="rbac-protected-input" maxlength="6" inputmode="numeric" placeholder="6-digit numeric PIN" autocomplete="new-password" required />
-                <span class="input-hint">Exact 6-digit integer (000000–999999). Never displayed in plaintext.</span>
-              </div>
-              <div class="field-group">
-                <label for="prov_role">Clearance Role</label>
-                <select id="prov_role" class="rbac-protected-input filter-select full-width">
-                  <option value="Viewer" selected>Viewer (Read-Only Monitoring)</option>
-                  <option value="Admin">Admin (Full Actuator &amp; Provisioning Control)</option>
-                </select>
-              </div>
-
-              <!-- Node 3 Biometric Face Capture Integration -->
-              <div class="face-capture-row">
-                <div class="face-thumb-box" title="Node 3 Biometric Face Thumbnail Preview">
-                  <img id="prov-face-preview-img" class="hidden" alt="Captured Face Preview" referrerPolicy="no-referrer" />
-                  <div id="prov-face-placeholder" class="face-thumb-placeholder">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                      <circle cx="12" cy="7" r="4"></circle>
-                    </svg>
-                    <span id="prov-face-status-text">No Face Linked</span>
-                  </div>
-                </div>
-                <div class="face-capture-actions">
-                  <button type="button" id="prov-capture-face-btn" class="btn-cyber full-width rbac-protected">
-                    <svg class="icon-16" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
-                      <use href="#icon-camera"></use>
-                    </svg>
-                    <span>Capture Face from Node 3</span>
-                  </button>
-                  <span class="input-hint">Captures directly from <code>http://&lt;ip_node3&gt;/capture.jpg</code></span>
-                </div>
-              </div>
-
-              <button type="submit" id="prov-submit-btn" class="btn-primary full-width rbac-protected">
-                <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-users"></use></svg>
-                <span>Provision User Credential</span>
-              </button>
+            <h3 class="section-heading">Create Dashboard Account</h3>
+            <p class="helper-note">Dashboard access is separate from physical people, cards and door PINs.</p>
+            <form id="operator-account-form" autocomplete="off">
+              <div class="field-group"><label for="operator-username">Username</label><input id="operator-username" class="rbac-protected-input" minlength="2" maxlength="64" required autocomplete="off" /></div>
+              <div class="field-group"><label for="operator-password">Password</label><input id="operator-password" class="rbac-protected-input" type="password" minlength="12" maxlength="128" required autocomplete="new-password" /><span class="input-hint">At least 12 characters. Independent from the door PIN.</span></div>
+              <div class="field-group"><label for="operator-role">Dashboard role</label><select id="operator-role" class="rbac-protected-input filter-select full-width"><option value="Viewer">Viewer — monitoring only</option><option value="Admin">Admin — manage and control</option></select></div>
+              <button class="btn-primary full-width rbac-protected" type="submit">Create Account</button>
             </form>
           </div>
 
@@ -1563,12 +1514,12 @@
               </div>
               <div class="field-group">
                 <label for="admin_new_password">New Administrator Password</label>
-                <input type="password" id="admin_new_password" class="rbac-protected-input" maxlength="64" placeholder="Enter new strong password" autocomplete="new-password" required />
-                <span class="input-hint">Minimum 6 characters. Never stored in browser storage.</span>
+                <input type="password" id="admin_new_password" class="rbac-protected-input" maxlength="128" placeholder="Enter new strong password" autocomplete="new-password" required />
+                <span class="input-hint">Minimum 12 characters. Never stored in browser storage.</span>
               </div>
               <div class="field-group">
                 <label for="admin_confirm_password">Confirm New Password</label>
-                <input type="password" id="admin_confirm_password" class="rbac-protected-input" maxlength="64" placeholder="Re-enter new password" autocomplete="new-password" required />
+                <input type="password" id="admin_confirm_password" class="rbac-protected-input" maxlength="128" placeholder="Re-enter new password" autocomplete="new-password" required />
               </div>
               <button type="submit" id="admin-profile-submit-btn" class="btn-primary full-width rbac-protected">
                 <svg class="icon-16" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-key"></use></svg>
@@ -1581,8 +1532,8 @@
           <div class="glass-card">
             <div class="section-header-row">
               <div>
-                <h3 class="section-heading">Workstation Endpoint Configuration</h3>
-                <p class="helper-note">Browser-local addressing for the Central Gateway and independent PoE edge nodes.</p>
+                <h3 class="section-heading">Central Node Address Registry</h3>
+                <p class="helper-note">Node addresses are saved on the server for all consoles. Changing a registered address does not reconfigure the device network interface. The gateway host is specific to this browser.</p>
               </div>
             </div>
             <form id="settings-ip-form" novalidate>
@@ -1617,7 +1568,7 @@
         <div class="glass-card mt-20">
           <div class="flex-between">
             <div>
-              <h3 class="section-heading">Facility Operator &amp; Personnel Directory</h3>
+              <h3 class="section-heading">Dashboard Accounts</h3>
               <p class="helper-note">Secret hashes and PIN verifiers are omitted by the Central Backend; only safe directory metadata is displayed.</p>
             </div>
             <div class="search-group">
@@ -1631,21 +1582,27 @@
           </div>
           <div class="table-container mt-16">
             <table class="data-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Username / Personnel</th>
-                  <th>RFID UID</th>
-                  <th>PIN Credential</th>
-                  <th>Biometric Status</th>
-                  <th>Clearance Role</th>
-                  <th>Administrative Actions</th>
-                </tr>
-              </thead>
+              <thead><tr><th>ID</th><th>Dashboard Username</th><th>Account status</th><th>Dashboard role</th><th>Actions</th></tr></thead>
               <tbody id="user-management-table-body"></tbody>
             </table>
           </div>
         </div>
+      </section>
+      <section id="view-7" class="view-section" aria-label="People and physical credentials">
+        <div class="management-intro"><div><span class="eyebrow">ACCESS DIRECTORY</span><h3>People &amp; Credentials</h3><p>Manage the people who use this room, independently from dashboard accounts.</p></div><span class="status-tag status-warning">Device policy integration pending</span></div>
+        <div class="management-notice">Cards, PIN resets, blocks and suspensions are saved centrally. They remain pending until a supported device policy channel applies them. Server changes alone do not grant or revoke access at the door.</div>
+        <div class="management-layout">
+          <div class="glass-card"><h3 class="section-heading">Add a Person</h3><form id="person-create-form"><div class="field-group"><label for="person-name">Full name</label><input id="person-name" maxlength="80" required class="rbac-protected-input" /></div><div class="field-group"><label for="person-reference">Reference / student or staff ID</label><input id="person-reference" maxlength="80" class="rbac-protected-input" /></div><button type="submit" class="btn-primary rbac-protected">Create Person</button></form></div>
+          <div class="glass-card"><div class="flex-between"><h3 class="section-heading">People Directory</h3><button type="button" id="people-refresh" class="btn-outline btn-sm">Refresh</button></div><form id="people-search-form" class="management-search"><label class="sr-only" for="people-search">Search people</label><input id="people-search" placeholder="Search name or reference" maxlength="80" /><button class="btn-outline" type="submit">Search</button></form><p id="people-feedback" class="helper-note" role="status" aria-live="polite">Loading directory…</p><div id="people-list" class="people-list"></div><div class="management-pagination"><button id="people-prev" type="button" class="btn-outline btn-sm">Previous</button><span id="people-page" class="helper-note"></span><button id="people-next" type="button" class="btn-outline btn-sm">Next</button></div></div>
+        </div>
+        <div id="person-detail" class="glass-card mt-20 hidden"></div>
+        <div class="glass-card mt-20"><div class="flex-between"><h3 class="section-heading">Administration Activity</h3><button id="management-audit-refresh" type="button" class="btn-outline btn-sm">Refresh Audit</button></div><p class="helper-note">Latest 100 changes; PIN values and secret verifiers are excluded.</p><div id="management-audit" class="table-container" aria-live="polite"></div></div>
+      </section>
+      <section id="view-8" class="view-section" aria-label="Devices and room configuration">
+        <div class="management-intro"><div><span class="eyebrow">ONE ROOM · THREE NODES</span><h3>Devices &amp; Room</h3><p id="facility-room-label">Loading configuration…</p></div><button id="devices-refresh" type="button" class="btn-outline">Refresh Status</button></div>
+        <p id="devices-feedback" class="helper-note" role="status" aria-live="polite"></p><div id="device-registry" class="device-registry"></div>
+        <div class="glass-card mt-20"><h3 class="section-heading">Room Configuration</h3><p class="helper-note">Shared settings are versioned and audited. Display thresholds control dashboard warnings; firmware automation keeps its own policy.</p><form id="facility-settings-form"><div id="facility-settings-fields"></div><p id="settings-feedback" class="helper-note" role="status" aria-live="polite"></p><button id="facility-save-btn" type="submit" class="btn-primary rbac-protected">Save Shared Settings</button></form></div>
+        <div class="glass-card mt-20"><div class="flex-between"><h3 class="section-heading">Recent Control Commands</h3><button id="commands-refresh" type="button" class="btn-outline btn-sm">Refresh Commands</button></div><p class="helper-note">Published means sent to the broker. State confirmed means reported by the device, without independent physical feedback.</p><div id="command-history" class="table-container" aria-live="polite"></div></div>
       </section>
     </main>
   </div>
