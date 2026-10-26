@@ -2,11 +2,12 @@ import { isPrivateNodeIp } from '../validators/managementSchemas.js';
 import { managementError } from './facilityManagement.js';
 
 /** Fixed path + literal registered private IP. Redirects and oversized/non-JPEG bodies are rejected. */
-export async function readCameraSnapshot(ip, fetchSnapshot = fetch) {
+export async function readCameraSnapshot(ip, fetchSnapshot = fetch, {port=80,path='/capture.jpg'} = {}) {
   if (!isPrivateNodeIp(ip)) throw managementError(409, 'CAMERA_ADDRESS_INVALID', 'Register a private LAN IPv4 address for Node 3');
+  if(!Number.isInteger(port)||port<1||port>65535||!/^\/[a-zA-Z0-9_/-]+(?:\.(?:json|jpg))?$/.test(path))throw managementError(409,'CAMERA_ADDRESS_INVALID','Invalid registered camera port or path');
   let response;
   try {
-    response = await fetchSnapshot(`http://${ip}/capture.jpg`, {
+    response = await fetchSnapshot(`http://${ip}${port===80?'':`:${port}`}${path}`, {
       redirect: 'manual', signal: AbortSignal.timeout(4000), headers: { Accept: 'image/jpeg' }
     });
     if (response.status !== 200 || !/^image\/jpeg(?:;|$)/i.test(response.headers.get('content-type') || '')) {

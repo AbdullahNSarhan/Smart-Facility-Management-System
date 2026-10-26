@@ -1,3 +1,4 @@
+import { mountReleaseConsole } from './release-console.js';
 import { mountFacilityConsole } from './facility-console.js';
 /**
  * LCI-SFM Enterprise BMS / HMI Operations Console Application Logic (ES6 Module)
@@ -922,7 +923,10 @@ function switchActiveView(viewId) {
     'view-5': 'System Health & Device Diagnostics',
     'view-6': 'Dashboard Administration',
     'view-7': 'People & Credentials',
-    'view-8': 'Devices & Room'
+    'view-8': 'Devices & Room',
+    'view-9': 'Notification Center',
+    'view-10': 'Alarm Management',
+    'view-11': 'Device Registry'
   };
 
   if (['view-6', 'view-7'].includes(viewId) && !isPrivilegedAdmin()) {
@@ -939,6 +943,7 @@ function switchActiveView(viewId) {
 
   const titleEl = document.getElementById('current-view-title');
   if (titleEl) titleEl.textContent = viewTitles[viewId] || 'LCI-SFM Console';
+  document.dispatchEvent(new CustomEvent('lci-view-changed',{detail:viewId}));
 
   // Close mobile sidebar drawer if open
   const sidebar = document.getElementById('sidebar');
@@ -1622,12 +1627,17 @@ async function saveNodeIPs(rawN1, rawN2, rawN3, rawServerHost = server_host) {
 }
 
 async function managementApi(path, options = {}) {
+  const { responseType, ...requestOptions } = options;
   const res = await fetchWithTimeout(`${getNodeRedHttp()}/api/v1${path}`, {
-    ...options, headers: getAuthHeaders(),
+    ...requestOptions, headers: getAuthHeaders(),
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) })
   }, 8000);
+  if (res.ok && responseType === 'blob') return res.blob();
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    if (res.status === 401 && isServerAuthVerified()) lockAndLogoutSystem();
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
   return data;
 }
 
@@ -2986,6 +2996,7 @@ function bootAuthenticatedSession() {
       api: managementApi, isAdmin: isPrivilegedAdmin, applySettings: applyCentralSettings,
       notify: showToast, confirm: openConfirmModal, signal: authSessionAbortController.signal
     });
+    mountReleaseConsole({api:managementApi,isAdmin:isPrivilegedAdmin,notify:showToast,confirm:openConfirmModal,navigate:switchActiveView,wsUrl:()=>`${getWsProtocol()}//${server_host}/ws/notifications${getWsAuthQuery()}`,signal:authSessionAbortController.signal});
     document.addEventListener('lci-operators-updated', fetchSystemUsers, { signal: authSessionAbortController.signal });
   }
   updateFacilityStatusAndFreshness();

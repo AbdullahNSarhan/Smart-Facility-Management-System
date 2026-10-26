@@ -1,3 +1,5 @@
+> **1.1.0-rc.1 update:** [Release Guide](RELEASE_CANDIDATE_GUIDE.md) supersedes the earlier three-node-only registry, deferred notification/alarm and test-only simulator decisions below. The one-room/one-door demo and pending physical/credential-policy/Vision acceptance still apply.
+
 # Facility management and selected feature roadmap
 
 Scope decision: **one room, one door, Node 1 access, Node 2 environment, Node 3 camera**. Extend the domain later without building a multi-building interface now. This follows the supplied Master Project Reference, release 2026-10-24. Firmware, exact board pinouts and electrical acceptance remain separate work.

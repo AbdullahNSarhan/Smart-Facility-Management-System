@@ -4,6 +4,10 @@
 
 # 1. Central Node.js Backend Service (lci_backend)
 user lci_backend
+topic read lci/v1/devices/+/telemetry
+topic read lci/v1/devices/+/heartbeat
+topic read lci/v1/devices/+/ack
+topic write lci/v1/devices/+/command
 topic read lecf/access/enrollment/event
 topic write lecf/access/enrollment/command
 topic read lecf/env/telemetry
@@ -36,3 +40,10 @@ topic read lecf/env/command
 user vision_service
 topic write lecf/access/mfa_face
 topic write lecf/vision/heartbeat
+
+# Additional v1 devices use their exact immutable device_id as broker username.
+# Provision passwords on the server; no broker passwords are stored in the UI.
+pattern write lci/v1/devices/%u/telemetry
+pattern write lci/v1/devices/%u/heartbeat
+pattern write lci/v1/devices/%u/ack
+pattern read lci/v1/devices/%u/command

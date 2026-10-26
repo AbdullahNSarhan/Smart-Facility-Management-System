@@ -75,6 +75,12 @@ export class CommandCoordinator {
     const ackTimeoutMs = this.config.commandAckTimeoutMs || 5000;
     const expiresAt = new Date(nowMs + ackTimeoutMs).toISOString();
 
+    const registered = this.operations?.device(targetNode);
+    if (this.config.simulatorMode || (registered && (!registered.enabled || registered.in_maintenance))) {
+      this.repo.createCommandAudit({command_id:commandId,request_id:requestId,actor_user_id:actor.id,actor_username:actor.username,command,requested_state:state,target_node:targetNode,mqtt_topic:mapping.topic,lifecycle_state:'rejected',issued_at:issuedAt,expires_at:expiresAt,error_code:'DEVICE_NOT_CONTROLLABLE',details:'Disabled, maintenance or isolated simulator mode'});
+      return {httpStatus:409,body:{ok:false,code:'DEVICE_NOT_CONTROLLABLE',lifecycle_state:'rejected',error:'Device is disabled, in maintenance, or this is the non-actuating simulator'}};
+    }
+
     // Verify MQTT broker availability before claiming publish
     if (!this.mqttService || !this.mqttService.isConnected()) {
       this.repo.createCommandAudit({

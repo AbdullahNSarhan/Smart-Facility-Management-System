@@ -10,12 +10,14 @@ export class WsGateway {
 
     this.telemetryWss = new WebSocketServer({ noServer: true });
     this.mfaWss = new WebSocketServer({ noServer: true });
+    this.notificationsWss = new WebSocketServer({ noServer: true });
 
     // Map<WebSocket, { channel, sessionId, userId, username, role, connectedAt }>
     this.clients = new Map();
 
     this._setupServer(this.telemetryWss, 'telemetry');
     this._setupServer(this.mfaWss, 'mfa');
+    this._setupServer(this.notificationsWss, 'notifications');
   }
 
   _setupServer(wss, channel) {
@@ -57,7 +59,7 @@ export class WsGateway {
         return;
       }
 
-      if (pathname !== '/ws/telemetry' && pathname !== '/ws/mfa') {
+      if (pathname !== '/ws/telemetry' && pathname !== '/ws/mfa' && pathname !== '/ws/notifications') {
         // Ignore non-LCI WebSocket paths (e.g., Vite dev HMR if any)
         return;
       }
@@ -71,7 +73,7 @@ export class WsGateway {
         return;
       }
 
-      const targetWss = pathname === '/ws/telemetry' ? this.telemetryWss : this.mfaWss;
+      const targetWss = pathname === '/ws/telemetry' ? this.telemetryWss : pathname === '/ws/notifications' ? this.notificationsWss : this.mfaWss;
       targetWss.handleUpgrade(req, socket, head, (ws) => {
         targetWss.emit('connection', ws, req, session);
       });
@@ -84,6 +86,11 @@ export class WsGateway {
 
   broadcastMfa(payload) {
     return this._broadcastToChannel('mfa', payload);
+  }
+
+  broadcastNotifications(payload) {
+    // Invalidation only. Each client fetches its own scoped records via the API.
+    return this._broadcastToChannel('notifications',payload);
   }
 
   _broadcastToChannel(channel, payload) {
@@ -164,6 +171,7 @@ export class WsGateway {
     try {
       this.telemetryWss.close();
       this.mfaWss.close();
+      this.notificationsWss.close();
     } catch {
       // ignore
     }

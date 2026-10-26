@@ -1,6 +1,8 @@
 # LCI-SFM · Smart Facility Management
 
-**A local operations console for one smart room, one door and three wired edge nodes.**
+**1.1.0-rc.1 · Local operations for one smart room and one door, with three preloaded team nodes and an expandable device registry.**
+
+Software release candidate: physical hardware acceptance remains pending. See the [Release Guide](docs/RELEASE_CANDIDATE_GUIDE.md), [Acceptance Checklist](docs/RELEASE_CHECKLIST.md) and [Changelog](CHANGELOG.md).
 
 LCI-SFM — *Light Current Infrastructure for Smart Facility Management* — connects access control, environmental monitoring and camera capture to a shared dashboard. The graduation demonstrator runs on a local server, with an architecture that can accommodate more rooms later.
 
@@ -14,7 +16,9 @@ The browser uses the Node.js API; SQLite owns persistent records; Mosquitto carr
 | People | Create and edit people, search and paginate the directory, suspend/reactivate authorization |
 | Physical credentials | Assign cards manually or through a compatible door reader; set/reset six-digit PINs; block or revoke credentials |
 | Dashboard accounts | Separate Admin and Viewer accounts, independent passwords, role changes and last-admin protection |
-| Devices | Three-node registry, names and private LAN addresses, last observation, freshness, reported firmware and capabilities |
+| Devices | Expandable typed registry, multiple endpoints per node, private IP/port/path, observation freshness, manual diagnostics and supported controls |
+| Notification Center | Persistent scoped events, per-user unread count/read state, filters, live refresh, sound preference and retention |
+| Alarm Management | Server rules, high/recovery dwell, hysteresis, acknowledgement, evidence-backed recovery and temporary maintenance |
 | Shared settings | Facility/room names, node addresses and dashboard warning thresholds; persisted centrally with revision checks |
 | Controls | Existing allowlisted door, fan, light and control-mode commands, with command history and correlated acknowledgements |
 | Camera | Authenticated backend JPEG proxy using the registered Node 3 address; no browser-to-camera route required |
@@ -32,7 +36,7 @@ The browser uses the Node.js API; SQLite owns persistent records; Mosquitto carr
 | Fan/light/door control | MQTT command coordination exists; requires compatible device firmware. A reported state is not independent physical feedback |
 | Sensor measurements | Displayed with freshness. MQ-2 values are uncalibrated **raw readings**, not certified gas PPM |
 | Face recognition/enrollment | Camera capture is available; a complete Vision service, biometric enrollment and liveness are not deployed |
-| Multi-room operation | Future extension. This release manages exactly one room, one door and three nodes |
+| Expansion | One room and one door remain the demo scope; additional devices can use supported MQTT/HTTP/camera adapters |
 
 See [Management Guide](docs/FACILITY_MANAGEMENT.md) for workflows, API contracts, upgrade behavior and the selected roadmap.
 
@@ -58,6 +62,15 @@ flowchart TD
 ```
 
 The frontend uses HTML, CSS and vanilla JavaScript modules, bundled locally by Vite. Runtime assets use no CDN. Browser code contains no MQTT credentials. Dashboard accounts (`system_users`) and physical occupants (`people`, `physical_credentials`) are separate domains.
+
+## Try the isolated simulator
+
+```bash
+npm ci
+npm run simulate
+```
+
+Open **http://127.0.0.1:3101**. Initial simulator-only account: `sim_admin` / `LCI-Simulator-Only-2026!`. A separate database and explicit simulation banner distinguish synthetic data; no upstream MQTT, HTTP probes or physical commands run. Use the scenario selector to demonstrate high readings, disconnection and command timeouts. See the [Release Guide](docs/RELEASE_CANDIDATE_GUIDE.md#isolated-demonstration).
 
 ## Run locally
 
@@ -98,6 +111,8 @@ npm test                 # Backend/auth/MQTT/management/camera boundary integrat
 npm --prefix backend test
 npm run lint             # JavaScript syntax validation
 npm run build            # Production assets -> dist/
+npx playwright install chromium
+npm run test:ui          # Isolated Chromium acceptance journey
 npm run db:backup        # See deployment guide for destination/options
 npm run db:restore       # See deployment guide; stop application before restore
 ```
@@ -159,6 +174,8 @@ Environment variables seed the node registry **only on first database creation**
 
 ## Documentation
 
+- [Release Candidate Guide](docs/RELEASE_CANDIDATE_GUIDE.md) — notifications, alarms, registry, protocol contracts, simulator and release limits.
+- [Release Acceptance Checklist](docs/RELEASE_CHECKLIST.md) — implemented software and pending physical acceptance.
 - [Facility Management & Feature Decisions](docs/FACILITY_MANAGEMENT.md) — current workflows, new endpoints, data migration and future priorities.
 - [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) — secrets, LAN setup, install/update, backup/restore.
 - [Backend Architecture](docs/BACKEND_ARCHITECTURE.md) — original service architecture and command lifecycle.
