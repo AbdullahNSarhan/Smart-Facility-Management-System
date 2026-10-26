@@ -22,6 +22,10 @@ try {
   const page=await browser.newPage({viewport:{width:1440,height:1000}});pages.push(page);
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   page.setDefaultTimeout(15000);
+  await page.addInitScript(()=>{
+    // Exercise the browser permission handshake without emitting real sound.
+    window.AudioContext=class {state='suspended';currentTime=0;destination={};async resume(){this.state='running';window.__audioUnlocked=true;}async close(){}createOscillator(){return {frequency:{value:0},connect(){},start(){},stop(){}};}createGain(){return {connect(){},gain:{setValueAtTime(){},exponentialRampToValueAtTime(){}}};}};
+  });
   const submit=async(selector,pathname,method='POST',status=200)=>{
     const [r]=await Promise.all([page.waitForResponse(r=>new URL(r.url()).pathname===pathname && r.request().method()===method),page.locator(selector).click()]);
     const body=await r.json();assert.equal(r.status(),status,JSON.stringify(body));return body;
@@ -54,6 +58,10 @@ try {
   await page.waitForFunction(()=>document.querySelector('#notifications-list').textContent.includes('UI high temperature'));
   await submit('#notifications-read-all','/api/v1/notifications/read-all','PUT');await page.waitForFunction(()=>document.querySelector('#notification-badge').textContent==='0');
   if(process.env.UI_SCREENSHOT_DIR){fs.mkdirSync(process.env.UI_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.UI_SCREENSHOT_DIR,'notifications.png'),fullPage:true});}
+  await Promise.all([page.waitForResponse(r=>new URL(r.url()).pathname==='/api/v1/notification-preferences'&&r.request().method()==='PUT'),page.check('#critical-sound')]);
+  await page.reload();await page.waitForSelector('#login-overlay.hidden',{state:'attached'});await page.waitForSelector('#release-banner:not(.hidden)');
+  await page.click('#notification-bell');await page.waitForFunction(()=>window.__audioUnlocked===true);await page.click('#notification-preview-close');
+  assert.ok(await page.locator('#critical-sound').isChecked());
   await page.click('[data-view="view-11"]');await page.click('#device-new');await page.fill('#device-id','ui_camera');await page.fill('#device-name','UI Camera');await page.selectOption('#device-type','CAMERA');await page.fill('#device-ip','10.99.0.45');await submit('#device-editor-form button[type=submit]','/api/v1/registry','POST',201);
   await page.waitForFunction(()=>document.querySelector('#registry-detail h3')?.textContent==='UI Camera');
   jpeg=Buffer.from(await page.evaluate(()=>{const c=document.createElement('canvas');c.width=32;c.height=24;const x=c.getContext('2d');x.fillStyle='navy';x.fillRect(0,0,32,24);return c.toDataURL('image/jpeg').split(',')[1];}),'base64');

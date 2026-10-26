@@ -19,7 +19,7 @@ export function mountReleaseConsole({api,isAdmin,notify,confirm,navigate,wsUrl,s
   const active=id=>$(id)?.classList.contains('active');
   const params=values=>new URLSearchParams(Object.fromEntries(Object.entries(values).filter(([,v])=>v!==''&&v!==undefined))).toString();
   const filters=prefix=>({search:$(`${prefix}-search`)?.value||'',severity:$(`${prefix}-severity`)?.value||'',device_id:$(`${prefix}-device`)?.value||''});
-  const formatValue=(d,e)=>e.kind==='CAMERA'?'Capture on demand':!(e.endpoint_key in d.values)?'No reading':`${d.values[e.endpoint_key]} ${e.unit}`;
+  const formatValue=(d,e)=>e.kind==='CAMERA'?'Capture on demand':!Object.hasOwn(d.values,e.endpoint_key)?'No reading':`${d.values[e.endpoint_key]} ${e.unit}`;
 
   async function loadRegistry() {
     const seq=++registrySequence;
@@ -150,7 +150,12 @@ export function mountReleaseConsole({api,isAdmin,notify,confirm,navigate,wsUrl,s
   on('notification-filter','submit',e=>{e.preventDefault();notificationPage=1;run(e.submitter,loadInbox);});
   on('notifications-read-all','click',e=>run(e.currentTarget,async()=>{await api('/notifications/read-all',{method:'PUT',body:{through_id:latestId}});await loadInbox();}));
   on('notifications-prev','click',()=>{if(notificationPage>1){notificationPage--;run(null,loadInbox);}});on('notifications-next','click',()=>{if(notificationPage*25<notificationTotal){notificationPage++;run(null,loadInbox);}});
-  on('critical-sound','change',e=>run(null,async()=>{sound=e.target.checked;if(sound){audio ||= new (window.AudioContext||window.webkitAudioContext)();await audio.resume();}await api('/notification-preferences',{method:'PUT',body:{critical_sound:sound}});}));
+  async function unlockAudio(){
+    if(!sound)return;const Audio=window.AudioContext||window.webkitAudioContext;if(!Audio)return;
+    audio ||= new Audio();await audio.resume();
+  }
+  document.addEventListener('pointerdown',()=>{if(sound)unlockAudio().catch(()=>{});},{signal});
+  on('critical-sound','change',e=>run(null,async()=>{sound=e.target.checked;await unlockAudio();await api('/notification-preferences',{method:'PUT',body:{critical_sound:sound}});}));
   on('retention-form','submit',e=>{e.preventDefault();const days=Number($('notification-retention').value);confirm({title:'Change history retention?',description:`Notifications and telemetry older than ${days} days will be cleaned automatically. Alarm and audit evidence is preserved.`,confirmLabel:'Save Retention',onConfirm:()=>run(e.submitter,async()=>{await api('/retention',{method:'PUT',body:{days}});notify('Retention saved',`${days} days`,'success');})});});
   on('alarm-filter','submit',e=>{e.preventDefault();alarmPage=1;run(e.submitter,loadAlarms);});on('alarms-refresh','click',e=>run(e.currentTarget,async()=>{await loadAlarms();await loadRules();}));
   on('alarms-prev','click',()=>{if(alarmPage>1){alarmPage--;run(null,loadAlarms);}});on('alarms-next','click',()=>{if(alarmPage*25<alarmTotal){alarmPage++;run(null,loadAlarms);}});

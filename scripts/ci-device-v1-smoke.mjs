@@ -11,7 +11,7 @@ const id='ci_sensor',base=`lci/v1/devices/${id}`,boot=crypto.randomUUID();
 let cookie,csrf;
 async function api(url,method='GET',body) {
   const r=await fetch(`http://127.0.0.1${url}`,{method,headers:{'Content-Type':'application/json',...(cookie?{Cookie:cookie,'X-CSRF-Token':csrf}:{})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(5000)});
-  const data=await r.json();assert.ok(r.ok(),`${method} ${url}: ${r.status} ${data.code||''}`);return {data,response:r};
+  const data=await r.json();assert.ok(r.ok,`${method} ${url}: ${r.status} ${data.code||''}`);return {data,response:r};
 }
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(label,fn){for(let i=0;i<40;i++){if(await fn())return;await sleep(250);}throw new Error(`Timed out: ${label}`);}
