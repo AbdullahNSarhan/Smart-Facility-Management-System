@@ -71,6 +71,14 @@ jobs:
           npm test
           npm --prefix backend test
 
+      - name: Verify management fixtures ignore deployment identity
+        env:
+          LCI_BOOTSTRAP_ADMIN_USERNAME: installer_admin
+          NODE1_ID: installed_access
+          NODE2_ID: installed_environment
+          NODE3_ID: installed_camera
+        run: NODE_ENV=test node --test backend/test/management.test.js
+
       - name: Build frontend
         run: npm run build
 

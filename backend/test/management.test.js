@@ -12,7 +12,14 @@ import { readCameraSnapshot } from '../src/services/cameraSnapshot.js';
 describe('Facility management, identity separation and reader enrollment', () => {
   let ctx, dir, cookie, csrf, published;
   const password = 'Test-Admin-Strong-2026!';
-  const overrides = () => ({ NODE_ENV: 'test', MQTT_ENABLED: 'false', SQLITE_DB_PATH: path.join(dir, 'management.db'), LCI_BOOTSTRAP_ADMIN_PASSWORD: password });
+  // install.sh validates a checkout containing a production .env. Keep fixture
+  // identity independent of that file and of the caller's exported settings.
+  const overrides = () => ({
+    NODE_ENV: 'test', MQTT_ENABLED: 'false',
+    SQLITE_DB_PATH: path.join(dir, 'management.db'),
+    LCI_BOOTSTRAP_ADMIN_USERNAME: 'admin', LCI_BOOTSTRAP_ADMIN_PASSWORD: password,
+    NODE1_ID: 'node1', NODE2_ID: 'env_02', NODE3_ID: 'node3'
+  });
   const mutation = (method, endpoint, body) => request(ctx.app)[method](`/api/v1${endpoint}`).set('Cookie', cookie).set('X-CSRF-Token', csrf).send(body);
   const get = endpoint => request(ctx.app).get(`/api/v1${endpoint}`).set('Cookie', cookie);
   const person = async (name = 'Abdullah Nasser') => {
@@ -32,6 +39,8 @@ describe('Facility management, identity separation and reader enrollment', () =>
     dir = fs.mkdtempSync(path.join(os.tmpdir(),'lci-management-'));
     ctx = createBackendContext(overrides()); published = [];
     const login = await request(ctx.app).post('/api/auth/login').send({ username: 'admin', password });
+    assert.equal(login.status, 200, `Fixture login failed: ${JSON.stringify(login.body)}`);
+    assert.ok(login.headers['set-cookie']?.length, 'Fixture login must establish a session cookie');
     cookie = login.headers['set-cookie'][0].split(';')[0]; csrf = login.body.csrfToken;
   });
   afterEach(async () => {
