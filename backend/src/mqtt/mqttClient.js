@@ -358,14 +358,18 @@ export class MqttService {
     }
 
     try {
-      const generic=/^lci\/v1\/devices\/([a-z][a-z0-9_-]{0,47})\/(telemetry|heartbeat|ack)$/.exec(topic);
-      if(generic && this.operations) {
-        if(options.retained)return {ok:false,error:'RETAINED_FRAME_REJECTED'};
-        const [,id,kind]=generic,d=this.operations.device(id);
-        if(d.transport!=='MQTT_V1')return {ok:false,error:'TRANSPORT_MISMATCH'};
-        if(kind==='telemetry')return this.operations.ingest(id,parsed);
-        if(kind==='heartbeat')return this.operations.heartbeat(id,parsed);
-        return this.operations.acknowledgeCommand(id,parsed);
+      const generic = /^lci\/v1\/devices\/([a-z][a-z0-9_-]{0,47})\/(telemetry|heartbeat|ack)$/.exec(topic);
+      if (generic && this.operations) {
+        if (options.retained) return { ok: false, error: 'RETAINED_FRAME_REJECTED' };
+        const [, id, kind] = generic;
+        if (kind === 'heartbeat') {
+          return this.operations.heartbeat(id, parsed);
+        }
+        const registered = this.operations.db.prepare('SELECT transport FROM device_registry WHERE device_id = ?').get(id);
+        if (!registered) return { ok: false, error: 'DEVICE_NOT_REGISTERED' };
+        if (registered.transport !== 'MQTT_V1') return { ok: false, error: 'TRANSPORT_MISMATCH' };
+        if (kind === 'telemetry') return this.operations.ingest(id, parsed);
+        return this.operations.acknowledgeCommand(id, parsed);
       }
       const legacySlot=topic.startsWith('lecf/env/')?'node2':topic.startsWith('lecf/access/')?'node1':null;
       if(legacySlot && this.operations && !this.operations.device(this.config[`${legacySlot}Id`]).enabled)return {ok:false,error:'DEVICE_DISABLED'};
@@ -451,7 +455,6 @@ export class MqttService {
     };
 
     const insertResult = this.repo.insertEnvironmentalTelemetry(normalized);
-    if(!insertResult.duplicate && nodeId===this.config.node2Id)this.operations?.ingestLegacy(nodeId,normalized,{boot_id:normalized.boot_id,seq:normalized.seq});
     this.nodeHeartbeats.set(nodeId, {
       ...this.nodeHeartbeats.get(nodeId),
       status: 'ONLINE',
@@ -467,6 +470,10 @@ export class MqttService {
 
     if (!insertResult.duplicate && this.wsGateway) {
       this.wsGateway.broadcastTelemetry(normalized);
+    }
+
+    if (!insertResult.duplicate && nodeId === this.config.node2Id) {
+      this.operations?.ingestLegacy(nodeId, normalized, { boot_id: normalized.boot_id, seq: normalized.seq });
     }
 
     return { ok: true, duplicate: insertResult.duplicate, data: normalized };

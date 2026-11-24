@@ -1,6 +1,0 @@
-{
-  "summary":  "Plan to resolve the EAI_AGAIN MQTT DNS retry log warning captured by the runtime error monitor during test/preview runs while preserving strict health-check and readiness reporting.",
-  "updatedAt":  "2026-10-23T21:07:40.353433285Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

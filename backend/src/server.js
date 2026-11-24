@@ -29,20 +29,26 @@ async function main() {
         });
         if (fs.existsSync(distPath)) {
           app.use(express.static(distPath));
+          app.get('*', (req, res, next) => {
+            if (req.path.startsWith('/api') || req.path.startsWith('/ws')) return next();
+            res.sendFile(path.join(distPath, 'index.html'));
+          });
         } else {
           const allowedRootFiles = new Map([
             ['/', path.join(process.cwd(), 'index.html')],
             ['/index.html', path.join(process.cwd(), 'index.html')],
             ['/styles.css', path.join(process.cwd(), 'styles.css')],
-            ['/app.js', path.join(process.cwd(), 'app.js')],
-            ['/facility-console.js', path.join(process.cwd(), 'facility-console.js')],
-            ['/release-console.js', path.join(process.cwd(), 'release-console.js')]
+            ['/app.js', path.join(process.cwd(), 'app.js')]
           ]);
+          app.use('/frontend', express.static(path.join(process.cwd(), 'frontend')));
           app.use('/public', express.static(path.join(process.cwd(), 'public')));
-          app.get(['/', '/index.html', '/styles.css', '/app.js', '/facility-console.js', '/release-console.js'], (req, res, next) => {
+          app.get(['/', '/index.html', '/styles.css', '/app.js'], (req, res, next) => {
             const target = allowedRootFiles.get(req.path);
             if (target && fs.existsSync(target)) return res.sendFile(target);
             return next();
+          });
+          app.get(['/login', '/login/*', '/app', '/app/*'], (_req, res) => {
+            res.sendFile(path.join(process.cwd(), 'index.html'));
           });
         }
       }

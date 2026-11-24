@@ -197,6 +197,6 @@ describe('Isolated simulator and additive upgrade',()=>{
     for(const name of ['001_initial_schema.sql','002_facility_management.sql'])fs.copyFileSync(new URL(`../src/db/migrations/${name}`,import.meta.url),path.join(migrations,name));
     const file=path.join(dir,'upgrade.db'),db=new SqliteDatabase(file);db.runMigrations(migrations);db.bootstrapAdminIfNeeded({username:'existing_admin',password:'Preserve-Existing-Secret!',isProd:false});const hash=db.prepare('SELECT password_hash FROM system_users').get().password_hash;db.close();
     const ctx=createBackendContext({NODE_ENV:'test',MQTT_ENABLED:'false',SQLITE_DB_PATH:file,LCI_BOOTSTRAP_ADMIN_USERNAME:'different_bootstrap',LCI_BOOTSTRAP_ADMIN_PASSWORD:'Another-Secret-Must-Not-Override!'});
-    try{assert.equal(ctx.repo.findUserByUsername('existing_admin').password_hash,hash);assert.equal(ctx.repo.countActiveAdmins(),1);assert.equal(ctx.operations.listDevices().length,3);assert.equal(ctx.db.healthCheck().latestMigration,'003_release_operations.sql');}finally{await ctx.stop();fs.rmSync(dir,{recursive:true,force:true});}
+    try{assert.equal(ctx.repo.findUserByUsername('existing_admin').password_hash,hash);assert.equal(ctx.repo.countActiveAdmins(),1);assert.equal(ctx.operations.listDevices().length,3);assert.equal(ctx.db.healthCheck().latestMigration,'004_multi_room_platform.sql');}finally{await ctx.stop();fs.rmSync(dir,{recursive:true,force:true});}
   });
 });

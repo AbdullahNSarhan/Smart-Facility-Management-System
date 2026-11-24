@@ -1,16 +1,60 @@
-# LCI-SFM Deployment Guide
+# LCI-SFM 2.0 Deployment Guide
 
-This guide prepares a Linux server and deploys the repository's current Docker Compose stack: Nginx frontend, Node.js backend, SQLite persistent storage, and authenticated Eclipse Mosquitto.
+This guide prepares a Linux server and deploys the repository's local-first Docker Compose stack (`2.0.0-rc.1`): Nginx (`nginx:1.27-alpine`) frontend and reverse proxy, non-root Node.js 24 backend, SQLite WAL persistent storage, and authenticated Eclipse Mosquitto (`eclipse-mosquitto:2.0`).
 
-**Important scope:** This is deployment documentation, not proof that the stack has already been installed on a physical server. The current Compose file defines Nginx, Node.js, and Mosquitto. It does not define a Python/OpenCV vision container or deploy ESP32 firmware.
+**Important scope:** This is deployment documentation, not proof that the stack has already been installed on a physical server. Automated software, UI air-gap, and scale checks pass; target Ubuntu Server VM and physical hardware acceptance remain pending.
+
+## 0. Fast-Path 2.0 Deployment Tools
+
+LCI-SFM 2.0 ships dedicated host-side deployment utilities for both connected and air-gapped Ubuntu Server LTS installations:
+
+1. **Read-Only Host & Network Discovery:**
+   ```bash
+   bash install.sh --discover-only
+   sudo ./scripts/configure-static-ip.sh --discover
+   ```
+2. **Safe Static IPv4 Configuration (Netplan + `netplan try` Rollback):**
+   ```bash
+   sudo ./scripts/configure-static-ip.sh --iface eth0 --cidr 192.168.10.20/24 --gateway 192.168.10.1 --dry-run
+   sudo ./scripts/configure-static-ip.sh --iface eth0 --cidr 192.168.10.20/24 --gateway 192.168.10.1
+   ```
+3. **Guided Interactive Installer (Q1–Q6):**
+   ```bash
+   sudo ./install.sh
+   # Or unattended automation:
+   sudo ./install.sh --non-interactive
+   ```
+4. **Optional Local HTTPS / TLS Mode (Self-Signed SAN Certificate + Port 443):**
+   ```bash
+   sudo ./scripts/setup-local-tls.sh --ip <SERVER_LAN_IP>
+   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+   ```
+   When enabling TLS, set `TLS_ENABLED=true`, `SESSION_SECURE_COOKIE=true`, and update `ALLOWED_ORIGINS=https://<SERVER_LAN_IP>` in `.env`.
+5. **Air-Gapped Offline Release Bundle (Zero Internet Required on Target Server):**
+   ```bash
+   # Build on connected workstation (exports dist/, runtime files, and Docker OCI image tarballs + SHA256SUMS):
+   npm run bundle:offline
+
+   # Copy dist-offline/lci-sfm-2.0.0-rc.1-offline.tar.gz (+ .sha256) via USB to offline server:
+   sha256sum -c lci-sfm-2.0.0-rc.1-offline.tar.gz.sha256
+   tar -xzf lci-sfm-2.0.0-rc.1-offline.tar.gz
+   cd lci-sfm-2.0.0-rc.1-offline
+   sudo ./install-offline.sh      # Fresh offline install
+   sudo ./update-offline.sh       # Guarded offline upgrade with backup & rollback
+   ```
+6. **Per-Device MQTT Credential & ACL Provisioning (Host-Side Least-Privilege CLI):**
+   ```bash
+   sudo ./scripts/provision-mqtt-device.sh add --device-id lab305-env-01 --username dev_lab305_env_01
+   sudo ./scripts/provision-mqtt-device.sh list
+   ```
 
 ## 1. Deployment overview
 
 | Service | Role | Container port | Published to host? |
 |---|---|---:|---|
-| `frontend_dashboard` | Nginx static frontend and reverse proxy | 80 | Yes, configurable host bind IP |
-| `backend` | Node.js API, authentication, WebSockets, MQTT coordination, SQLite | 3000 | No; private Docker network only |
-| `mqtt-service` | Eclipse Mosquitto MQTT broker | 1883 | Yes, configurable host bind IP |
+| `frontend_dashboard` | Nginx 1.27 static SPA (`dist/`) and reverse proxy (`no-new-privileges`) | 80 (443 with TLS overlay) | Yes, `${FRONTEND_BIND_IP}:${FRONTEND_PORT}` |
+| `backend` | Node.js 24 API, auth, multi-room engine, WebSockets, MQTT coordinator, SQLite (`no-new-privileges`) | 3000 | No; private Docker network only |
+| `mqtt-service` | Eclipse Mosquitto 2.0 MQTT broker (`no-new-privileges`) | 1883 | Yes, `${MQTT_BIND_IP}:${MQTT_PORT}` |
 
 Persistent data:
 - `sqlite_data`: SQLite database at `/app/data/lci_sfm.db` inside the backend container.
@@ -18,7 +62,7 @@ Persistent data:
 - `mosquitto/passwd`: private file containing hashed MQTT credentials; intentionally not committed to Git.
 - `.env`: host-specific settings and secrets; intentionally not committed to Git.
 
-Nginx proxies `/api/*` and `/ws/*` to Node.js. Browsers must not connect directly to Mosquitto and must never receive MQTT credentials.
+Nginx proxies `/api/*` and `/ws/*` to Node.js and routes SPA History API paths (`/`, `/login`, `/app/*`) to `/index.html`. Browsers must not connect directly to Mosquitto and must never receive MQTT credentials.
 
 ## 2. Network and security decisions
 

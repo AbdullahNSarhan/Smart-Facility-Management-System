@@ -54,6 +54,20 @@ export function createApiRouter({
     });
   });
 
+  router.get('/public/info', (req, res) => {
+    const dbCheck = db.healthCheck();
+    return res.status(200).json({
+      ok: true,
+      product: 'LCI-SFM',
+      title: 'Light Current Infrastructure for Smart Facility Management',
+      version: '2.0.0-rc.1',
+      deployment_mode: 'local-first',
+      simulation: Boolean(config.simulatorMode),
+      database_ok: Boolean(dbCheck && dbCheck.ok),
+      request_id: req.requestId
+    });
+  });
+
   router.get('/health/ready', (req, res) => {
     const dbCheck = db.healthCheck();
     const rawMqtt = mqttService

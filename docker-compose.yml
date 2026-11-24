@@ -2,16 +2,18 @@ services:
   # 1. Hardened Nginx Reverse Proxy & Static Frontend Server
   # Mounts ONLY compiled ./dist assets (never the repository root)
   frontend_dashboard:
-    image: nginx:alpine
+    image: nginx:1.27-alpine
     container_name: lci_frontend
     ports:
-      - "${FRONTEND_BIND_IP:-127.0.0.1}:80:80"
+      - "${FRONTEND_BIND_IP:-127.0.0.1}:${FRONTEND_PORT:-80}:80"
     volumes:
       - ./dist:/usr/share/nginx/html:ro
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       backend:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
     networks:
       - lci_internal_net
     restart: unless-stopped
@@ -26,6 +28,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    image: lci-sfm-backend:${LCI_IMAGE_TAG:-2.0.0-rc.1}
     container_name: lci_backend
     env_file:
       - .env
@@ -42,6 +45,8 @@ services:
     depends_on:
       mqtt-service:
         condition: service_started
+    security_opt:
+      - no-new-privileges:true
     networks:
       - lci_internal_net
     restart: unless-stopped
@@ -62,12 +67,14 @@ services:
     image: eclipse-mosquitto:2.0
     container_name: lci_mqtt_broker
     ports:
-      - "${MQTT_BIND_IP:-127.0.0.1}:1883:1883"
+      - "${MQTT_BIND_IP:-127.0.0.1}:${MQTT_PORT:-1883}:1883"
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./mosquitto/acl:/mosquitto/config/acl:ro
       - ./mosquitto/passwd:/mosquitto/config/passwd:ro
       - mosquitto_data:/mosquitto/data
+    security_opt:
+      - no-new-privileges:true
     networks:
       - lci_internal_net
     restart: unless-stopped
