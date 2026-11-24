@@ -1,40 +1,40 @@
 # LCI-SFM 2.0 — MQTT Protocol Specification (`v1`)
 
 **Release:** `2.0.0-rc.1`  
-**Transport:** Eclipse Mosquitto 2.0 over private wired LAN (TCP `1883`, anonymous disabled, per-device credentials & ACLs).
+**Broker:** Eclipse Mosquitto 2.0 over the private wired LAN (TCP `1883` by default, anonymous access disabled, per-device credentials and ACLs).
 
----
+This document describes the MQTT contract currently accepted by the backend. It does not imply that an untested physical firmware implementation already publishes every frame.
 
-## 1. Topic Namespace (`lci/v1`)
+## 1. Device identity and topic namespace
 
-Every `MQTT_V1` device is bound to a single immutable `device_id` (matching `^[a-zA-Z0-9][a-zA-Z0-9._-]{1,63}$`). The Mosquitto ACL restricts each device credential exclusively to its own `lci/v1/devices/<device_id>/#` subtree.
+A v1 device ID must match `^[a-z][a-z0-9_-]{0,47}$`. It is immutable after registration. A device's MQTT username must equal that ID because the Mosquitto ACL uses `%u` to restrict the device to its own topic subtree.
 
 | Direction | Topic | QoS | Purpose |
-|---|---|---|---|
-| Device → Server | `lci/v1/devices/{device_id}/manifest` | 1 | Self-description of device metadata and endpoints (onboarding & drift detection) |
-| Device → Server | `lci/v1/devices/{device_id}/telemetry` | 0/1 | Generic endpoint values payload |
-| Device → Server | `lci/v1/devices/{device_id}/heartbeat` | 0/1 | Liveness, uptime, firmware version, health status |
-| Server → Device | `lci/v1/devices/{device_id}/cmd` | 1 | Correlated, expiring command dispatch |
-| Device → Server | `lci/v1/devices/{device_id}/ack` | 1 | Correlated command acknowledgement & resulting state |
+|---|---|---:|---|
+| Device → Server | `lci/v1/devices/{device_id}/telemetry` | 0 or 1 | Validated endpoint values |
+| Device → Server | `lci/v1/devices/{device_id}/heartbeat` | 0 or 1 | Liveness and optional firmware/capability announcement |
+| Server → Device | `lci/v1/devices/{device_id}/command` | 1 | Correlated, expiring switch command; never retained |
+| Device → Server | `lci/v1/devices/{device_id}/ack` | 1 | Command acknowledgement or resulting state |
 
-Legacy team topics (`lecf/env/telemetry`, `lecf/access/mfa_face`, etc.) remain supported in parallel for backward compatibility with preloaded room-001 nodes.
+**The current implementation has no separate manifest topic.** A device announces its capability manifest as optional `endpoints` and `capabilities` fields inside its heartbeat. The backend subscribes to heartbeat, telemetry, and ACK topics; it does not subscribe to a standalone manifest topic.
 
----
+Legacy team topics (including `lecf/env/telemetry` and `lecf/access/mfa_face`) remain supported for the preloaded legacy devices.
 
-## 2. Message Contracts
+## 2. Message contracts
 
-### 2.1 Device Manifest (`.../manifest`)
+### 2.1 Heartbeat with optional capability manifest
 
-Published on boot or firmware update. If `{device_id}` is unregistered, the backend places it in the **Pending Devices Quarantine** (`pending_devices`). If already registered, the backend hashes the manifest and flags `manifest_drift = 1` when announced endpoints diverge from the approved registry.
+A device may publish a heartbeat on boot and after a firmware/manifest change:
 
 ```json
 {
   "schema_version": 1,
   "device_id": "lab305-env-01",
-  "name": "Lab 305 Multi-Sensor",
-  "device_type": "MIXED",
   "firmware_version": "2.0.1",
-  "suggested_room_code": "LAB-305",
+  "protocol_version": "1",
+  "uptime_ms": 86400000,
+  "manifest_version": "m-1",
+  "capabilities": ["SENSOR"],
   "endpoints": [
     {
       "endpoint_key": "temp_c",
@@ -42,7 +42,6 @@ Published on boot or firmware update. If `{device_id}` is unregistered, the back
       "kind": "SENSOR",
       "data_type": "NUMBER",
       "unit": "°C",
-      "readable": true,
       "writable": false
     },
     {
@@ -50,24 +49,19 @@ Published on boot or firmware update. If `{device_id}` is unregistered, the back
       "label": "Floor Water Leak",
       "kind": "SENSOR",
       "data_type": "BOOLEAN",
-      "readable": true,
       "writable": false
-    },
-    {
-      "endpoint_key": "exhaust_fan",
-      "label": "Exhaust Fan",
-      "kind": "SWITCH",
-      "data_type": "ENUM",
-      "allowed_values": ["ON", "OFF"],
-      "readable": true,
-      "writable": true,
-      "command_profile": "MQTT_SWITCH_V1"
     }
   ]
 }
 ```
 
-### 2.2 Telemetry Frame (`.../telemetry`)
+The backend heartbeat schema accepts `schema_version`, `device_id`, and optional `firmware_version`, `protocol_version`, `boot_id`, `uptime_ms`, `manifest_version`, `capabilities`, and `endpoints`. Each endpoint announcement may include `endpoint_key`, `label`, `kind`, `data_type`, `unit`, and `writable`. Unknown fields are rejected because the payload schema is strict.
+
+- If the device ID is not registered, the heartbeat is stored in **Pending Devices Quarantine**. The device is not automatically registered, and its telemetry is rejected until an Admin registers it.
+- If the device is registered, the backend compares announced endpoint keys and supported contract fields against the approved registry. Differences are reported as manifest drift; the server does not silently rewrite the registered endpoint schema.
+- A heartbeat updates device liveness. It does **not** refresh the last-seen time of sensor endpoints.
+
+### 2.2 Telemetry frame
 
 ```json
 {
@@ -75,81 +69,82 @@ Published on boot or firmware update. If `{device_id}` is unregistered, the back
   "device_id": "lab305-env-01",
   "boot_id": "boot-94a2",
   "seq": 42,
-  "timestamp": "2026-11-24T12:00:00Z",
   "values": {
     "temp_c": 23.8,
-    "water_leak": false,
-    "exhaust_fan": "OFF"
+    "water_leak": false
   }
 }
 ```
 
+The accepted frame fields are `schema_version`, `device_id`, `boot_id`, `seq`, and `values`. Do not add a top-level timestamp unless the backend schema is explicitly extended.
+
 **Server validation rules:**
-- `payload.device_id` MUST match the topic `{device_id}` (cross-device spoofing is rejected and audited).
-- `(device_id, boot_id, seq)` replay protection rejects duplicate or stale sequence numbers within the same boot session.
-- Only registered endpoints matching their declared `data_type` are persisted; unknown keys are ignored safely without crashing ingestion.
-- Each updated endpoint refreshes its individual `last_reported_at` timestamp for per-endpoint freshness calculation.
+- The payload `device_id` must match the ID in the topic.
+- `boot_id` identifies a device boot session; `seq` is a non-negative integer.
+- Duplicate, replayed, or out-of-order frames are rejected.
+- The device must already exist in the approved registry and must be enabled/not archived.
+- Every key in `values` must reference a registered endpoint and every value must match its declared capability/data type. A frame with an unknown or invalid endpoint key is rejected as a contract mismatch.
+- Accepted endpoint values update their own freshness timestamp and are persisted as observations/history.
 
-### 2.3 Heartbeat (`.../heartbeat`)
+The currently accepted telemetry value types are finite numbers, booleans, and the supported state strings (`ON`, `OFF`, `OPEN`, `CLOSED`, `LOCKED`, `UNLOCKED`), subject to the endpoint validator.
+
+### 2.3 Switch command
+
+The server publishes a non-retained command to `.../command`:
 
 ```json
 {
   "schema_version": 1,
-  "device_id": "lab305-env-01",
-  "firmware_version": "2.0.1",
-  "uptime_s": 86420,
-  "status": "ONLINE"
-}
-```
-
-### 2.4 Command (`.../cmd`) & Acknowledgement (`.../ack`)
-
-**Server command:**
-```json
-{
-  "schema_version": 1,
-  "command_id": "cmd-01JABC...",
+  "command_id": "6e4210c8-b8d8-4c15-9fa6-c5ac653fef01",
   "device_id": "lab305-env-01",
   "endpoint_key": "exhaust_fan",
   "value": "ON",
-  "issued_at": "2026-11-24T12:01:00Z",
-  "expires_at": "2026-11-24T12:01:30Z"
+  "issued_at": "2026-11-24T12:01:00.000Z",
+  "expires_at": "2026-11-24T12:01:05.000Z"
 }
 ```
 
-**Device acknowledgement:**
+Only registered, enabled, fresh `MQTT_V1` devices with an approved writable `SWITCH` endpoint and a supported command profile can be controlled through this generic command path. Door/access release is not a generic switch command.
+
+### 2.4 Command acknowledgement
+
+The device publishes to `.../ack`:
+
 ```json
 {
   "schema_version": 1,
-  "command_id": "cmd-01JABC...",
   "device_id": "lab305-env-01",
-  "endpoint_key": "exhaust_fan",
-  "status": "APPLIED",
-  "reported_value": "ON",
-  "message": "Relay energized"
+  "command_id": "6e4210c8-b8d8-4c15-9fa6-c5ac653fef01",
+  "status": "EXECUTED",
+  "observed_value": "ON"
 }
 ```
 
-Edge devices MUST discard any command where `now > expires_at`, MUST deduplicate by `command_id`, and MUST NOT bypass local hardware safety interlocks.
+Accepted `status` values are `ACKNOWLEDGED`, `EXECUTED`, and `REJECTED`. `observed_value` is optional and, for an executed switch command, must match the requested value. An acknowledgement is correlated by command ID, device ID, and expiry. A state report is evidence reported by the device; it is not independent proof of physical actuation.
 
----
+Edge firmware should discard expired commands, deduplicate command IDs, and retain all local hardware safety interlocks. The broker ACL and backend do not make an unsafe device actuation safe.
 
-## 3. Per-Device Credential & ACL Provisioning
+## 3. Per-device credentials and ACL provisioning
 
-The backend container never holds root privileges or writes `mosquitto/passwd`. Administrators provision or revoke device broker credentials on the host using the allowlisted CLI helper:
+The backend container does not receive root privileges, the Docker socket, or write access to `mosquitto/passwd`. Provision device credentials on the host:
 
 ```bash
-# Provision a new device identity & scoped ACL block (generates random password, reloads Mosquitto)
-sudo ./scripts/provision-mqtt-device.sh add --device-id lab305-env-01 --username dev_lab305_env_01
+# The username must be exactly the same as the device ID.
+sudo ./scripts/provision-mqtt-device.sh add --device-id lab305-env-01 --username lab305-env-01
 
-# Rotate password for an existing device
-sudo ./scripts/provision-mqtt-device.sh rotate --device-id lab305-env-01 --username dev_lab305_env_01
+# Rotate a device password.
+sudo ./scripts/provision-mqtt-device.sh rotate --device-id lab305-env-01 --username lab305-env-01
 
-# Revoke access and remove ACL block
-sudo ./scripts/provision-mqtt-device.sh revoke --device-id lab305-env-01 --username dev_lab305_env_01
+# Revoke the device identity.
+sudo ./scripts/provision-mqtt-device.sh revoke --device-id lab305-env-01
 
-# List managed device blocks
+# List provisioned identities (passwords are never displayed).
 sudo ./scripts/provision-mqtt-device.sh list
+
+# Verify the broker ACL contract.
+sudo ./scripts/provision-mqtt-device.sh verify-acl
 ```
 
-After running the host command, update the device's provisioning status in **Devices → Device Detail → MQTT Identity** (`PUT /api/v1/registry/:deviceId/mqtt-identity`).
+The one-time credential file is written under `mosquitto/provisioned-credentials/` with restrictive permissions. Deliver that credential securely to the corresponding device; do not put it in the dashboard, source control, or logs.
+
+After provisioning, register the device in the console and update its MQTT identity status to `PROVISIONED`. Provisioning a broker password alone does not register a device or authorize its endpoints.

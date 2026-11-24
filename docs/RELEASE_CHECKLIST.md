@@ -7,9 +7,9 @@ Software release candidate for the **Local-First Multi-Room Smart Facility Manag
 - [x] A1: Additive SQLite migration `004_multi_room_platform.sql` upgrades populated 1.1.0 databases cleanly and migrates legacy room/nodes to `room-001`.
 - [x] A2: First-class `rooms` CRUD, archive, and guarded delete APIs (`/api/v1/rooms`).
 - [x] A3: Transport-conditional IP validation (`MQTT_V1` allows empty IP; `HTTP_JSON_V1` and `CAMERA_JPEG` enforce private RFC1918 IPv4).
-- [x] A4: Capability (`kind`) separated from data type (`data_type`) with per-endpoint freshness (`last_reported_at`).
-- [x] A5: Pending Device Quarantine (`pending_devices`) with Admin approve/reject/ignore workflows and Manifest Drift flagging.
-- [x] A6: Numeric, boolean (`EQUALS_BOOLEAN`), enum (`EQUALS_ENUM`), and `STALE` server-side alarm rules with dwell/hysteresis and recovery evidence.
+- [x] A4: Capability (`kind`) separated from data type (`data_type`) with per-endpoint freshness (`last_seen_at`).
+- [x] A5: Pending Device Quarantine (`pending_devices`) with Admin review/registration or dismissal workflows and Manifest Drift flagging.
+- [x] A6: User-configurable numeric sensor high/low and boolean sensor true/false alarm rules with dwell/hysteresis and recovery evidence; stale-device alarms are generated separately by monitoring.
 - [x] A7: Host-side allowlisted MQTT credential/ACL provisioning CLI (`scripts/provision-mqtt-device.sh`) paired with backend `mqtt_identities` status tracking (zero root/Docker socket in backend container).
 
 ## Release B — Multi-Page Operational GUI & Air-Gap Compliance

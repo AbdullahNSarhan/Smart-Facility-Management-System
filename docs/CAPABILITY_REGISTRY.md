@@ -4,53 +4,71 @@
 
 ---
 
-## 1. Design Goal
+## 1. Design goal and boundary
 
-Adding a new sensor, relay, contact switch, power meter, or camera to LCI-SFM requires **zero custom frontend pages, zero custom API routes, and zero hardcoded backend device logic**. Every device exposes one or more **Endpoints** defined by orthogonal `kind` (capability) and `data_type` metadata.
+The generic endpoint engine reuses shared validation, persistence, freshness, history, alarm evaluation, and UI widgets for the endpoint contracts listed below. A new device can be registered without a new page only when it fits an already implemented capability, data type, and transport adapter.
 
----
+This does **not** mean arbitrary hardware, new transports, or new endpoint capabilities work automatically. A new capability/transport requires backend validation, an adapter, command/safety policy where applicable, and matching UI/test coverage.
 
-## 2. Capability (`kind`) vs. Data Type (`data_type`)
+## 2. Implemented endpoint kinds and data types
 
-| Endpoint `kind` | Supported `data_type` | Writable | Default UI Widget (`frontend/widgets.js`) | Supported Alarm Conditions |
+The endpoint schema currently accepts these combinations:
+
+| Endpoint `kind` | Accepted `data_type` | Writable | Default widget | User-configurable alarm rules |
 |---|---|---|---|---|
-| `SENSOR` | `NUMBER` | No | `METRIC_TREND` — live numeric readout, unit, freshness badge, local SVG sparkline, deep-link to history chart | `GREATER_THAN`, `LESS_THAN`, `STALE` |
-| `SENSOR` | `BOOLEAN` | No | `BOOLEAN_STATE` — explicit binary indicator (`ACTIVE` / `NORMAL` or `TRUE` / `FALSE`) + freshness | `EQUALS_BOOLEAN`, `STALE` |
-| `SENSOR` | `ENUM` / `STRING` | No | `METRIC_TREND` / state tile — discrete value readout + freshness | `EQUALS_ENUM`, `STALE` |
-| `SWITCH` | `ENUM` (`["ON","OFF"]`) or `BOOLEAN` | Yes (`MQTT_SWITCH_V1`) | `SWITCH_CONTROL` — reported state + Admin command buttons with correlation toast; Viewer sees read-only state | `EQUALS_ENUM`, `EQUALS_BOOLEAN`, `STALE` |
-| `ACCESS_STATE` | `ENUM` / `STRING` | Optional (door profile) | `ACCESS_STATE` — door/lock/MFA state indicator + timestamp | `EQUALS_ENUM`, `STALE` |
-| `CAMERA_SNAPSHOT` | `BINARY_IMAGE` | No | `CAMERA_SNAPSHOT` — authenticated backend JPEG capture button + modal/preview | `STALE` |
-| `STATUS` | `STRING` / `ENUM` / `BOOLEAN` | No | `BOOLEAN_STATE` or compact status indicator | `EQUALS_ENUM`, `EQUALS_BOOLEAN`, `STALE` |
-| *(Unknown / Future)* | *(Any)* | No | `UNSUPPORTED` — safe generic fallback displaying raw value, type badge, and last reported time | `STALE` |
+| `SENSOR` | `NUMBER` | No | `METRIC_TREND` — numeric value, unit, freshness, and history | `THRESHOLD_HIGH`, `THRESHOLD_LOW` |
+| `SENSOR` | `BOOLEAN` | No | `BOOLEAN_STATE` — explicit true/false state and freshness | `BOOLEAN_TRUE`, `BOOLEAN_FALSE` |
+| `SWITCH` | `ENUM` or `BOOLEAN` | Yes, only with supported MQTT switch command profile | `SWITCH_CONTROL` — Admin command controls and reported state; Viewer read-only | No switch-specific rule type |
+| `ACCESS` | `ENUM` | No through the generic switch command path | `ACCESS_STATE` — door/lock state | No user-configurable access rule type |
+| `CAMERA` | `MEDIA` or `BOOLEAN` | No | `CAMERA_SNAPSHOT` — authenticated JPEG capture/preview when configured for camera transport | No camera-specific rule type |
 
----
+The database migration may contain older values for compatibility, but new device/endpoint payloads are validated by the current Zod schemas. Do not assume that `STRING`, `ENUM` sensor values, or arbitrary custom data types are currently ingestible for all endpoint kinds.
 
-## 3. Transport Profiles
+The `UNSUPPORTED` widget is a safe rendering fallback; it is not a promise that the backend accepts an unknown capability or data type.
 
-| Transport | Network IP Required? | Telemetry Ingestion | Command Path |
-|---|---|---|---|
-| `MQTT_V1` | **No** (`ip` may be empty) | Push via `lci/v1/devices/{id}/telemetry` & `heartbeat` | `lci/v1/devices/{id}/cmd` + `ack` |
-| `HTTP_JSON_V1` | **Yes** (Private RFC1918 IPv4 only) | Manual bounded diagnostic/poll (`POST /api/v1/devices/:id/probe`) | Read-only unless paired with command profile |
-| `CAMERA_JPEG` | **Yes** (Private RFC1918 IPv4 only) | On-demand authenticated backend JPEG proxy (`GET /api/v1/devices/:id/snapshot`) | Read-only capture |
-| `LEGACY_MQTT` | Optional (preserved for preloaded team nodes) | Existing `lecf/*` topic mapping | Legacy allowlisted command coordinator |
+## 3. Transport profiles
 
----
+| Transport | Direct IPv4 required? | Current behavior |
+|---|---|---|
+| `MQTT_V1` | No | Devices publish telemetry/heartbeat/ACK; backend publishes non-retained switch commands |
+| `HTTP_JSON_V1` | Yes, private LAN IPv4 | Bounded manual JSON probe; read-only unless a future adapter is implemented |
+| `CAMERA_JPEG` | Yes, private LAN IPv4 | Authenticated backend JPEG snapshot proxy |
+| `LEGACY_V1` | Depends on the legacy device integration | Preserves the preloaded legacy device/topic adapters |
 
-## 4. Per-Endpoint Freshness States
+The registry does not configure a physical device's IP address. Changing a registered address changes the server-side destination record only.
 
-Every endpoint tracks its own `last_reported_at` timestamp independently of device-level heartbeats:
+## 4. Freshness states
 
-- **FRESH:** `now - last_reported_at <= effective_stale_after_s` (endpoint override or device default `stale_after_s`).
-- **STALE:** `now - last_reported_at > effective_stale_after_s` (rendered explicitly in amber; never silently shown as live).
-- **UNKNOWN:** Endpoint has never reported a validated value since registration (rendered neutrally; never defaults to `0`, `OFF`, or `CLOSED`).
+Freshness is based on the endpoint's last accepted observation, not the device heartbeat:
 
----
+- **ONLINE/FRESH:** a validated endpoint value has been received within the device's configured `stale_after_s`.
+- **STALE:** a prior validated value exists, but it is older than the configured freshness window.
+- **UNKNOWN:** no validated endpoint value has been received yet, or transport status is unavailable.
+- **DISABLED/ARCHIVED:** the device is administratively disabled or archived.
 
-## 5. Adding a New Device Without Writing Code
+A heartbeat updates device liveness and firmware/manifest metadata; it does not make old sensor readings fresh. The current endpoint API exposes the last accepted time as `last_seen_at`.
 
-1. Create or choose a Room in **Rooms** (`/app/rooms`).
-2. Provision a scoped MQTT identity on the host (`sudo ./scripts/provision-mqtt-device.sh add ...`).
-3. Either:
-   - Have the device publish its `lci/v1/devices/{id}/manifest` frame and click **Approve** in **Devices → Pending Quarantine**, **or**
-   - Register the device manually in **Devices → Register Device** and add its endpoints.
-4. Immediately view live widgets inside `/app/rooms/:roomId` and `/app/devices/:deviceId`, inspect historical curves at `/app/devices/:deviceId/endpoints/:endpointKey`, and attach numeric or boolean alarm rules in **Alarms** (`/app/alarms`).
+## 5. Alarm behavior
+
+User-defined alarm rules are supported only for `SENSOR` endpoints:
+
+- `NUMBER`: high threshold (`THRESHOLD_HIGH`) or low threshold (`THRESHOLD_LOW`) with a recovery threshold.
+- `BOOLEAN`: alert while true (`BOOLEAN_TRUE`) or while false (`BOOLEAN_FALSE`).
+
+Rules also support severity, raise dwell, recovery dwell, acknowledgement history, and recovery evidence. Stale-device monitoring is generated separately by the system; it is not an enum/STALE condition that an operator adds as an endpoint rule. `SWITCH`, `ACCESS`, and `CAMERA` do not currently support user-configurable endpoint alarm rules.
+
+## 6. Onboarding a device
+
+1. Create the destination Room in **Rooms**.
+2. For an MQTT v1 device, provision a broker identity on the server. The username must equal the immutable device ID:
+
+   ```bash
+   sudo ./scripts/provision-mqtt-device.sh add --device-id lab305-env-01 --username lab305-env-01
+   ```
+
+3. Configure the device with the one-time credential file written under `mosquitto/provisioned-credentials/`.
+4. Have it publish a heartbeat containing its identity and optional `capabilities`/`endpoints` announcement to `lci/v1/devices/{id}/heartbeat`.
+5. Unknown device IDs appear in **Devices → Pending Quarantine**. An Admin must explicitly register the device and its approved endpoints before telemetry is accepted. An announcement never changes the approved schema automatically.
+6. Confirm the device's MQTT identity status in Device Detail and verify fresh endpoint observations.
+
+For non-MQTT transports, use the appropriate registered private destination address and its transport adapter. A compatible endpoint definition alone does not create a new transport implementation.
