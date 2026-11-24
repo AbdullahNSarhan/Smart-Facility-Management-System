@@ -550,25 +550,41 @@ export class ReleaseOperations {
   // --------------------------------------------------------------------------
 
   _computeManifestDrift(endpoints, manifest) {
-    if (!manifest || !Array.isArray(manifest.endpoints) || manifest.endpoints.length === 0) {
-      return { has_drift: false, unexpected_keys: [], missing_keys: [] };
+    if (!manifest || !Array.isArray(manifest.endpoints)) {
+      return { has_drift: false, unexpected_keys: [], missing_keys: [], changed_keys: [] };
     }
     const registeredMap = new Map(endpoints.map((e) => [e.endpoint_key, e]));
     const manifestKeys = new Set();
     const unexpected = [];
-    for (const me of manifest.endpoints) {
-      if (!me?.endpoint_key) continue;
-      manifestKeys.add(me.endpoint_key);
-      const reg = registeredMap.get(me.endpoint_key);
-      if (!reg || reg.kind !== me.kind) {
-        unexpected.push(me.endpoint_key);
+    const changed = [];
+
+    for (const announced of manifest.endpoints) {
+      if (!announced?.endpoint_key) continue;
+      manifestKeys.add(announced.endpoint_key);
+      const registered = registeredMap.get(announced.endpoint_key);
+
+      if (!registered || registered.kind !== announced.kind) {
+        unexpected.push(announced.endpoint_key);
+        continue;
       }
+
+      const contractChanged =
+        (announced.data_type !== undefined && announced.data_type !== registered.data_type) ||
+        (announced.writable !== undefined && Boolean(announced.writable) !== Boolean(registered.writable)) ||
+        (announced.unit !== undefined && announced.unit !== (registered.unit || ''));
+
+      if (contractChanged) changed.push(announced.endpoint_key);
     }
-    const missing = endpoints.filter((e) => !manifestKeys.has(e.endpoint_key)).map((e) => e.endpoint_key);
+
+    const missing = endpoints
+      .filter((endpoint) => !manifestKeys.has(endpoint.endpoint_key))
+      .map((endpoint) => endpoint.endpoint_key);
+
     return {
-      has_drift: unexpected.length > 0 || missing.length > 0,
+      has_drift: unexpected.length > 0 || missing.length > 0 || changed.length > 0,
       unexpected_keys: unexpected,
-      missing_keys: missing
+      missing_keys: missing,
+      changed_keys: changed
     };
   }
 

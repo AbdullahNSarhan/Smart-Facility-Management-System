@@ -39,7 +39,10 @@ jobs:
           set -Eeuo pipefail
           test "$(git ls-files -s -- install.sh | awk '{print $1}')" = "100755"
           test "$(git ls-files -s -- update.sh | awk '{print $1}')" = "100755"
-          bash -n install.sh update.sh
+          bash -n install.sh update.sh install-offline.sh update-offline.sh \
+            scripts/build-offline-bundle.sh scripts/configure-static-ip.sh \
+            scripts/provision-mqtt-device.sh scripts/setup-local-tls.sh
+          bash scripts/provision-mqtt-device.sh verify-acl
           test -f .env.example
           test -f .dockerignore
           test -f backend/.dockerignore

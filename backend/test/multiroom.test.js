@@ -318,15 +318,25 @@ describe('Multi-room facility domain, generic endpoint engine, manifest quaranti
         device_id: 'new_edge_09',
         manifest_version: 'm-2',
         endpoints: [
-          { endpoint_key: 'pressure', kind: 'SENSOR' },
-          { endpoint_key: 'rogue_relay', kind: 'SWITCH' }
+          { endpoint_key: 'pressure', kind: 'SENSOR', data_type: 'BOOLEAN', unit: 'psi' },
+          { endpoint_key: 'rogue_relay', kind: 'SWITCH', data_type: 'ENUM', writable: true }
         ]
       })
     );
     const afterDrift = (await get('/registry/new_edge_09')).body.device;
     assert.equal(afterDrift.manifest_drift.has_drift, true);
     assert.deepEqual(afterDrift.manifest_drift.unexpected_keys, ['rogue_relay']);
+    assert.deepEqual(afterDrift.manifest_drift.changed_keys, ['pressure']);
     assert.equal(afterDrift.endpoints.length, 1);
+
+    // An explicitly empty endpoint manifest means all registered endpoints disappeared.
+    ctx.mqttService.handleIncomingMessage(
+      'lci/v1/devices/new_edge_09/heartbeat',
+      JSON.stringify({ schema_version: 1, device_id: 'new_edge_09', manifest_version: 'm-3', endpoints: [] })
+    );
+    const emptyManifest = (await get('/registry/new_edge_09')).body.device;
+    assert.equal(emptyManifest.manifest_drift.has_drift, true);
+    assert.deepEqual(emptyManifest.manifest_drift.missing_keys, ['pressure']);
   });
 
   it('upgrades a populated 1.1.0-rc.1 (001+002+003) SQLite database cleanly to 004 without losing rows or credentials', async () => {
@@ -384,5 +394,26 @@ describe('Multi-room facility domain, generic endpoint engine, manifest quaranti
     assert.throws(() => {
       execFileSync('bash', [scriptPath, 'add', '../bad_id', '--no-reload'], { stdio: 'pipe' });
     }, /Invalid device_id/i);
+
+    const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lci-mqtt-cli-'));
+    try {
+      const passwdFile = path.join(cliDir, 'passwd');
+      const outDir = path.join(cliDir, 'credentials');
+
+      assert.throws(() => {
+        execFileSync('bash', [
+          scriptPath, 'add', '--device-id', 'lab305-env-01', '--username', 'dev_lab305_env_01',
+          '--passwd-file', passwdFile, '--out-dir', outDir, '--no-reload'
+        ], { stdio: 'pipe' });
+      }, /MQTT username must match device_id/i);
+      assert.equal(fs.existsSync(passwdFile), false);
+
+      const listOut = execFileSync('bash', [
+        scriptPath, 'list', '--passwd-file', path.join(cliDir, 'not-created-passwd')
+      ], { encoding: 'utf8' });
+      assert.match(listOut, /Password file not found/);
+    } finally {
+      fs.rmSync(cliDir, { recursive: true, force: true });
+    }
   });
 });

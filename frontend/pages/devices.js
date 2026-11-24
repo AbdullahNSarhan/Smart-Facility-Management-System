@@ -803,11 +803,15 @@ export function renderDeviceDetailPage({ params, navigate }) {
       // Alerts: Manifest Drift or Maintenance
       clear(alertsHost);
       if (dev.manifest_drift?.has_drift) {
+        const drift = dev.manifest_drift;
+        const unexpected = drift.unexpected_keys || [];
+        const missing = drift.missing_keys || [];
+        const changed = drift.changed_keys || [];
         alertsHost.appendChild(
           el('div', { class: 'alert alert-warning' }, [
             el('strong', { text: 'Capability Manifest Drift Detected — ' }),
             el('span', {
-              text: `Device announced differences (${(dev.manifest_drift.added_endpoints || []).length} added, ${(dev.manifest_drift.removed_endpoints || []).length} missing). Schema was NOT auto-mutated. Review and edit endpoints explicitly.`
+              text: `Device differences: ${unexpected.length} unexpected/new, ${missing.length} missing, ${changed.length} contract changes. Schema was NOT auto-mutated. Review and edit endpoints explicitly.`
             })
           ])
         );
