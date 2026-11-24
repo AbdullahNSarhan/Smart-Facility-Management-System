@@ -5,25 +5,27 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   refresh-root-lockfile:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out pull request
+      - name: Check out pull request branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: true
 
       - name: Set up Node.js 24
         uses: actions/setup-node@v4
         with:
           node-version: 24
 
-      - name: Regenerate root npm lockfile from package.json
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-
-      - name: Verify package manifest and lockfile roots match
+      - name: Regenerate and validate root npm lockfile
         run: |
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          npm ci --ignore-scripts --no-audit --no-fund
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
@@ -43,10 +45,15 @@ jobs:
           console.log(`Lockfile synchronized: ${Object.keys(lock.packages).length} package entries`);
           NODE
 
-      - name: Upload regenerated root lockfile
-        uses: actions/upload-artifact@v4
-        with:
-          name: lci-sfm-root-package-lock
-          path: package-lock.json
-          if-no-files-found: error
-          retention-days: 2
+      - name: Commit the synchronized lockfile and remove this temporary workflow
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -Eeuo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          git rm .github/workflows/temporary-lockfile-refresh.yml
+          git diff --cached --check
+          git commit -m "fix: synchronize root npm lockfile for reproducible installs"
+          git push origin "HEAD:${HEAD_BRANCH}"
