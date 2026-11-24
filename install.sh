@@ -21,6 +21,8 @@ FRONTEND_PORT_CHOICE="${LCI_FRONTEND_PORT:-80}"
 MQTT_PORT_CHOICE="${LCI_MQTT_PORT:-1883}"
 MQTT_BIND_CHOICE="${LCI_MQTT_BIND_IP:-127.0.0.1}"
 ADMIN_USER_CHOICE="${LCI_ADMIN_USERNAME:-sfm_admin}"
+# Preserve caller flags when this temporary bootstrap script clones the real checkout.
+ORIGINAL_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -149,7 +151,7 @@ if [[ ! -f "${SCRIPT_DIR:-/nonexistent}/docker-compose.yml" ]]; then
   else
     git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$INSTALL_DIR"
   fi
-  exec "$INSTALL_DIR/install.sh" --non-interactive
+  exec "$INSTALL_DIR/install.sh" "${ORIGINAL_ARGS[@]}"
 fi
 
 PROJECT_DIR="$SCRIPT_DIR"

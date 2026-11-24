@@ -9,11 +9,12 @@
 #   rotate, revoke, inspect, and ACL-verify per-device Mosquitto credentials.
 #
 # Usage:
-#   sudo ./scripts/provision-mqtt-device.sh add <device_id> [--passwd-file PATH] [--out-dir PATH]
-#   sudo ./scripts/provision-mqtt-device.sh rotate <device_id> [--passwd-file PATH] [--out-dir PATH]
-#   sudo ./scripts/provision-mqtt-device.sh revoke <device_id> [--passwd-file PATH]
-#   sudo ./scripts/provision-mqtt-device.sh status [device_id] [--passwd-file PATH]
-#   sudo ./scripts/provision-mqtt-device.sh verify-acl [--acl-file PATH]
+#   sudo ./scripts/provision-mqtt-device.sh add <device_id> [--username <same-device_id>]
+#   sudo ./scripts/provision-mqtt-device.sh add --device-id <device_id> [--username <same-device_id>]
+#   sudo ./scripts/provision-mqtt-device.sh rotate --device-id <device_id> [--username <same-device_id>]
+#   sudo ./scripts/provision-mqtt-device.sh revoke --device-id <device_id>
+#   sudo ./scripts/provision-mqtt-device.sh status [device_id] | list
+#   sudo ./scripts/provision-mqtt-device.sh verify-acl
 # ==============================================================================
 set -Eeuo pipefail
 umask 077
@@ -106,24 +107,69 @@ ACTION="${1:-}"
 shift || true
 
 DEVICE_ID=""
+REQUESTED_USERNAME=""
+
+# Preserve the positional form and accept the documented named options. The ACL
+# uses %u in each device topic, so MQTT username must equal the immutable ID.
 if [[ "$ACTION" == "add" || "$ACTION" == "rotate" || "$ACTION" == "revoke" ]]; then
-  DEVICE_ID="${1:-}"
-  [[ -n "$DEVICE_ID" ]] || die "Missing <device_id> argument for '$ACTION'."
-  shift || true
-elif [[ "$ACTION" == "status" && "${1:-}" != "" && "${1:-}" != --* ]]; then
+  if [[ -n "${1:-}" && "${1:-}" != --* ]]; then
+    DEVICE_ID="$1"
+    shift
+  fi
+elif [[ "$ACTION" == "status" && -n "${1:-}" && "${1:-}" != --* ]]; then
   DEVICE_ID="$1"
-  shift || true
+  shift
 fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --passwd-file) PASSWD_FILE="${2:-}"; shift 2 ;;
-    --acl-file) ACL_FILE="${2:-}"; shift 2 ;;
-    --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
+    --device-id)
+      [[ -n "${2:-}" ]] || die "--device-id requires a value."
+      [[ -z "$DEVICE_ID" || "$DEVICE_ID" == "$2" ]] || die "Conflicting device_id values were supplied."
+      DEVICE_ID="$2"
+      shift 2
+      ;;
+    --username)
+      [[ -n "${2:-}" ]] || die "--username requires a value."
+      REQUESTED_USERNAME="$2"
+      shift 2
+      ;;
+    --passwd-file)
+      [[ -n "${2:-}" ]] || die "--passwd-file requires a path."
+      PASSWD_FILE="$2"
+      shift 2
+      ;;
+    --acl-file)
+      [[ -n "${2:-}" ]] || die "--acl-file requires a path."
+      ACL_FILE="$2"
+      shift 2
+      ;;
+    --out-dir)
+      [[ -n "${2:-}" ]] || die "--out-dir requires a path."
+      OUT_DIR="$2"
+      shift 2
+      ;;
     --no-reload) NO_RELOAD=1; shift ;;
+    -h|--help)
+      sed -n '2,12p' "$0"
+      exit 0
+      ;;
     *) die "Unknown option: $1" ;;
   esac
 done
+
+if [[ "$ACTION" == "list" ]]; then
+  ACTION="status"
+fi
+
+if [[ "$ACTION" == "add" || "$ACTION" == "rotate" || "$ACTION" == "revoke" ]]; then
+  [[ -n "$DEVICE_ID" ]] || die "Missing <device_id> (or --device-id <device_id>) for '$ACTION'."
+  if [[ -n "$REQUESTED_USERNAME" && "$REQUESTED_USERNAME" != "$DEVICE_ID" ]]; then
+    die "MQTT username must match device_id because the Mosquitto ACL scopes topics using %u."
+  fi
+elif [[ -n "$REQUESTED_USERNAME" ]]; then
+  die "--username is only valid with add, rotate, or revoke."
+fi
 
 case "$ACTION" in
   add|rotate)

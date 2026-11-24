@@ -11,10 +11,10 @@ LCI-SFM — *Light Current Infrastructure for Smart Facility Management* — man
 | Area | Capabilities |
 |---|---|
 | Multi-room topology | Create, edit, archive, and inspect multiple rooms (`building`, `floor`, `room_code`) with room-scoped device grids and health summaries |
-| Generic Endpoint Engine | Uses registered endpoint capabilities (`SENSOR`, `SWITCH`, `ACCESS_STATE`, `CAMERA_SNAPSHOT`, `STATUS`) and data types (`NUMBER`, `BOOLEAN`, `ENUM`, `STRING`, `BINARY_IMAGE`) to render supported devices through shared widgets; new transports or capabilities still require a compatible adapter/implementation |
+| Generic Endpoint Engine | Uses implemented endpoint kinds (`SENSOR`, `SWITCH`, `ACCESS`, `CAMERA`) with supported data types (`SENSOR: NUMBER/BOOLEAN`, `SWITCH: ENUM/BOOLEAN`, `ACCESS: ENUM`, `CAMERA: MEDIA/BOOLEAN`); new transports or capabilities still require a matching adapter and validation support |
 | Multi-page console | Dedicated Local Landing (`/`), Login (`/login`), and Authenticated Operations Shell (`/app/overview`, `/app/rooms`, `/app/rooms/:id`, `/app/devices`, `/app/devices/:id`, `/app/devices/:id/endpoints/:key`, `/app/alarms`, `/app/notifications`, `/app/events`, `/app/diagnostics`, `/app/users`, `/app/settings`, `/app/profile`) with Dark Industrial Graphite default + Light toggle |
-| Device onboarding & drift | Transport-conditional validation (`MQTT_V1` does not require a direct IPv4 address; `HTTP_JSON_V1` & `CAMERA_JPEG` require a private RFC1918 IPv4 address), Pending Device Quarantine (`.../manifest`), and Manifest Drift alerts |
-| Alarm management | Server rules supporting numeric thresholds (`GREATER_THAN`, `LESS_THAN`), binary/enum conditions (`EQUALS_BOOLEAN`, `EQUALS_ENUM`), and `STALE` freshness, with dwell, hysteresis, acknowledgement timelines, and expiring maintenance |
+| Device onboarding & drift | Transport-conditional validation (`MQTT_V1` does not require a direct IPv4 address; `HTTP_JSON_V1` & `CAMERA_JPEG` require a private RFC1918 IPv4 address), Pending Device Quarantine from heartbeat capability announcements, and Manifest Drift alerts |
+| Alarm management | User-configurable rules support numeric sensor limits (`THRESHOLD_HIGH`, `THRESHOLD_LOW`) and boolean sensor conditions (`BOOLEAN_TRUE`, `BOOLEAN_FALSE`), with dwell, hysteresis, acknowledgement timelines, and recovery evidence; stale-device alarms are generated separately by monitoring |
 | Notification Center | Persistent scoped events, per-user unread count/read state, filters, WebSocket invalidation, and retention |
 | People & credentials | Occupant directory, RFID/PIN management, independent dashboard accounts (`Admin`/`Viewer`), CSRF protection, and last-admin guard |
 | Camera & controls | Authenticated SSRF-bounded JPEG capture proxy and correlated expiring MQTT switch/legacy commands |
@@ -81,6 +81,18 @@ npm run db:restore       # Restore SQLite backup (stop backend first)
 
 ## Production & air-gapped deployment
 
+### One-command guided installation (Ubuntu Server)
+
+Use this on a supported Ubuntu Server host with sudo access, a working LAN interface, and Internet access for the initial repository download, package installation, and container images. The installer downloads the project into `/opt/lci-sfm`, installs Docker/Compose when missing, generates protected local credentials, runs lint/tests/build, starts the three services, and waits for application readiness.
+
+```bash
+tmp="$(mktemp)" && curl -fsSL 'https://raw.githubusercontent.com/AbdullahNSarhan/Smart-Facility-Management-System/main/install.sh' -o "$tmp" && sudo bash "$tmp"; status=$?; [ -z "${tmp:-}" ] || rm -f "$tmp"; exit "$status"
+```
+
+The installer is interactive when run from a terminal. Select the server's intended LAN IPv4 address for the Dashboard. At the MQTT exposure question, answer **yes** when ESP32/edge nodes must connect from the wired LAN; the secure default is loopback-only. Keep the server address stable (prefer a DHCP reservation or a preconfigured static address). Initial Admin credentials are saved in `/opt/lci-sfm/DEPLOYMENT-CREDENTIALS.txt` with mode `0600` and displayed at the end.
+
+To inspect the host without installing anything, run `bash install.sh --discover-only` from a cloned repository.
+
 The three-service Compose stack runs **Nginx** (`nginx:1.27-alpine`), **Node.js** (non-root), and **Mosquitto** (`eclipse-mosquitto:2.0`) with `no-new-privileges:true` and persistent Docker volumes (`sqlite_data`, `mosquitto_data`).
 
 ### Guided Ubuntu installation
@@ -123,13 +135,13 @@ sudo ./install-offline.sh          # Fresh install
 ### Per-device MQTT credential & ACL provisioning
 
 ```bash
-sudo ./scripts/provision-mqtt-device.sh add --device-id lab305-env-01 --username dev_lab305_env_01
+sudo ./scripts/provision-mqtt-device.sh add --device-id lab305-env-01 --username lab305-env-01
 ```
 
 ## Documentation
 
 - [Local-First Architecture](docs/LOCAL_FIRST_ARCHITECTURE.md) — system topology, multi-room hierarchy, routes, and health semantics.
-- [MQTT Protocol Spec (v1)](docs/MQTT_PROTOCOL_SPEC.md) — topic namespace, manifest/telemetry/heartbeat/cmd/ack schemas, and CLI provisioning.
+- [MQTT Protocol Spec (v1)](docs/MQTT_PROTOCOL_SPEC.md) — topic namespace, heartbeat capability announcements, telemetry, command/ACK schemas, and CLI provisioning.
 - [Capability & Endpoint Registry](docs/CAPABILITY_REGISTRY.md) — generic endpoint kinds, data types, freshness states, and widget engine.
 - [Professional Local Platform Audit](docs/PROFESSIONAL_LOCAL_PLATFORM_AUDIT.md) — security posture, resolved gaps, and boundaries.
 - [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) — guided installer, static IP, local TLS, offline bundles, backup/restore, and troubleshooting.

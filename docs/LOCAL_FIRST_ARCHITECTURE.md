@@ -51,14 +51,14 @@
 
 LCI-SFM 2.0 models any physical building cleanly via normalized SQLite tables (Migrations `001`–`004`):
 
-1. **Facility** (`facility_settings`): Global site name, contact/timezone metadata, revision counter, and legacy fallback compatibility.
+1. **Facility** (`facilities`): First-class facility record (name, description, location, timezone, version); legacy `facility_settings` is retained for compatibility.
 2. **Rooms** (`rooms`): Logical zones (`room_id`, `room_code`, `name`, `building`, `floor`, `status: ACTIVE | ARCHIVED`, `description`, `revision`).
-3. **Devices** (`device_registry`): Physical or virtual nodes assigned to a `room_id`, with immutable `device_id`, `device_type`, `transport` (`MQTT_V1`, `HTTP_JSON_V1`, `CAMERA_JPEG`, `LEGACY_MQTT`), optional private IPv4 (required only for HTTP/Camera transports), `stale_after_s`, `protocol_version`, `manifest_hash`, `manifest_drift`, and `maintenance_until`.
-4. **Endpoints** (`device_endpoints`): Generic functional points per device (`endpoint_key`, `label`, `kind`, `data_type`, `unit`, `readable`, `writable`, `command_profile`, `allowed_values`, `retention_enabled`, `last_value`, `last_reported_at`, `stale_after_s`).
-5. **Time-Series & Frames** (`device_frames`, `endpoint_observations`): Append-only validated telemetry history with per-endpoint freshness timestamps and indexed lookups for fast range queries.
-6. **Onboarding Quarantine** (`pending_devices`): Unregistered devices announcing manifests on MQTT are quarantined for Admin review (`PENDING` → `APPROVED` / `REJECTED` / `IGNORED`) without polluting active room telemetry.
+3. **Devices** (`device_registry`): Physical or virtual nodes assigned to a `room_id`, with immutable `device_id`, `device_type`, `transport` (`MQTT_V1`, `HTTP_JSON_V1`, `CAMERA_JPEG`, `LEGACY_V1`), optional private IPv4 (required only for HTTP/Camera transports), `stale_after_s`, protocol/firmware metadata, and `maintenance_until`.
+4. **Endpoints** (`device_endpoints`): Generic functional points per device (`endpoint_key`, `label`, `kind`, `data_type`, `unit`, `readable`, `writable`, `command_profile`, `allowed_values`, `retention_enabled`, and display/range metadata). Latest validated values and freshness are stored in `device_endpoint_state` using `last_seen_at`.
+5. **Time-Series & Frames** (`device_frames`, `device_observations`, `device_endpoint_state`): Validated frame history, latest merged device observation, and per-endpoint latest value/freshness state.
+6. **Onboarding Quarantine** (`pending_devices`): Unknown devices announcing through the MQTT heartbeat topic (optional `capabilities`/`endpoints` fields) are quarantined for Admin review (`PENDING` → `APPROVED` after explicit registration, or `DISMISSED`) without accepting their telemetry.
 7. **MQTT Identity Ledger** (`mqtt_identities`): Tracks broker username, topic prefix, and provisioning status per device (never stores plaintext broker passwords).
-8. **Alarms & Notifications** (`alarm_rules`, `alarms`, `alarm_events`, `notifications`, `notification_reads`): Server-evaluated stateful alarm engine supporting numeric (`GREATER_THAN`, `LESS_THAN`), boolean (`EQUALS_BOOLEAN`), enum (`EQUALS_ENUM`), and `STALE` conditions, plus per-user scoped notifications.
+8. **Alarms & Notifications** (`alarm_rules`, `alarms`, `alarm_events`, `notifications`, `notification_reads`): User-configurable rules support numeric sensor high/low thresholds and boolean sensor true/false conditions; stale-device monitoring is generated separately, alongside per-user scoped notifications.
 
 ---
 

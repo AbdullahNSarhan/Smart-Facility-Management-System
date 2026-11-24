@@ -45,8 +45,9 @@ LCI-SFM 2.0 ships dedicated host-side deployment utilities for both connected an
    sudo ./update-offline.sh       # Guarded offline upgrade with backup & rollback
    ```
 6. **Per-Device MQTT Credential & ACL Provisioning (Host-Side Least-Privilege CLI):**
+   The broker username must equal the immutable device ID because the Mosquitto ACL scopes each device's topics using `%u`.
    ```bash
-   sudo ./scripts/provision-mqtt-device.sh add --device-id lab305-env-01 --username dev_lab305_env_01
+   sudo ./scripts/provision-mqtt-device.sh add --device-id lab305-env-01 --username lab305-env-01
    sudo ./scripts/provision-mqtt-device.sh list
    ```
 
