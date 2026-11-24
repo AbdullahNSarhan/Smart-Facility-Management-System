@@ -1,0 +1,52 @@
+name: Temporary root lockfile refresh
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  refresh-root-lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Regenerate root npm lockfile from package.json
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+
+      - name: Verify package manifest and lockfile roots match
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          const root = lock.packages?.[''];
+          if (!root) throw new Error('Lockfile v3 root package entry is missing');
+          for (const key of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+            const expected = pkg[key] ?? {};
+            const actual = root[key] ?? {};
+            if (JSON.stringify(expected) !== JSON.stringify(actual)) {
+              throw new Error(`Root ${key} do not match package.json`);
+            }
+          }
+          if (lock.version !== pkg.version || root.version !== pkg.version) {
+            throw new Error('Lockfile package version does not match package.json');
+          }
+          console.log(`Lockfile synchronized: ${Object.keys(lock.packages).length} package entries`);
+          NODE
+
+      - name: Upload regenerated root lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: lci-sfm-root-package-lock
+          path: package-lock.json
+          if-no-files-found: error
+          retention-days: 2
