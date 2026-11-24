@@ -11,9 +11,9 @@ LCI-SFM — *Light Current Infrastructure for Smart Facility Management* — man
 | Area | Capabilities |
 |---|---|
 | Multi-room topology | Create, edit, archive, and inspect multiple rooms (`building`, `floor`, `room_code`) with room-scoped device grids and health summaries |
-| Generic Endpoint Engine | Separate capability (`SENSOR`, `SWITCH`, `ACCESS_STATE`, `CAMERA_SNAPSHOT`, `STATUS`) from data type (`NUMBER`, `BOOLEAN`, `ENUM`, `STRING`, `BINARY_IMAGE`) — add new devices without writing custom UI or API code |
+| Generic Endpoint Engine | Uses registered endpoint capabilities (`SENSOR`, `SWITCH`, `ACCESS_STATE`, `CAMERA_SNAPSHOT`, `STATUS`) and data types (`NUMBER`, `BOOLEAN`, `ENUM`, `STRING`, `BINARY_IMAGE`) to render supported devices through shared widgets; new transports or capabilities still require a compatible adapter/implementation |
 | Multi-page console | Dedicated Local Landing (`/`), Login (`/login`), and Authenticated Operations Shell (`/app/overview`, `/app/rooms`, `/app/rooms/:id`, `/app/devices`, `/app/devices/:id`, `/app/devices/:id/endpoints/:key`, `/app/alarms`, `/app/notifications`, `/app/events`, `/app/diagnostics`, `/app/users`, `/app/settings`, `/app/profile`) with Dark Industrial Graphite default + Light toggle |
-| Device onboarding & drift | Transport-conditional validation (`MQTT_V1` requires zero IP; `HTTP_JSON_V1` & `CAMERA_JPEG` enforce private RFC1918 IPv4), Pending Device Quarantine (`.../manifest`), and Manifest Drift alerts |
+| Device onboarding & drift | Transport-conditional validation (`MQTT_V1` does not require a direct IPv4 address; `HTTP_JSON_V1` & `CAMERA_JPEG` require a private RFC1918 IPv4 address), Pending Device Quarantine (`.../manifest`), and Manifest Drift alerts |
 | Alarm management | Server rules supporting numeric thresholds (`GREATER_THAN`, `LESS_THAN`), binary/enum conditions (`EQUALS_BOOLEAN`, `EQUALS_ENUM`), and `STALE` freshness, with dwell, hysteresis, acknowledgement timelines, and expiring maintenance |
 | Notification Center | Persistent scoped events, per-user unread count/read state, filters, WebSocket invalidation, and retention |
 | People & credentials | Occupant directory, RFID/PIN management, independent dashboard accounts (`Admin`/`Viewer`), CSRF protection, and last-admin guard |
@@ -99,7 +99,9 @@ sudo ./install.sh
 ### Optional local HTTPS / TLS mode
 
 ```bash
-sudo ./scripts/setup-local-tls.sh --ip <SERVER_LAN_IP>
+sudo ./scripts/setup-local-tls.sh <SERVER_LAN_IP> [HOSTNAME]
+# Then set TLS_ENABLED=true, SESSION_SECURE_COOKIE=true,
+# and ALLOWED_ORIGINS=https://<SERVER_LAN_IP> in .env before starting Compose.
 docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
 ```
 
@@ -109,6 +111,7 @@ docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
 # On connected build workstation:
 npm run bundle:offline
 
+# The target host must already have Docker Engine and the Docker Compose v2 plugin.
 # Transfer dist-offline/lci-sfm-2.0.0-rc.1-offline.tar.gz (+ .sha256) to offline Ubuntu server:
 sha256sum -c lci-sfm-2.0.0-rc.1-offline.tar.gz.sha256
 tar -xzf lci-sfm-2.0.0-rc.1-offline.tar.gz

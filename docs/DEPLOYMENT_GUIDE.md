@@ -26,7 +26,9 @@ LCI-SFM 2.0 ships dedicated host-side deployment utilities for both connected an
    ```
 4. **Optional Local HTTPS / TLS Mode (Self-Signed SAN Certificate + Port 443):**
    ```bash
-   sudo ./scripts/setup-local-tls.sh --ip <SERVER_LAN_IP>
+   sudo ./scripts/setup-local-tls.sh <SERVER_LAN_IP> [HOSTNAME]
+   # Then set TLS_ENABLED=true, SESSION_SECURE_COOKIE=true,
+   # and ALLOWED_ORIGINS=https://<SERVER_LAN_IP> in .env before starting Compose.
    docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
    ```
    When enabling TLS, set `TLS_ENABLED=true`, `SESSION_SECURE_COOKIE=true`, and update `ALLOWED_ORIGINS=https://<SERVER_LAN_IP>` in `.env`.
