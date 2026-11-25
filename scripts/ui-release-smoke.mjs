@@ -352,8 +352,18 @@ try {
 
   await page.fill('#login-username', 'viewer_ui');
   await page.fill('#login-password', 'Viewer-Smoke-Pass#2026');
+  const viewerLoginResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/auth/login'
+  );
   await page.click('#login-submit-btn');
-  await page.waitForURL(`${baseUrl}/app/overview`);
+  const viewerLoginResponse = await viewerLoginResponsePromise;
+  const viewerLoginBody = await viewerLoginResponse.json().catch(() => ({}));
+  assert.equal(viewerLoginResponse.status(), 200, `Viewer login failed with HTTP ${viewerLoginResponse.status()}: ${JSON.stringify(viewerLoginBody)}`);
+  assert.equal(viewerLoginBody.user?.role, 'Viewer', `Expected Viewer role from server: ${JSON.stringify(viewerLoginBody.user || {})}`);
+  await page.waitForURL(baseUrl + '/app/overview', { timeout: 10000 }).catch(async () => {
+    const errors = await page.locator('.alert-error').allTextContents().catch(() => []);
+    throw new Error(`Viewer login returned HTTP 200 but did not reach Overview. Current URL: ${page.url()}. Visible errors: ${errors.join(' | ')}`);
+  });
 
   // Viewer must not see Users & Access or Settings in sidebar
   assert.equal(await page.getByRole('link', { name: 'Users & Access' }).count(), 0);
