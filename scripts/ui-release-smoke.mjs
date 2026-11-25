@@ -349,8 +349,19 @@ try {
   await page.waitForURL(`${baseUrl}/app/rooms`);
   assert.equal(await page.locator('#add-room-btn').count(), 0);
 
-  // Return to Admin and verify the implemented operator deletion route.
+  // Sign Out is part of the Profile page; navigate there explicitly before ending the Viewer session.
+  await page.goto(`${baseUrl}/app/profile`, { waitUntil: 'networkidle' });
   await page.locator('.app-content').getByRole('button', { name: 'Sign Out' }).click();
+  await page.waitForURL(`${baseUrl}/login`);
+
+  // Return to Admin and verify the implemented operator deletion route.
+  await page.fill('#login-username', 'admin');
+  await page.fill('#login-password', adminPass);
+  await page.click('#login-submit-btn');
+  await page.waitForURL(`${baseUrl}/app/overview`);
+  await page.goto(`${baseUrl}/app/users`, { waitUntil: 'networkidle' });
+  const viewerRow = page.locator('tr').filter({ hasText: 'viewer_ui' });
+  await viewerRow.getByRole('button', { name: 'Delete' }).click();
   await page.waitForURL(`${baseUrl}/login`);
   await page.fill('#login-username', 'admin');
   await page.fill('#login-password', adminPass);
