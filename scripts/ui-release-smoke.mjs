@@ -335,8 +335,6 @@ try {
   await page.goto(`${baseUrl}/app/profile`, { waitUntil: 'networkidle' });
   await page.locator('.app-content').getByRole('button', { name: 'Sign Out' }).click();
   await page.waitForURL(`${baseUrl}/login`);
-  await page.locator('.app-content').getByRole('button', { name: 'Sign Out' }).click();
-  await page.waitForURL(`${baseUrl}/login`);
 
   await page.fill('#login-username', 'viewer_ui');
   await page.fill('#login-password', 'Viewer-Smoke-Pass#2026');
@@ -369,8 +367,7 @@ try {
   const deleteOperatorResponse = await deleteOperatorPromise;
   const deleteOperatorBody = await deleteOperatorResponse.json().catch(() => ({}));
   assert.equal(deleteOperatorResponse.status(), 200, `Expected operator deletion HTTP 200; got ${deleteOperatorResponse.status()}: ${JSON.stringify(deleteOperatorBody)}`);
-  await page.waitForTimeout(100);
-  assert.equal(await page.locator('tr').filter({ hasText: 'viewer_ui' }).count(), 0);
+  await page.locator('tr').filter({ hasText: 'viewer_ui' }).waitFor({ state: 'detached', timeout: 5000 });
 
   // 14. Strict Air-Gap & Error Assertions
   assert.deepEqual(
