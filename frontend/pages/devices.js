@@ -251,7 +251,7 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
       const typeSelect = el(
         'select',
         { id: 'wiz-device-type', class: 'select', disabled: isLegacy },
-        ['SENSOR', 'SWITCH', 'ACCESS', 'CAMERA', 'MIXED'].map((t) =>
+        ['SENSORS', 'CAMERA', 'ACCESS', 'RELAY', 'MIXED'].map((t) =>
           el('option', { value: t, text: t, selected: t === state.device_type })
         )
       );
