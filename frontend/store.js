@@ -23,6 +23,66 @@ function safeSet(key, val) {
 
 const listeners = new Set();
 const eventBus = new Map();
+let notificationAudioContext = null;
+let notificationSoundInitialized = false;
+let notificationSoundCursor = 0;
+
+function playCriticalNotificationCue() {
+  const context = notificationAudioContext;
+  if (!context || context.state !== 'running') return;
+  const start = context.currentTime;
+  for (const [offset, frequency] of [[0, 880], [0.16, 660]]) {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const at = start + offset;
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(frequency, at);
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.045, at + 0.018);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.13);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(at);
+    oscillator.stop(at + 0.14);
+  }
+}
+
+export async function unlockNotificationAudio() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) throw new Error('This browser does not support local audio cues.');
+  if (!notificationAudioContext || notificationAudioContext.state === 'closed') {
+    notificationAudioContext = new AudioContextClass();
+  }
+  if (notificationAudioContext.state === 'suspended') await notificationAudioContext.resume();
+  if (notificationAudioContext.state !== 'running') {
+    throw new Error('Browser audio is still blocked. Use the Enable Audio button again.');
+  }
+  store.notificationAudioUnlocked = true;
+  playCriticalNotificationCue();
+  notify();
+}
+
+async function refreshCriticalNotificationSound(playNew) {
+  if (!store.authenticated || !streamsActive) return;
+  try {
+    const [prefs, result] = await Promise.all([
+      api.getNotificationPrefs(),
+      api.listNotifications({ page: 1, limit: 100 })
+    ]);
+    if (!store.authenticated || !streamsActive) return;
+    store.criticalSoundEnabled = Boolean(prefs.critical_sound);
+    const latestId = Number(result.latest_id || 0);
+    const rows = Array.isArray(result.notifications) ? result.notifications : [];
+    if (notificationSoundInitialized && playNew && store.criticalSoundEnabled && store.notificationAudioUnlocked) {
+      const hasNewCritical = rows.some((row) => Number(row.id) > notificationSoundCursor && row.severity === 'CRITICAL');
+      if (hasNewCritical) playCriticalNotificationCue();
+    }
+    notificationSoundCursor = Math.max(notificationSoundCursor, latestId);
+    notificationSoundInitialized = true;
+  } catch {
+    // Audio is optional; preference/list failures must never affect console operations.
+  }
+}
 
 export const store = {
   authChecked: false,
@@ -39,6 +99,8 @@ export const store = {
   wsMfa: 'OFFLINE',
   unreadCount: 0,
   activeAlarmCount: 0,
+  criticalSoundEnabled: false,
+  notificationAudioUnlocked: false,
   healthSummary: null,
   lastTelemetryAt: null,
   latestTelemetryByDevice: new Map(), // device_id -> { endpoints: { key: value }, ts }
@@ -573,6 +635,9 @@ let healthPollTimer = null;
 export function startLiveStreams() {
   if (streamsActive) return;
   streamsActive = true;
+  notificationSoundInitialized = false;
+  notificationSoundCursor = 0;
+  refreshCriticalNotificationSound(false);
 
   connectSocket('telemetry', '/ws/telemetry', 'wsTelemetry', (msg) => {
     const now = msg.timestamp || new Date().toISOString();
@@ -604,6 +669,7 @@ export function startLiveStreams() {
 
   connectSocket('notifications', '/ws/notifications', 'wsNotifications', (msg) => {
     refreshHeaderCounters();
+    refreshCriticalNotificationSound(true);
     emitLiveEvent('notifications', msg);
   });
 
@@ -636,4 +702,12 @@ export function stopLiveStreams() {
   store.wsTelemetry = 'OFFLINE';
   store.wsNotifications = 'OFFLINE';
   store.wsMfa = 'OFFLINE';
+  store.criticalSoundEnabled = false;
+  store.notificationAudioUnlocked = false;
+  notificationSoundInitialized = false;
+  notificationSoundCursor = 0;
+  if (notificationAudioContext) {
+    try { notificationAudioContext.close(); } catch { /* ignore */ }
+    notificationAudioContext = null;
+  }
 }
