@@ -101,6 +101,7 @@ try {
   const consoleErrors = [];
   const pageErrors = [];
   const externalRequests = [];
+  let expectingReaderOffline503 = false;
 
   page.on('console', (msg) => {
     if (msg.type() === 'error') {
@@ -108,6 +109,7 @@ try {
       if (/status of 401 \(Unauthorized\)/.test(txt) && msg.location()?.url?.includes('/api/auth/session')) {
         return;
       }
+      if (expectingReaderOffline503 && txt.includes('503 (Service Unavailable)')) return;
       consoleErrors.push(txt);
     }
   });
@@ -295,12 +297,14 @@ try {
     response.request().method() === 'POST' &&
     new URL(response.url()).pathname === `/api/v1/people/${encodeURIComponent(smokePerson.subject_id)}/cards/enrollment-sessions`
   );
+  expectingReaderOffline503 = true;
   await page.getByRole('button', { name: 'Scan on Reader' }).first().click();
   const enrollmentStart = await enrollmentStartPromise;
   const enrollmentError = await enrollmentStart.json().catch(() => ({}));
   assert.equal(enrollmentStart.status(), 503, `Expected READER_OFFLINE for the real Person ID; got ${enrollmentStart.status()}: ${JSON.stringify(enrollmentError)}`);
   assert.equal(enrollmentError.code, 'READER_OFFLINE');
   await modal.getByText(/door reader must be online/i).waitFor({ state: 'visible' });
+  expectingReaderOffline503 = false;
   await modal.getByRole('button', { name: 'Close', exact: true }).click();
 
   // 10. Visit remaining core routes & verify zero errors
