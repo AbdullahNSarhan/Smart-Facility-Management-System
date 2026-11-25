@@ -1194,8 +1194,7 @@ export function renderEventsPage() {
   ];
   if (admin) {
     sources.push(
-      { id: 'management_audit', label: 'Management Audit', fetch: () => api.getManagementAudit().then((r) => r.events || []) },
-      { id: 'admin_audit', label: 'Admin Audit', fetch: () => api.getLogs('admin_audit', 200).then((r) => r.rows || r.logs || r) }
+      { id: 'management_audit', label: 'Management Audit', fetch: () => api.getManagementAudit().then((r) => r.events || []) }
     );
   }
 
