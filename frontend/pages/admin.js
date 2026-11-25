@@ -424,7 +424,7 @@ export function renderUsersPage() {
             modality === 'PIN'
               ? { modality: 'PIN', pin: valIn.value.trim() }
               : { modality: 'RFID', card_uid: valIn.value.trim().toUpperCase() };
-          await api.addCredential(person.person_id || person.id, payload);
+          await api.addCredential(person.subject_id, payload);
           showToast('Credential saved', 'Marked Pending Device Sync.', 'success');
           closeModal();
           onDone();
@@ -590,7 +590,7 @@ export function renderUsersPage() {
 
     const start = async () => {
       try {
-        const response = await api.startEnrollment(person.person_id || person.id);
+        const response = await api.startEnrollment(person.subject_id);
         const enrollment = response.enrollment || response;
         sessionId = enrollment.session_id;
         enrollmentStatus = enrollment.status || enrollmentStatus;
