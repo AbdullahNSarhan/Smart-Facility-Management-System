@@ -1,152 +1,251 @@
-# LCI-SFM · Smart Facility Management
+<div align="center">
 
-**2.0.0-rc.1 · Local-first, air-gapped-ready multi-room smart facility management platform with generic capability endpoints, multi-page operational console, and offline deployment engineering.**
+# LCI-SFM
+### Smart Facility Management System
 
-Software release candidate: automated software, multi-page air-gap UI, and 20-room/100-device scale tests pass; target Ubuntu Server VM and physical hardware acceptance remain pending. See the [Local-First Architecture](docs/LOCAL_FIRST_ARCHITECTURE.md), [Deployment Test Results](docs/DEPLOYMENT_TEST_RESULTS.md), [Acceptance Checklist](docs/RELEASE_CHECKLIST.md), and [Changelog](CHANGELOG.md).
+**A local-first platform for managing rooms, connected devices, endpoints, and day-to-day facility operations.**
 
-LCI-SFM — *Light Current Infrastructure for Smart Facility Management* — manages facilities as **Facility → Rooms → Devices → Generic Endpoints** over a private wired LAN. The browser communicates solely with the same-origin Node.js API and WebSocket gateway; SQLite WAL owns persistent records; Eclipse Mosquitto carries per-device authenticated MQTT messages. Edge devices retain autonomous local safety logic.
+[![Release](https://img.shields.io/badge/release-2.0.0--rc.1-orange)](https://github.com/AbdullahNSarhan/Smart-Facility-Management-System)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.5.0-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Docker Compose](https://img.shields.io/badge/deployment-Docker%20Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 
-## What you can manage
+[Features](#features) · [Screenshots](#screenshots) · [Architecture](#architecture) · [Installation](#installation) · [Using the Dashboard](#using-the-dashboard) · [Documentation](#documentation)
 
-| Area | Capabilities |
+</div>
+
+---
+
+## Overview
+
+LCI-SFM (Light Current Infrastructure – Smart Facility Management) is an on-premises facility management platform designed to bring room management, connected-device monitoring, and operational activities into one dashboard.
+
+The system organizes a facility into **Rooms → Devices → Endpoints**. Operators can review device health, inspect endpoint readings, follow telemetry history, manage alarms and notifications, and administer facility users—all through a browser-based interface hosted on the local network.
+
+LCI-SFM is designed around a **local-first** deployment model. Its frontend, backend, database, and MQTT broker run on infrastructure controlled by the facility. The browser uses same-origin application APIs and WebSockets; it does not need third-party UI CDNs or remote font services.
+
+> **Release status:** `2.0.0-rc.1` is a software release candidate. The application and its software validation workflows are available; physical device/firmware commissioning and site-specific acceptance must still be completed for the target installation.
+
+## Features
+
+| Area | What it provides |
 |---|---|
-| Multi-room topology | Create, edit, archive, and inspect multiple rooms (`building`, `floor`, `room_code`) with room-scoped device grids and health summaries |
-| Generic Endpoint Engine | Uses implemented endpoint kinds (`SENSOR`, `SWITCH`, `ACCESS`, `CAMERA`) with supported data types (`SENSOR: NUMBER/BOOLEAN`, `SWITCH: ENUM/BOOLEAN`, `ACCESS: ENUM`, `CAMERA: MEDIA/BOOLEAN`); new transports or capabilities still require a matching adapter and validation support |
-| Multi-page console | Dedicated Local Landing (`/`), Login (`/login`), and Authenticated Operations Shell (`/app/overview`, `/app/rooms`, `/app/rooms/:id`, `/app/devices`, `/app/devices/:id`, `/app/devices/:id/endpoints/:key`, `/app/alarms`, `/app/notifications`, `/app/events`, `/app/diagnostics`, `/app/users`, `/app/settings`, `/app/profile`) with Dark Industrial Graphite default + Light toggle |
-| Device onboarding & drift | Transport-conditional validation (`MQTT_V1` does not require a direct IPv4 address; `HTTP_JSON_V1` & `CAMERA_JPEG` require a private RFC1918 IPv4 address), Pending Device Quarantine from heartbeat capability announcements, and Manifest Drift alerts |
-| Alarm management | User-configurable rules support numeric sensor limits (`THRESHOLD_HIGH`, `THRESHOLD_LOW`) and boolean sensor conditions (`BOOLEAN_TRUE`, `BOOLEAN_FALSE`), with dwell, hysteresis, acknowledgement timelines, and recovery evidence; stale-device alarms are generated separately by monitoring |
-| Notification Center | Persistent scoped events, per-user unread count/read state, filters, WebSocket invalidation, and retention |
-| People & credentials | Occupant directory, RFID/PIN management, independent dashboard accounts (`Admin`/`Viewer`), CSRF protection, and last-admin guard |
-| Camera & controls | Authenticated SSRF-bounded JPEG capture proxy and correlated expiring MQTT switch/legacy commands |
-| Local deployment & air-gap | Guided `install.sh` (`--discover-only` & Q1–Q6), safe Netplan static-IP helper, optional local HTTPS/TLS (`docker-compose.tls.yml`), host-side MQTT ACL CLI (`scripts/provision-mqtt-device.sh`), and SHA-256 verified offline bundles (`install-offline.sh`, `update-offline.sh`) |
+| **Facility overview** | A central dashboard for room summaries, device status, service readiness, and recent activity. |
+| **Room management** | Create, edit, inspect, and archive rooms, then organize devices by their assigned room. |
+| **Device management** | Register and inspect devices, maintain their metadata and registered network destinations, and review pending device announcements. |
+| **Generic endpoints** | Display supported sensor readings, Boolean states, switches, access states, and camera snapshots using endpoint-specific widgets. |
+| **Live monitoring** | Follow device connectivity, endpoint freshness, telemetry history, and device activity. |
+| **Alarms & rules** | Configure supported sensor threshold/Boolean rules, review alarm history, acknowledge alarms, and inspect recovery events. |
+| **Notification Center** | View persistent, user-scoped notifications, unread counts, and read states. |
+| **Network topology** | Inspect the facility's registered devices and their connectivity from an interactive topology view. |
+| **Events & audit history** | Review operational events, commands, access/camera events, and available audit records. |
+| **People & operator accounts** | Manage facility people and dashboard accounts separately, with Admin/Viewer access roles and credential administration. |
+| **Camera & device operations** | Use the authenticated camera snapshot flow and supported device command workflows. |
+| **Local deployment** | Deploy with Docker Compose, use optional local HTTPS, or prepare a verified offline deployment bundle. |
 
-### Implementation boundaries
+### Supported endpoint capabilities
 
-| Capability | Current evidence / limit |
+The current endpoint engine supports these combinations:
+
+| Endpoint kind | Supported data types | Dashboard behavior |
+|---|---|---|
+| `SENSOR` | `NUMBER`, `BOOLEAN` | Readings, freshness, history, and supported sensor alarm rules |
+| `SWITCH` | `ENUM`, `BOOLEAN` | Supported switch controls and reported state |
+| `ACCESS` | `ENUM` | Door/access state display |
+| `CAMERA` | `MEDIA`, `BOOLEAN` | Camera state and authenticated JPEG snapshot preview |
+
+New transports or endpoint capabilities require a matching backend adapter, validation, command/safety handling where applicable, and tests. Registering an arbitrary device does not automatically make every hardware protocol compatible.
+
+## Screenshots
+
+A look at the current management interface:
+
+| Room devices | People & credentials |
 |---|---|
-| Multi-room, generic endpoints, quarantine, alarms & RBAC | Implemented and verified across 64 backend tests, 14-route Playwright air-gap E2E (`external_requests: 0`), and 20-room/100-device/10,000-frame load test |
-| Credential/device policy synchronization | **Pending firmware integration.** Assignments, PIN resets, blocks, and suspensions do not push policy to a physical reader yet |
-| Node IP editing | Updates the **registered address** in SQLite. Does not reconfigure an edge device's network interface |
-| Sensor measurements | Displayed with per-endpoint freshness (`FRESH` / `STALE` / `UNKNOWN`). MQ-2 values remain uncalibrated raw readings until lab calibrated |
-| Face recognition/enrollment | Camera snapshot capture is available; a separate Vision/biometric service is not deployed in Compose |
-| Hardware & VM commissioning | Physical edge devices, target Ubuntu Server clean install, and offline USB transfer remain pending on target hardware |
+| ![LCI-SFM room and device management screen](docs/screenshots/devices-room.webp) | ![LCI-SFM people and credentials management screen](docs/screenshots/people-credentials.webp) |
 
 ## Architecture
 
+LCI-SFM is composed of three application services plus its persistent data and connected device layer.
+
 ```mermaid
 flowchart TD
-    Browser["Browser SPA (Zero CDN)"] -->|"HTTP/HTTPS + Same-Origin WS"| Nginx["Nginx 1.27"]
-    Nginx --> API["Node.js 24 / Express"]
-    API --> DB["SQLite WAL"]
-    API <-->|"Authenticated MQTT"| Broker["Mosquitto 2.0"]
-    Broker <--> RoomNodes["Wired LAN MQTT_V1 & Legacy Nodes"]
-    API -->|"Private LAN JPEG Proxy"| Camera["Camera Nodes"]
+    Operator["Operator Browser"]
+    Frontend["Nginx · Dashboard & Reverse Proxy"]
+    Backend["Node.js · Express API & WebSockets"]
+    Database[("SQLite · WAL Storage")]
+    MQTT["Eclipse Mosquitto · Authenticated MQTT"]
+    Devices["Registered Edge Devices"]
+    LAN["Registered Private-LAN Endpoints / Cameras"]
+
+    Operator -->|"HTTPS or HTTP · Same-Origin API / WebSocket"| Frontend
+    Frontend --> Backend
+    Backend <--> Database
+    Backend <-->|"MQTT"| MQTT
+    MQTT <-->|"Device Topics"| Devices
+    Backend -->|"Authenticated, bounded requests"| LAN
 ```
 
-The frontend uses modular vanilla ES JavaScript (`/frontend/*`), CSS custom properties, and local inline SVG charts bundled into `dist/` by Vite. Runtime assets use zero CDNs or external fonts. Browser code never receives MQTT credentials.
+| Component | Responsibility |
+|---|---|
+| **Frontend** | Browser SPA built with HTML, CSS, and vanilla JavaScript ES modules; bundled locally by Vite. |
+| **Nginx** | Serves the compiled dashboard and reverse-proxies application API and WebSocket traffic. |
+| **Backend** | Node.js and Express application handling authentication, facility logic, device registry, monitoring, and APIs. |
+| **Database** | SQLite with write-ahead logging (WAL) for persistent application records. |
+| **MQTT broker** | Eclipse Mosquitto with authenticated identities and access-control rules for connected devices. |
+| **Edge devices** | Controllers and devices connected over the facility's private network using supported integrations. |
 
-## Try the isolated simulator
+## Technology Stack
+
+- **Frontend:** HTML5, CSS3, JavaScript ES Modules, Vite, local SVG assets.
+- **Backend:** Node.js, Express, WebSockets, Zod validation.
+- **Database:** SQLite (WAL).
+- **Messaging:** MQTT 5 client library and Eclipse Mosquitto.
+- **Deployment:** Docker Engine, Docker Compose, Nginx.
+- **Testing:** Node.js test runner and Playwright UI checks.
+
+## Installation
+
+### Option 1 — Guided installation on Ubuntu (recommended)
+
+The guided installer prepares the application under `/opt/lci-sfm`, installs Docker/Compose when they are missing, creates protected local configuration and credentials on first installation, and deploys the application services.
+
+**Requirements**
+- A supported 64-bit Ubuntu Server installation.
+- A user with `sudo` privileges.
+- Internet access during the initial installation to retrieve the repository, packages, and container images.
+- A suitable private LAN address for the server.
+
+Run the installer:
 
 ```bash
-npm ci
-npm run simulate
+installer="$(mktemp)" &&
+curl -fsSL "https://raw.githubusercontent.com/AbdullahNSarhan/Smart-Facility-Management-System/main/install.sh" -o "$installer" &&
+sudo bash "$installer"
+status=$?
+rm -f "$installer"
+exit "$status"
 ```
 
-Open **http://127.0.0.1:3101**. Initial simulator-only account: `sim_admin` / `LCI-Simulator-Only-2026!`. A separate database and explicit simulation banner distinguish synthetic data from production.
+The installer guides you through the deployment choices, including the dashboard bind address, ports, optional local HTTPS, MQTT network exposure, and the initial administrator username.
 
-## Run locally
+When installation completes:
 
-Requirements: **Node.js 24 recommended** (minimum `22.5.0` for built-in `node:sqlite`), npm, and Git.
+1. Open the dashboard using the server address and URL scheme reported by the installer. The default dashboard port is **80**; local HTTPS uses the configured TLS option.
+2. Retrieve the generated initial administrator details from `/opt/lci-sfm/DEPLOYMENT-CREDENTIALS.txt`.
+3. Keep that file private. It is created with restricted permissions; do not upload it, share it publicly, or commit it to Git.
+4. Sign in and change the initial administrator password.
+
+The installer preserves an existing `.env` during subsequent runs. Review the [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) before changing an existing installation.
+
+### Option 2 — Run locally for development
+
+**Requirements:** Git, Node.js `22.5.0` or newer (Node.js 24 is recommended), and npm.
+
+Clone the repository and install dependencies:
 
 ```bash
+git clone https://github.com/AbdullahNSarhan/Smart-Facility-Management-System.git
+cd Smart-Facility-Management-System
 npm ci
+```
+
+Build the frontend and start the local backend:
+
+```bash
 npm run build
 MQTT_ENABLED=false npm run dev
 ```
 
-Open **http://localhost:3000**. Fresh development databases bootstrap `admin` / `LCI-Dev-Admin-2026!` unless overridden via `LCI_BOOTSTRAP_ADMIN_USERNAME` / `LCI_BOOTSTRAP_ADMIN_PASSWORD`.
+Open:
+
+```text
+http://localhost:3000
+```
+
+This mode is suitable for local application development and software review. MQTT-connected hardware workflows require the broker and the relevant device configuration.
+
+### Option 3 — Offline deployment
+
+For environments without Internet access, create an offline release bundle on a connected build machine:
+
+```bash
+npm ci
+npm run bundle:offline
+```
+
+Transfer the generated archive and its SHA-256 checksum to the target Ubuntu server, verify the checksum, extract the archive, and run its `install-offline.sh` installer. The target server must already have Docker Engine and the Docker Compose v2 plugin.
+
+See the [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) for the complete offline installation and upgrade procedure.
+
+## Using the Dashboard
+
+After signing in, the main workflow is:
+
+1. **Set up the facility:** Open **Rooms** and create the rooms or zones you need.
+2. **Register devices:** Open **Devices** and add a device with its identity, room, transport, and supported endpoint definitions.
+3. **Connect supported MQTT devices:** Provision a device-specific broker identity on the server, configure the device with its credentials, and verify that it reports to the broker. Unknown announcements can be reviewed by an Admin in the pending-device area.
+
+   Example for a device named `lab305-env-01`:
+
+   ```bash
+   sudo ./scripts/provision-mqtt-device.sh add --device-id lab305-env-01 --username lab305-env-01
+   ```
+
+   Deliver the generated device credentials securely to the device. Never place passwords in source code, screenshots, or public documentation.
+4. **Monitor endpoints:** Open a device to inspect its supported endpoint widgets, connectivity, freshness, and recent observations. Select an endpoint to view its available history.
+5. **Review alarms and notifications:** Use **Alarms** to review rule-based events and **Notifications** to follow your operator inbox.
+6. **Inspect operations:** Use **Network**, **Events**, and **Diagnostics** to review connectivity and operational activity.
+7. **Manage people and access:** Admins can manage dashboard operators, facility people, credentials, and facility settings in the administration pages.
+
+The available actions depend on the operator's role and the connected device's supported capabilities.
+
+## Security & Deployment Notes
+
+- Deploy the default HTTP configuration only on a trusted private LAN. Configure and verify HTTPS/TLS before using the dashboard over an untrusted network.
+- Keep `.env`, `DEPLOYMENT-CREDENTIALS.txt`, `mosquitto/passwd`, device credential files, database backups, and TLS private keys out of source control.
+- MQTT anonymous access is disabled; use individual device identities and the supplied provisioning workflow.
+- The browser communicates with the application backend; MQTT broker credentials are not exposed to browser code.
+- Changing a device's registered IP updates the server-side destination record. It does **not** reconfigure the physical device's network interface.
+- Camera snapshots are proxied through the authenticated backend. Snapshot support does not by itself provide face recognition or biometric verification.
+- Physical access-policy synchronization and device-specific firmware behavior require matching firmware integration and on-site validation.
 
 ## Validation
 
-```bash
-npm test                 # 64 automated backend/auth/MQTT/management/multi-room integration tests
-npm run lint             # Syntax validation across frontend, backend, tests, and scripts
-npm run build            # Production Vite bundle -> dist/
-npm run test:ui          # 14-route Chromium E2E + zero-external-network air-gap verification
-npm run test:load        # 20-room, 100-device, 500-endpoint, 10,000-frame scale & concurrency benchmark
-npm run bundle:offline   # Build SHA-256 verified air-gapped deployment archive (.tar.gz)
-npm run db:backup        # Online SQLite backup
-npm run db:restore       # Restore SQLite backup (stop backend first)
-```
-
-## Production & air-gapped deployment
-
-### One-command guided installation (Ubuntu Server)
-
-Use this on a supported Ubuntu Server host with sudo access, a working LAN interface, and Internet access for the initial repository download, package installation, and container images. The installer downloads the project into `/opt/lci-sfm`, installs Docker/Compose when missing, generates protected local credentials, runs lint/tests/build, starts the three services, and waits for application readiness.
+Run the main software checks from the repository root:
 
 ```bash
-tmp="$(mktemp)" && curl -fsSL 'https://raw.githubusercontent.com/AbdullahNSarhan/Smart-Facility-Management-System/main/install.sh' -o "$tmp" && sudo bash "$tmp"; status=$?; [ -z "${tmp:-}" ] || rm -f "$tmp"; exit "$status"
+npm run lint
+npm test
+npm run build
+npm run test:ui
+npm run test:load
 ```
 
-The installer is interactive when run from a terminal. Select the server's intended LAN IPv4 address for the Dashboard. At the MQTT exposure question, answer **yes** when ESP32/edge nodes must connect from the wired LAN; the secure default is loopback-only. Keep the server address stable (prefer a DHCP reservation or a preconfigured static address). Initial Admin credentials are saved in `/opt/lci-sfm/DEPLOYMENT-CREDENTIALS.txt` with mode `0600` and displayed at the end.
-
-To inspect the host without installing anything, run `bash install.sh --discover-only` from a cloned repository.
-
-The three-service Compose stack runs **Nginx** (`nginx:1.27-alpine`), **Node.js** (non-root), and **Mosquitto** (`eclipse-mosquitto:2.0`) with `no-new-privileges:true` and persistent Docker volumes (`sqlite_data`, `mosquitto_data`).
-
-### Guided Ubuntu installation
-
-```bash
-# 1. Read-only host & network inspection
-bash install.sh --discover-only
-
-# 2. Optional safe static IPv4 configuration (Netplan with `netplan try` rollback)
-sudo ./scripts/configure-static-ip.sh --discover
-
-# 3. Guided Q1–Q6 installation (or --non-interactive)
-sudo ./install.sh
-```
-
-### Optional local HTTPS / TLS mode
-
-```bash
-sudo ./scripts/setup-local-tls.sh <SERVER_LAN_IP> [HOSTNAME]
-# Then set TLS_ENABLED=true, SESSION_SECURE_COOKIE=true,
-# and ALLOWED_ORIGINS=https://<SERVER_LAN_IP> in .env before starting Compose.
-docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
-```
-
-### Air-gapped offline bundle deployment
-
-```bash
-# On connected build workstation:
-npm run bundle:offline
-
-# The target host must already have Docker Engine and the Docker Compose v2 plugin.
-# Transfer dist-offline/lci-sfm-2.0.0-rc.1-offline.tar.gz (+ .sha256) to offline Ubuntu server:
-sha256sum -c lci-sfm-2.0.0-rc.1-offline.tar.gz.sha256
-tar -xzf lci-sfm-2.0.0-rc.1-offline.tar.gz
-cd lci-sfm-2.0.0-rc.1-offline
-sudo ./install-offline.sh          # Fresh install
-# or sudo ./update-offline.sh      # Guarded offline upgrade with rollback
-```
-
-### Per-device MQTT credential & ACL provisioning
-
-```bash
-sudo ./scripts/provision-mqtt-device.sh add --device-id lab305-env-01 --username lab305-env-01
-```
+| Command | Purpose |
+|---|---|
+| `npm run lint` | JavaScript syntax validation across the application and scripts. |
+| `npm test` | Backend, authentication, management, MQTT, and integration tests. |
+| `npm run build` | Production frontend bundle generated in `dist/`. |
+| `npm run test:ui` | Browser-based UI, responsive layout, and offline-request checks. |
+| `npm run test:load` | Facility and telemetry scale/concurrency test. |
 
 ## Documentation
 
-- [Local-First Architecture](docs/LOCAL_FIRST_ARCHITECTURE.md) — system topology, multi-room hierarchy, routes, and health semantics.
-- [MQTT Protocol Spec (v1)](docs/MQTT_PROTOCOL_SPEC.md) — topic namespace, heartbeat capability announcements, telemetry, command/ACK schemas, and CLI provisioning.
-- [Capability & Endpoint Registry](docs/CAPABILITY_REGISTRY.md) — generic endpoint kinds, data types, freshness states, and widget engine.
-- [Professional Local Platform Audit](docs/PROFESSIONAL_LOCAL_PLATFORM_AUDIT.md) — security posture, resolved gaps, and boundaries.
-- [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) — guided installer, static IP, local TLS, offline bundles, backup/restore, and troubleshooting.
-- [Deployment Test Plan](docs/DEPLOYMENT_TEST_PLAN.md) & [Deployment Test Results](docs/DEPLOYMENT_TEST_RESULTS.md) — verified software/scale results and pending hardware tests.
-- [Release Acceptance Checklist](docs/RELEASE_CHECKLIST.md) — 2.0.0-rc.1 software sign-off and physical commissioning checklist.
-- [Facility Management Guide](docs/FACILITY_MANAGEMENT.md) & [Release Candidate Guide](docs/RELEASE_CANDIDATE_GUIDE.md) — workflows and legacy compatibility context.
-- [Mosquitto ACL Guide](mosquitto/README.md) — broker identity rules.
+For deeper technical and operational details:
 
+- [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) — guided installation, configuration, TLS, offline deployment, and backup/restore.
+- [Local-First Architecture](docs/LOCAL_FIRST_ARCHITECTURE.md) — components, data hierarchy, and application routes.
+- [Facility Management Guide](docs/FACILITY_MANAGEMENT.md) — room, device, people, and credential workflows.
+- [Capability Registry](docs/CAPABILITY_REGISTRY.md) — supported endpoint kinds, data types, transports, and freshness behavior.
+- [MQTT Protocol Specification](docs/MQTT_PROTOCOL_SPEC.md) — device topics, message contracts, and broker identity model.
+- [Frontend Documentation](docs/FRONTEND_DOCUMENTATION.md) — frontend structure, routes, and interface behavior.
+- [Release Checklist](docs/RELEASE_CHECKLIST.md) — release status and acceptance boundaries.
+- [Changelog](CHANGELOG.md) — notable project changes.
+
+---
+
+<div align="center">
+
+**LCI-SFM — Smart Facility Management, hosted on your own infrastructure.**
+
+</div>
