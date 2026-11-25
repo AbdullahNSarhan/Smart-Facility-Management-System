@@ -94,6 +94,27 @@ describe('LCI-SFM Production Node.js Backend Integration Suite', () => {
   // --------------------------------------------------------------------------
   // 2. AUTHENTICATION, COOKIES, CSRF & SESSION LIFECYCLE
   // --------------------------------------------------------------------------
+  it('reports accurate connected WebSocket client counts for telemetry, notifications, and MFA', async () => {
+    const original = new Map(ctx.wsGateway.clients);
+    try {
+      ctx.wsGateway.clients.clear();
+      ctx.wsGateway.clients.set({}, { channel: 'telemetry' });
+      ctx.wsGateway.clients.set({}, { channel: 'telemetry' });
+      ctx.wsGateway.clients.set({}, { channel: 'notifications' });
+      ctx.wsGateway.clients.set({}, { channel: 'mfa' });
+      const ready = await request(ctx.app).get('/api/health/ready');
+      assert.equal(ready.status, 200);
+      assert.deepEqual(ready.body.websocket, {
+        totalClients: 4,
+        telemetryClients: 2,
+        notificationClients: 1,
+        mfaClients: 1
+      });
+    } finally {
+      ctx.wsGateway.clients.clear();
+      for (const [socket, meta] of original) ctx.wsGateway.clients.set(socket, meta);
+    }
+  });
   it('rejects invalid credentials with 401 and audits failed login attempt', async () => {
     const res = await request(ctx.app)
       .post('/api/auth/login')
