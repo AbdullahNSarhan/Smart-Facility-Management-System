@@ -272,7 +272,7 @@ try {
   await modal.waitFor({ state: 'visible' });
   await modal.locator('input').first().fill('Reader UI Smoke Person');
   await modal.getByRole('button', { name: 'Add Person' }).click();
-  await page.getByText('Reader UI Smoke Person').waitFor();
+  await page.getByRole('table', { name: 'Facility people and physical' }).getByText('Reader UI Smoke Person').waitFor();
   await page.getByRole('button', { name: 'Scan on Reader' }).first().click();
   await modal.getByText(/door reader must be online/i).waitFor({ state: 'visible' });
   await modal.getByRole('button', { name: 'Close' }).click();
