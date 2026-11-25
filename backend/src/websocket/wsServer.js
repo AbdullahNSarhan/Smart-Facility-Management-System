@@ -147,14 +147,17 @@ export class WsGateway {
 
   getStats() {
     let telemetryClients = 0;
+    let notificationClients = 0;
     let mfaClients = 0;
     for (const meta of this.clients.values()) {
       if (meta.channel === 'telemetry') telemetryClients += 1;
+      if (meta.channel === 'notifications') notificationClients += 1;
       if (meta.channel === 'mfa') mfaClients += 1;
     }
     return {
       totalClients: this.clients.size,
       telemetryClients,
+      notificationClients,
       mfaClients
     };
   }
