@@ -156,16 +156,28 @@ try {
   await page.click('#register-device-btn');
   await modal.waitFor({ state: 'visible' });
 
-  // Step 1: Identity
-  await modal.locator('#wiz-device-id').fill('mqtt-ui-sensor');
+  // Step 1: Identity — assert the browser validation matches the backend ID contract.
+  await modal.locator('#wiz-device-id').fill('1mqtt-ui-sensor');
   await modal.locator('#wiz-device-name').fill('UI MQTT Sensor');
   await modal.getByRole('button', { name: 'Continue' }).click();
-
-  // Step 2: Transport (defaults to MQTT_V1 without IP)
-  await modal.locator('#wiz-device-transport').waitFor({ state: 'visible' });
+  await modal.getByText(/Device ID must start with a lowercase letter/).waitFor({ state: 'visible' });
+  await modal.locator('#wiz-device-id').fill('mqtt-ui-sensor');
   await modal.getByRole('button', { name: 'Continue' }).click();
 
-  // Step 3: Endpoints (defaults to valid temperature SENSOR/NUMBER)
+  // Step 2: Transport — reject values outside the server's 5–3600 second range.
+  await modal.locator('#wiz-device-transport').waitFor({ state: 'visible' });
+  await modal.locator('#wiz-device-stale').fill('3601');
+  await modal.getByRole('button', { name: 'Continue' }).click();
+  await modal.getByText(/between 5 and 3600 seconds/).waitFor({ state: 'visible' });
+  await modal.locator('#wiz-device-stale').fill('3600');
+  await modal.getByRole('button', { name: 'Continue' }).click();
+
+  // Step 3: Endpoints — reject keys that the backend schema cannot accept.
+  const endpointKeyInput = modal.locator('.endpoint-editor-row input').first();
+  await endpointKeyInput.fill('1temperature');
+  await modal.getByRole('button', { name: 'Continue' }).click();
+  await modal.getByText(/Invalid endpoint key/).waitFor({ state: 'visible' });
+  await endpointKeyInput.fill('temperature');
   await modal.getByRole('button', { name: 'Continue' }).click();
 
   // Step 4: Review & Register
@@ -205,6 +217,7 @@ try {
   // 8. Events & Audit Logs + Slide-Over Detail Drawer
   await page.getByRole('link', { name: 'Events & Audit' }).click();
   await page.waitForURL(`${baseUrl}/app/events`);
+  assert.equal(await page.getByRole('tab', { name: 'Admin Audit' }).count(), 0, 'Do not expose an unimplemented admin_audit log table');
   await page.getByRole('tab', { name: 'Management Audit' }).click();
   await page.waitForSelector('table tbody tr');
   await page.locator('table tbody tr').first().getByRole('button', { name: 'Inspect' }).click();
