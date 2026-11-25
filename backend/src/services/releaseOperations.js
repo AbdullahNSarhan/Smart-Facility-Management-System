@@ -1891,7 +1891,7 @@ export class ReleaseOperations {
       health: {
         sqlite: this.db.healthCheck(),
         mqtt: this.mqttService.getHealthStatus(),
-        websocket: this.wsGateway ? this.wsGateway.getStats() : { total: 0, telemetry: 0, mfa: 0, notifications: 0 }
+        websocket: this.wsGateway ? this.wsGateway.getStats() : { totalClients: 0, telemetryClients: 0, notificationClients: 0, mfaClients: 0 }
       }
     };
   }
