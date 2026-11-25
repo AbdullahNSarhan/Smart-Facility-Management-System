@@ -79,6 +79,25 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
 
+  // Deterministic Web Audio stub for the notification sound preference smoke test.
+  await page.addInitScript(() => {
+    class FakeAudioParam { setValueAtTime() {} exponentialRampToValueAtTime() {} }
+    class FakeAudioNode { connect() {} }
+    class FakeOscillator extends FakeAudioNode {
+      constructor() { super(); this.frequency = new FakeAudioParam(); this.type = 'sine'; }
+      start() {}
+      stop() {}
+    }
+    class FakeGain extends FakeAudioNode { constructor() { super(); this.gain = new FakeAudioParam(); } }
+    window.AudioContext = class extends FakeAudioNode {
+      constructor() { super(); this.state = 'running'; this.currentTime = 0; this.destination = {}; }
+      createOscillator() { return new FakeOscillator(); }
+      createGain() { return new FakeGain(); }
+      resume() { this.state = 'running'; return Promise.resolve(); }
+      close() { this.state = 'closed'; return Promise.resolve(); }
+    };
+  });
+
   const consoleErrors = [];
   const pageErrors = [];
   const externalRequests = [];
@@ -248,6 +267,13 @@ try {
     await page.goto(`${baseUrl}${route}`, { waitUntil: 'networkidle' });
     await page.waitForSelector('.app-content');
   }
+
+  // Verify audio requires a deliberate user gesture and preference is persisted per operator.
+  await page.goto(`${baseUrl}/app/notifications`, { waitUntil: 'networkidle' });
+  await page.locator('#notification-audio-enable').click();
+  await page.getByText('Audio is enabled for this browser session').waitFor();
+  await page.locator('#notification-critical-sound').check();
+  await page.getByText('Critical alert sound enabled.').waitFor();
 
   // 11. Toggle Dark -> Light -> Dark theme
   await page.click('#profile-theme-toggle');
