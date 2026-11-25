@@ -10,7 +10,9 @@ import {
   openDrawer,
   closeDrawer,
   onLiveEvent,
-  refreshHeaderCounters
+  refreshHeaderCounters,
+  unlockNotificationAudio,
+  store
 } from '../store.js';
 import { el, clear, svgIcon, formatAge, formatTimestamp, exportRowsToCsv } from '../utils.js';
 import {
@@ -970,7 +972,7 @@ export function renderNotificationsPage({ navigate }) {
       }
       try {
         await api.markAllNotificationsRead(latestId);
-        showToast('Notifications updated', 'All visible notifications marked as read.', 'success');
+        showToast('Notifications updated', 'All of your notifications up to the latest record have been marked as read.', 'success');
         await refreshHeaderCounters();
         load();
       } catch (err) {
@@ -1007,24 +1009,63 @@ export function renderNotificationsPage({ navigate }) {
     try {
       const p = await api.getNotificationPrefs();
       if (disposed) return;
+      store.criticalSoundEnabled = Boolean(p.critical_sound);
       clear(prefSlot);
-      const soundCb = el('input', { type: 'checkbox', checked: Boolean(p.critical_sound) });
+      const soundCb = el('input', { id: 'notification-critical-sound', type: 'checkbox', checked: store.criticalSoundEnabled });
+      const audioState = el('span', {
+        id: 'notification-audio-state',
+        class: 'text-xs text-muted',
+        text: store.notificationAudioUnlocked ? 'Audio is enabled for this browser session' : 'Audio permission is needed in this browser session'
+      });
+      const enableAudioBtn = el('button', {
+        id: 'notification-audio-enable',
+        type: 'button',
+        class: 'btn btn-secondary btn-sm',
+        text: store.notificationAudioUnlocked ? 'Test Sound' : 'Enable Audio',
+        onClick: async () => {
+          enableAudioBtn.disabled = true;
+          try {
+            await unlockNotificationAudio();
+            enableAudioBtn.textContent = 'Test Sound';
+            audioState.textContent = 'Audio is enabled for this browser session';
+            showToast('Audio enabled', 'A short local test cue was played. Critical notifications can now sound while this console is open.', 'success');
+          } catch (err) {
+            showToast('Audio unavailable', err.message, 'warning');
+          } finally {
+            enableAudioBtn.disabled = false;
+          }
+        }
+      });
       soundCb.addEventListener('change', async () => {
+        const nextValue = soundCb.checked;
+        soundCb.disabled = true;
         try {
-          await api.updateNotificationPrefs({ critical_sound: soundCb.checked });
-          showToast('Preference saved', `Critical alert sound ${soundCb.checked ? 'enabled' : 'disabled'}.`, 'success');
+          if (nextValue && !store.notificationAudioUnlocked) {
+            await unlockNotificationAudio();
+            enableAudioBtn.textContent = 'Test Sound';
+            audioState.textContent = 'Audio is enabled for this browser session';
+          }
+          await api.updateNotificationPrefs({ critical_sound: nextValue });
+          store.criticalSoundEnabled = nextValue;
+          showToast('Preference saved', `Critical alert sound ${nextValue ? 'enabled' : 'disabled'}.`, 'success');
         } catch (err) {
-          soundCb.checked = !soundCb.checked;
+          soundCb.checked = !nextValue;
           showToast('Save failed', err.message, 'error');
+        } finally {
+          soundCb.disabled = false;
         }
       });
       prefSlot.appendChild(
-        el('div', { class: 'card card-compact row-between' }, [
-          el('label', { class: 'checkbox-row text-sm' }, [
-            soundCb,
-            el('span', { text: 'Play audio cue for incoming CRITICAL alerts (per-operator preference)' })
+        el('div', { class: 'card card-compact stack-sm' }, [
+          el('div', { class: 'row-between' }, [
+            el('label', { class: 'checkbox-row text-sm' }, [
+              soundCb,
+              el('span', { text: 'Play audio cue for incoming CRITICAL alerts (per-operator preference)' })
+            ]),
+            enableAudioBtn
           ]),
-          el('span', { class: 'text-xs text-muted', text: 'Saved in SQLite' })
+          audioState,
+          el('span', { class: 'text-xs text-muted', text: 'Sound is local to this browser tab/session; it does not provide background or OS notifications.' })
         ])
       );
     } catch {
