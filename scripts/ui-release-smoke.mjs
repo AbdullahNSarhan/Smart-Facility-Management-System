@@ -304,7 +304,6 @@ try {
   assert.equal(enrollmentStart.status(), 503, `Expected READER_OFFLINE for the real Person ID; got ${enrollmentStart.status()}: ${JSON.stringify(enrollmentError)}`);
   assert.equal(enrollmentError.code, 'READER_OFFLINE');
   await modal.getByText(/door reader must be online/i).waitFor({ state: 'visible' });
-  expectingReaderOffline503 = false;
   await modal.getByRole('button', { name: 'Close', exact: true }).click();
 
   // 10. Visit remaining core routes & verify zero errors
