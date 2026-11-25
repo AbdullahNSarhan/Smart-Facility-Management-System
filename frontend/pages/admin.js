@@ -506,15 +506,13 @@ export function renderUsersPage() {
     };
 
     const cancelIfModalClosed = async () => {
-      if (closeCleanupStarted) return;
-      closeCleanupStarted = true;
       stopPolling();
-      if (sessionId && activeStates.has(enrollmentStatus)) {
-        try {
-          await api.finishEnrollment(sessionId, 'cancel');
-        } catch {
-          // The edge device's original deadline remains authoritative if release cannot be sent.
-        }
+      if (closeCleanupStarted || !sessionId || !activeStates.has(enrollmentStatus)) return;
+      closeCleanupStarted = true;
+      try {
+        await api.finishEnrollment(sessionId, 'cancel');
+      } catch {
+        // The edge device's original deadline remains authoritative if release cannot be sent.
       }
     };
 
@@ -532,6 +530,10 @@ export function renderUsersPage() {
         }
         renderEnrollment(response.enrollment || response);
       } catch (err) {
+        if (!modal.panel.isConnected) {
+          await cancelIfModalClosed();
+          return;
+        }
         errorBox.textContent = err.message;
         errorBox.hidden = false;
       }
@@ -591,6 +593,7 @@ export function renderUsersPage() {
         const response = await api.startEnrollment(person.person_id || person.id);
         const enrollment = response.enrollment || response;
         sessionId = enrollment.session_id;
+        enrollmentStatus = enrollment.status || enrollmentStatus;
         if (!modal.panel.isConnected) {
           await cancelIfModalClosed();
           return;
