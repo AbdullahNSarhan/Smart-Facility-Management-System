@@ -278,6 +278,19 @@ try {
   const peoplePayload = await peopleLookup.json();
   const smokePerson = (peoplePayload.people || []).find((person) => person.display_name === 'Reader UI Smoke Person');
   assert.ok(smokePerson?.subject_id, `Expected the People API to expose subject_id: ${JSON.stringify(peoplePayload)}`);
+  const smokePersonRow = page.getByRole('table', { name: 'Facility people and physical' }).locator('tr').filter({ hasText: 'Reader UI Smoke Person' });
+  const suspendPersonPromise = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === `/api/v1/people/${encodeURIComponent(smokePerson.subject_id)}`);
+  await smokePersonRow.getByRole('button', { name: 'Suspend' }).click();
+  const suspendPersonResponse = await suspendPersonPromise;
+  const suspendPersonBody = await suspendPersonResponse.json().catch(() => ({}));
+  assert.equal(suspendPersonResponse.status(), 200, `Expected Person suspension HTTP 200; got ${suspendPersonResponse.status()}: ${JSON.stringify(suspendPersonBody)}`);
+  await smokePersonRow.getByRole('button', { name: 'Activate' }).waitFor({ state: 'visible' });
+  const activatePersonPromise = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === `/api/v1/people/${encodeURIComponent(smokePerson.subject_id)}`);
+  await smokePersonRow.getByRole('button', { name: 'Activate' }).click();
+  const activatePersonResponse = await activatePersonPromise;
+  const activatePersonBody = await activatePersonResponse.json().catch(() => ({}));
+  assert.equal(activatePersonResponse.status(), 200, `Expected Person reactivation HTTP 200; got ${activatePersonResponse.status()}: ${JSON.stringify(activatePersonBody)}`);
+  await smokePersonRow.getByRole('button', { name: 'Suspend' }).waitFor({ state: 'visible' });
   const enrollmentStartPromise = page.waitForResponse((response) =>
     response.request().method() === 'POST' &&
     new URL(response.url()).pathname === `/api/v1/people/${encodeURIComponent(smokePerson.subject_id)}/cards/enrollment-sessions`
