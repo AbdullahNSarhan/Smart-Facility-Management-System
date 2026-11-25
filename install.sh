@@ -194,7 +194,7 @@ if [[ "$NON_INTERACTIVE" -eq 0 && -t 0 && -t 1 && ! -f .env ]]; then
   printf '  Dashboard Bind : %s:%s (TLS=%s)\n' "$SERVER_IP" "$FRONTEND_PORT_CHOICE" "$ENABLE_TLS"
   printf '  MQTT Bind      : %s:%s\n' "$MQTT_BIND_CHOICE" "$MQTT_PORT_CHOICE"
   printf '  Admin Username : %s (strong random password will be generated)\n' "$ADMIN_USER_CHOICE"
-  printf '-------------------------------\n'
+  printf -- '-------------------------------\n'
   read -r -p "Proceed with installation? (Y/n): " confirm
   if [[ "${confirm,,}" == "n" || "${confirm,,}" == "no" ]]; then
     die "Installation cancelled by operator before making changes."

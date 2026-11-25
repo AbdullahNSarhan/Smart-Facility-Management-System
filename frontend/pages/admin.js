@@ -167,9 +167,9 @@ export function renderDiagnosticsPage({ navigate }) {
           keyValueList([
             { label: 'MQTT Enabled', value: mqtt.enabled === false ? 'No (Standby)' : 'Yes' },
             { label: 'Subscriptions', value: mqtt.subscriptions_ready ? 'Verified' : mqtt.enabled === false ? 'N/A' : 'Degraded' },
-            { label: 'WS Telemetry Clients', value: String(ws.telemetry ?? 0), mono: true },
-            { label: 'WS Notification Clients', value: String(ws.notifications ?? 0), mono: true },
-            { label: 'WS MFA Clients', value: String(ws.mfa ?? 0), mono: true }
+            { label: 'WS Telemetry Clients', value: String(ws.telemetryClients ?? 0), mono: true },
+            { label: 'WS Notification Clients', value: String(ws.notificationClients ?? 0), mono: true },
+            { label: 'WS MFA Clients', value: String(ws.mfaClients ?? 0), mono: true }
           ])
         ]),
         el('section', { class: 'card stack-sm' }, [
@@ -424,7 +424,7 @@ export function renderUsersPage() {
             modality === 'PIN'
               ? { modality: 'PIN', pin: valIn.value.trim() }
               : { modality: 'RFID', card_uid: valIn.value.trim().toUpperCase() };
-          await api.addCredential(person.person_id || person.id, payload);
+          await api.addCredential(person.subject_id, payload);
           showToast('Credential saved', 'Marked Pending Device Sync.', 'success');
           closeModal();
           onDone();
@@ -448,6 +448,168 @@ export function renderUsersPage() {
     });
   }
 
+  function openReaderEnrollmentModal(person, onDone) {
+    const activeStates = new Set(['ARMING', 'READY', 'CANDIDATE']);
+    let sessionId = null;
+    let enrollmentStatus = null;
+    let pollTimer = null;
+    let closeCleanupStarted = false;
+
+    const statusText = el('p', { class: 'text-secondary', text: 'Starting secure reader enrollment…' });
+    const maskedUid = el('code', { class: 'mono', text: 'No card captured' });
+    const errorBox = el('div', { class: 'form-error', hidden: true });
+    const confirmBtn = el('button', { type: 'button', class: 'btn btn-primary', text: 'Confirm Card Assignment', disabled: true });
+    const closeBtn = el('button', { type: 'button', class: 'btn btn-secondary', text: 'Close' });
+
+    const modal = openModal({
+      title: 'Enroll RFID Card',
+      subtitle: 'Facility Person · ' + person.display_name,
+      body: el('div', { class: 'stack-md' }, [
+        disclaimerBanner({
+          icon: 'icon-shield',
+          tone: 'pending',
+          title: 'Secure 45-second enrollment window',
+          message: 'Requires an online door reader that freshly advertises RFID_ENROLL_V1. Present one card only after the reader reports READY. The full card UID is never shown in the console.'
+        }),
+        el('section', { class: 'card card-compact stack-sm' }, [
+          el('span', { class: 'form-label', text: 'Reader Status' }),
+          statusText,
+          el('div', { class: 'row-gap-sm' }, [
+            el('span', { class: 'text-xs text-muted', text: 'Detected card (masked)' }),
+            maskedUid
+          ])
+        ]),
+        errorBox
+      ]),
+      actions: [closeBtn, confirmBtn]
+    });
+
+    const renderEnrollment = (enrollment) => {
+      enrollmentStatus = enrollment.status || enrollmentStatus;
+      const messages = {
+        ARMING: 'The reader is preparing. Wait for READY before presenting the card.',
+        READY: 'Reader is ready. Present the RFID card now.',
+        CANDIDATE: 'A card was detected. Verify the masked UID, then confirm the assignment.',
+        FAILED: 'The reader reported a failure. No credential was saved.',
+        EXPIRED: 'The enrollment window expired. Start a new scan if required.',
+        CANCELLED: 'Enrollment was cancelled. No credential was saved.',
+        CONFIRMED: 'Card assigned centrally. It remains Pending Device Sync until firmware policy synchronization is implemented.'
+      };
+      statusText.textContent = messages[enrollmentStatus] || ('Enrollment state: ' + (enrollmentStatus || 'UNKNOWN'));
+      maskedUid.textContent = enrollment.masked_uid || 'No card captured';
+      confirmBtn.disabled = enrollmentStatus !== 'CANDIDATE';
+    };
+
+    const stopPolling = () => {
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = null;
+    };
+
+    const cancelIfModalClosed = async () => {
+      stopPolling();
+      if (closeCleanupStarted || !sessionId || !activeStates.has(enrollmentStatus)) return;
+      closeCleanupStarted = true;
+      try {
+        await api.finishEnrollment(sessionId, 'cancel');
+      } catch {
+        // The edge device's original deadline remains authoritative if release cannot be sent.
+      }
+    };
+
+    const pollEnrollment = async () => {
+      if (!modal.panel.isConnected) {
+        await cancelIfModalClosed();
+        return;
+      }
+      if (!sessionId || !activeStates.has(enrollmentStatus)) return;
+      try {
+        const response = await api.getEnrollment(sessionId);
+        if (!modal.panel.isConnected) {
+          await cancelIfModalClosed();
+          return;
+        }
+        renderEnrollment(response.enrollment || response);
+      } catch (err) {
+        if (!modal.panel.isConnected) {
+          await cancelIfModalClosed();
+          return;
+        }
+        errorBox.textContent = err.message;
+        errorBox.hidden = false;
+      }
+      if (activeStates.has(enrollmentStatus) && modal.panel.isConnected) {
+        pollTimer = setTimeout(pollEnrollment, 1000);
+      }
+    };
+
+    closeBtn.addEventListener('click', async () => {
+      closeBtn.disabled = true;
+      stopPolling();
+      if (sessionId && activeStates.has(enrollmentStatus)) {
+        try {
+          const response = await api.finishEnrollment(sessionId, 'cancel');
+          const enrollment = response.enrollment || response;
+          renderEnrollment(enrollment);
+          showToast(
+            'Enrollment cancelled',
+            enrollment.reader_release === 'WAIT_FOR_EXPIRY'
+              ? 'The reader will release itself at the original deadline.'
+              : 'The reader release was requested.',
+            'info'
+          );
+          onDone();
+        } catch (err) {
+          errorBox.textContent = err.message;
+          errorBox.hidden = false;
+          closeBtn.disabled = false;
+          if (activeStates.has(enrollmentStatus)) pollTimer = setTimeout(pollEnrollment, 1000);
+          return;
+        }
+      }
+      closeModal();
+    });
+
+    confirmBtn.addEventListener('click', async () => {
+      if (!sessionId || enrollmentStatus !== 'CANDIDATE') return;
+      confirmBtn.disabled = true;
+      stopPolling();
+      try {
+        const response = await api.finishEnrollment(sessionId, 'confirm');
+        const enrollment = response.enrollment || response;
+        renderEnrollment(enrollment);
+        showToast('RFID card assigned', 'Stored centrally and marked Pending Device Sync.', 'success');
+        closeModal();
+        onDone();
+      } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.hidden = false;
+        confirmBtn.disabled = enrollmentStatus !== 'CANDIDATE';
+        if (activeStates.has(enrollmentStatus)) pollTimer = setTimeout(pollEnrollment, 1000);
+      }
+    });
+
+    const start = async () => {
+      try {
+        const response = await api.startEnrollment(person.subject_id);
+        const enrollment = response.enrollment || response;
+        sessionId = enrollment.session_id;
+        enrollmentStatus = enrollment.status || enrollmentStatus;
+        if (!modal.panel.isConnected) {
+          await cancelIfModalClosed();
+          return;
+        }
+        renderEnrollment(enrollment);
+        if (activeStates.has(enrollmentStatus)) pollTimer = setTimeout(pollEnrollment, 1000);
+      } catch (err) {
+        if (!modal.panel.isConnected) return;
+        statusText.textContent = 'Reader enrollment could not be started.';
+        errorBox.textContent = err.message;
+        errorBox.hidden = false;
+      }
+    };
+
+    start();
+  }
   container.appendChild(
     pageHeader({
       title: 'Users & Access',
@@ -707,10 +869,18 @@ export function renderUsersPage() {
                     el('button', {
                       type: 'button',
                       class: 'btn btn-ghost btn-sm',
+                      disabled: p.status !== 'ACTIVE',
+                      title: p.status !== 'ACTIVE' ? 'Activate this person before reader enrollment' : undefined,
+                      text: 'Scan on Reader',
+                      onClick: () => openReaderEnrollmentModal(p, loadTab)
+                    }),
+                    el('button', {
+                      type: 'button',
+                      class: 'btn btn-ghost btn-sm',
                       text: p.status === 'ACTIVE' ? 'Suspend' : 'Activate',
                       onClick: async () => {
                         try {
-                          await api.updatePerson(p.person_id || p.id, {
+                          await api.updatePerson(p.subject_id, {
                             display_name: p.display_name,
                             reference: p.reference || '',
                             status: p.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE',
@@ -739,6 +909,13 @@ export function renderUsersPage() {
                     class: 'btn btn-secondary btn-sm',
                     text: '+ Credential',
                     onClick: () => openAddCredentialModal(p, loadTab)
+                  }),
+                  el('button', {
+                    type: 'button',
+                    class: 'btn btn-ghost btn-sm',
+                    disabled: p.status !== 'ACTIVE',
+                    text: 'Scan RFID',
+                    onClick: () => openReaderEnrollmentModal(p, loadTab)
                   })
                 ])
               ])

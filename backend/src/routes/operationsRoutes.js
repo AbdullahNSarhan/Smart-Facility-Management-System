@@ -81,7 +81,7 @@ export function createOperationsRouter({ operations: o, authMiddleware, db, snap
     const retentionDays = db.prepare('SELECT retention_days FROM release_settings WHERE id = 1').get().retention_days;
     const sqlite = db.healthCheck();
     const mqtt = o.mqttService.getHealthStatus();
-    const websocket = o.wsGateway ? o.wsGateway.getStats() : { total: 0, telemetry: 0, mfa: 0, notifications: 0 };
+    const websocket = o.wsGateway ? o.wsGateway.getStats() : { totalClients: 0, telemetryClients: 0, notificationClients: 0, mfaClients: 0 };
     return ok(res, {
       version: RELEASE_VERSION,
       started_at: o.startedAt,

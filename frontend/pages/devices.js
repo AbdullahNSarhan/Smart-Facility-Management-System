@@ -34,6 +34,19 @@ const KIND_TO_DATA_TYPES = {
   CAMERA: ['MEDIA']
 };
 
+function isPrivateNodeIPv4(value) {
+  const parts = String(value || '').split('.');
+  if (parts.length !== 4) return false;
+  const octets = parts.map((part) => {
+    if (!/^(0|[1-9]\d{0,2})$/.test(part)) return null;
+    const octet = Number(part);
+    return octet <= 255 ? octet : null;
+  });
+  if (octets.some((octet) => octet === null)) return false;
+  const [a, b, , d] = octets;
+  return (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) && d !== 0 && d !== 255;
+}
+
 const TRANSPORT_HELP = {
   MQTT_V1:
     'Broker-mediated telemetry and confirmed switching via lci/v1/devices/<id>/*. No direct device IP is required; provision broker credentials on the host with provision-mqtt-device.sh.',
@@ -121,8 +134,8 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
   function validateStep(stepIdx) {
     clearError();
     if (stepIdx === 0) {
-      if (!/^[a-z0-9][a-z0-9_-]{1,62}$/.test(state.device_id)) {
-        showError('Device ID must be 2–63 lowercase letters, digits, hyphens, or underscores.');
+      if (!/^[a-z][a-z0-9_-]{0,47}$/.test(state.device_id)) {
+        showError('Device ID must start with a lowercase letter and contain 1–48 lowercase letters, digits, hyphens, or underscores.');
         return false;
       }
       if (!state.name.trim()) {
@@ -140,13 +153,12 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
           showError('A private LAN IPv4 address is required for HTTP_JSON_V1, CAMERA_JPEG, or LEGACY_V1 transports.');
           return false;
         }
-        if (!/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)\d{1,3}\.\d{1,3}$/.test(ip)) {
-          showError('Use a valid private LAN IPv4 address (10.x.x.x, 172.16–31.x.x, or 192.168.x.x).');
-          return false;
+        if (!isPrivateNodeIPv4(ip)) {
+          showError('Use a valid private unicast LAN IPv4 address (RFC1918); network and broadcast addresses are not allowed.');
         }
       }
-      if (!Number.isFinite(state.stale_after_s) || state.stale_after_s < 10 || state.stale_after_s > 86400) {
-        showError('Stale timeout must be between 10 and 86400 seconds.');
+      if (!Number.isInteger(state.stale_after_s) || state.stale_after_s < 5 || state.stale_after_s > 3600) {
+        showError('Stale timeout must be a whole number between 5 and 3600 seconds.');
         return false;
       }
     } else if (stepIdx === 2) {
@@ -156,8 +168,8 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
       }
       const seen = new Set();
       for (const ep of state.endpoints) {
-        if (!/^[a-z0-9][a-z0-9_-]{1,47}$/.test(ep.endpoint_key)) {
-          showError(`Invalid endpoint key "${ep.endpoint_key}". Use lowercase letters, digits, hyphens, or underscores.`);
+        if (!/^[a-z][a-z0-9_-]{0,47}$/.test(ep.endpoint_key)) {
+          showError(`Invalid endpoint key "${ep.endpoint_key}". Start with a lowercase letter and use 1–48 lowercase letters, digits, hyphens, or underscores.`);
           return false;
         }
         if (seen.has(ep.endpoint_key)) {
@@ -239,7 +251,7 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
       const typeSelect = el(
         'select',
         { id: 'wiz-device-type', class: 'select', disabled: isLegacy },
-        ['SENSOR', 'SWITCH', 'ACCESS', 'CAMERA', 'MIXED'].map((t) =>
+        ['SENSORS', 'CAMERA', 'ACCESS', 'RELAY', 'MIXED'].map((t) =>
           el('option', { value: t, text: t, selected: t === state.device_type })
         )
       );
@@ -313,8 +325,8 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
         id: 'wiz-device-stale',
         class: 'input mono',
         type: 'number',
-        min: 10,
-        max: 86400,
+        min: 5,
+        max: 3600,
         value: String(state.stale_after_s)
       });
       staleInput.addEventListener('input', () => {
@@ -371,7 +383,7 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
           el('div', { class: 'form-field' }, [
             el('label', { class: 'form-label', for: 'wiz-device-stale', text: 'Stale Timeout (seconds) *' }),
             staleInput,
-            el('span', { class: 'form-hint', text: 'Readings older than this window mark the device STALE.' })
+            el('span', { class: 'form-hint', text: 'Allowed by the server: 5–3600 seconds. Older endpoint observations become STALE.' })
           ]),
           needsIp
             ? el('div', { class: 'form-field' }, [

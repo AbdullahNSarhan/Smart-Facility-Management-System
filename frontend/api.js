@@ -212,7 +212,7 @@ export const api = {
   createOperator: (payload) => apiRequest('/api/v1/operators', { method: 'POST', body: payload }),
   provisionOperator: (payload) => apiRequest('/api/provision/user', { method: 'POST', body: payload }),
   updateOperatorRole: (payload) => apiRequest('/api/users/role', { method: 'POST', body: payload }),
-  deleteOperator: (id) => apiRequest(`/api/users/${encodeURIComponent(id)}`, { method: 'DELETE', body: {} }),
+  deleteOperator: (id) => apiRequest('/api/users/delete', { method: 'POST', body: { id } }),
 
   // Facility People & Physical Credentials (/api/v1/people)
   listPeople: (params = {}) => apiRequest(`/api/v1/people${buildQuery(params)}`),

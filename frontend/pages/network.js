@@ -216,7 +216,7 @@ export function renderNetworkPage({ navigate }) {
           { label: 'Readiness', value: ready?.status || 'unknown' },
           { label: 'Release Version', value: diag?.version || '2.0.0-rc.1', mono: true },
           { label: 'Operating Mode', value: diag?.simulation ? 'Isolated Simulator' : 'On-Premises LAN' },
-          { label: 'Active WS Clients', value: `Tel ${diag?.websocket?.telemetry ?? 0} · Notif ${diag?.websocket?.notifications ?? 0} · MFA ${diag?.websocket?.mfa ?? 0}`, mono: true },
+          { label: 'Active WS Clients', value: `Tel ${diag?.websocket?.telemetryClients ?? 0} · Notif ${diag?.websocket?.notificationClients ?? 0} · MFA ${diag?.websocket?.mfaClients ?? 0}`, mono: true },
           { label: 'Started At', value: formatTimestamp(diag?.started_at), mono: true }
         ]
       },

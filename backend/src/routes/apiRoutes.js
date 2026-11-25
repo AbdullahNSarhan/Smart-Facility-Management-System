@@ -92,7 +92,7 @@ export function createApiRouter({
       subscriptions_ready: mqttSubsReady,
       state: mqttState
     };
-    const wsStats = wsGateway ? wsGateway.getStats() : { totalClients: 0 };
+    const wsStats = wsGateway ? wsGateway.getStats() : { totalClients: 0, telemetryClients: 0, notificationClients: 0, mfaClients: 0 };
 
     const sqliteReady = Boolean(dbCheck && dbCheck.ok);
     const mqttReady = mqttEnabled ? (mqttConnected && mqttSubsReady) : true;

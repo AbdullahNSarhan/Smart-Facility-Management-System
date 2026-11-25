@@ -79,9 +79,29 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
 
+  // Deterministic Web Audio stub for the notification sound preference smoke test.
+  await page.addInitScript(() => {
+    class FakeAudioParam { setValueAtTime() {} exponentialRampToValueAtTime() {} }
+    class FakeAudioNode { connect() {} }
+    class FakeOscillator extends FakeAudioNode {
+      constructor() { super(); this.frequency = new FakeAudioParam(); this.type = 'sine'; }
+      start() {}
+      stop() {}
+    }
+    class FakeGain extends FakeAudioNode { constructor() { super(); this.gain = new FakeAudioParam(); } }
+    window.AudioContext = class extends FakeAudioNode {
+      constructor() { super(); this.state = 'running'; this.currentTime = 0; this.destination = {}; }
+      createOscillator() { return new FakeOscillator(); }
+      createGain() { return new FakeGain(); }
+      resume() { this.state = 'running'; return Promise.resolve(); }
+      close() { this.state = 'closed'; return Promise.resolve(); }
+    };
+  });
+
   const consoleErrors = [];
   const pageErrors = [];
   const externalRequests = [];
+  let expectingReaderOffline503 = false;
 
   page.on('console', (msg) => {
     if (msg.type() === 'error') {
@@ -89,6 +109,7 @@ try {
       if (/status of 401 \(Unauthorized\)/.test(txt) && msg.location()?.url?.includes('/api/auth/session')) {
         return;
       }
+      if (expectingReaderOffline503 && txt.includes('503 (Service Unavailable)')) return;
       consoleErrors.push(txt);
     }
   });
@@ -131,14 +152,29 @@ try {
   await page.click('#login-submit-btn');
   await page.waitForURL(`${baseUrl}/app/rooms`);
   await page.waitForSelector('#add-room-btn');
+  await page.waitForLoadState('networkidle');
 
-  // 4. Create a dynamic room via UI modal and verify deep-link reload
+  // 4. Create a dynamic room; assert the write response and the subsequent list response separately.
   await page.click('#add-room-btn');
   const modal = page.locator('#active-modal-backdrop');
   await modal.waitFor({ state: 'visible' });
   await modal.locator('input[placeholder="e.g. LAB-102"]').fill('LAB-305');
   await modal.locator('input[placeholder="e.g. Server Rack Room"]').fill('Automation Test Lab');
+  const createRoomResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/v1/rooms'
+  );
+  const refreshRoomsResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === 'GET' && new URL(response.url()).pathname === '/api/v1/rooms'
+  );
   await modal.getByRole('button', { name: 'Create Room' }).click();
+  const createRoomResponse = await createRoomResponsePromise;
+  const createRoomBody = await createRoomResponse.json().catch(() => ({}));
+  assert.equal(createRoomResponse.status(), 201, `Expected Room creation HTTP 201; got ${createRoomResponse.status()}: ${JSON.stringify(createRoomBody)}`);
+  await modal.waitFor({ state: 'detached' });
+  const refreshRoomsResponse = await refreshRoomsResponsePromise;
+  const refreshRoomsBody = await refreshRoomsResponse.json().catch(() => ({}));
+  assert.equal(refreshRoomsResponse.status(), 200, `Expected Room refresh HTTP 200; got ${refreshRoomsResponse.status()}: ${JSON.stringify(refreshRoomsBody)}`);
+  assert.ok((refreshRoomsBody.rooms || []).some((room) => room.room_code === 'LAB-305'), `Room write succeeded but list response did not include LAB-305: ${JSON.stringify(refreshRoomsBody)}`);
   await page.waitForSelector('text=LAB-305');
 
   // Deep-link reload test on /app/rooms
@@ -156,16 +192,31 @@ try {
   await page.click('#register-device-btn');
   await modal.waitFor({ state: 'visible' });
 
-  // Step 1: Identity
-  await modal.locator('#wiz-device-id').fill('mqtt-ui-sensor');
+  // Step 1: Identity — assert the browser validation matches the backend ID contract.
+  await modal.locator('#wiz-device-id').fill('1mqtt-ui-sensor');
+  const deviceTypeOptions = await modal.locator('#wiz-device-type option').evaluateAll((options) => options.map((option) => option.value));
+  assert.deepEqual(deviceTypeOptions, ['SENSORS', 'CAMERA', 'ACCESS', 'RELAY', 'MIXED']);
+  await modal.locator('#wiz-device-type').selectOption('SENSORS');
   await modal.locator('#wiz-device-name').fill('UI MQTT Sensor');
   await modal.getByRole('button', { name: 'Continue' }).click();
-
-  // Step 2: Transport (defaults to MQTT_V1 without IP)
-  await modal.locator('#wiz-device-transport').waitFor({ state: 'visible' });
+  await modal.getByText(/Device ID must start with a lowercase letter/).waitFor({ state: 'visible' });
+  await modal.locator('#wiz-device-id').fill('mqtt-ui-sensor');
   await modal.getByRole('button', { name: 'Continue' }).click();
 
-  // Step 3: Endpoints (defaults to valid temperature SENSOR/NUMBER)
+  // Step 2: Transport — reject values outside the server's 5–3600 second range.
+  await modal.locator('#wiz-device-transport').waitFor({ state: 'visible' });
+  await modal.locator('#wiz-device-stale').fill('3601');
+  await modal.getByRole('button', { name: 'Continue' }).click();
+  await modal.getByText(/between 5 and 3600 seconds/).waitFor({ state: 'visible' });
+  await modal.locator('#wiz-device-stale').fill('3600');
+  await modal.getByRole('button', { name: 'Continue' }).click();
+
+  // Step 3: Endpoints — reject keys that the backend schema cannot accept.
+  const endpointKeyInput = modal.locator('.endpoint-editor-row input').first();
+  await endpointKeyInput.fill('1temperature');
+  await modal.getByRole('button', { name: 'Continue' }).click();
+  await modal.getByText(/Invalid endpoint key/).waitFor({ state: 'visible' });
+  await endpointKeyInput.fill('temperature');
   await modal.getByRole('button', { name: 'Continue' }).click();
 
   // Step 4: Review & Register
@@ -205,6 +256,7 @@ try {
   // 8. Events & Audit Logs + Slide-Over Detail Drawer
   await page.getByRole('link', { name: 'Events & Audit' }).click();
   await page.waitForURL(`${baseUrl}/app/events`);
+  assert.equal(await page.getByRole('tab', { name: 'Admin Audit' }).count(), 0, 'Do not expose an unimplemented admin_audit log table');
   await page.getByRole('tab', { name: 'Management Audit' }).click();
   await page.waitForSelector('table tbody tr');
   await page.locator('table tbody tr').first().getByRole('button', { name: 'Inspect' }).click();
@@ -218,6 +270,41 @@ try {
   await page.waitForSelector('text=viewer_ui');
   await page.getByRole('tab', { name: 'Facility People & Credentials' }).click();
   await page.waitForSelector('text=Physical Credential Policy Boundary');
+  await page.getByRole('button', { name: 'Add Account / Person' }).click();
+  await modal.waitFor({ state: 'visible' });
+  await modal.locator('input').first().fill('Reader UI Smoke Person');
+  await modal.getByRole('button', { name: 'Add Person' }).click();
+  await page.getByRole('table', { name: 'Facility people and physical' }).getByText('Reader UI Smoke Person').waitFor();
+  const peopleLookup = await page.request.get(`${baseUrl}/api/v1/people?search=Reader%20UI%20Smoke%20Person`);
+  assert.equal(peopleLookup.status(), 200);
+  const peoplePayload = await peopleLookup.json();
+  const smokePerson = (peoplePayload.people || []).find((person) => person.display_name === 'Reader UI Smoke Person');
+  assert.ok(smokePerson?.subject_id, `Expected the People API to expose subject_id: ${JSON.stringify(peoplePayload)}`);
+  const smokePersonRow = page.getByRole('table', { name: 'Facility people and physical' }).locator('tr').filter({ hasText: 'Reader UI Smoke Person' });
+  const suspendPersonPromise = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === `/api/v1/people/${encodeURIComponent(smokePerson.subject_id)}`);
+  await smokePersonRow.getByRole('button', { name: 'Suspend' }).click();
+  const suspendPersonResponse = await suspendPersonPromise;
+  const suspendPersonBody = await suspendPersonResponse.json().catch(() => ({}));
+  assert.equal(suspendPersonResponse.status(), 200, `Expected Person suspension HTTP 200; got ${suspendPersonResponse.status()}: ${JSON.stringify(suspendPersonBody)}`);
+  await smokePersonRow.getByRole('button', { name: 'Activate' }).waitFor({ state: 'visible' });
+  const activatePersonPromise = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === `/api/v1/people/${encodeURIComponent(smokePerson.subject_id)}`);
+  await smokePersonRow.getByRole('button', { name: 'Activate' }).click();
+  const activatePersonResponse = await activatePersonPromise;
+  const activatePersonBody = await activatePersonResponse.json().catch(() => ({}));
+  assert.equal(activatePersonResponse.status(), 200, `Expected Person reactivation HTTP 200; got ${activatePersonResponse.status()}: ${JSON.stringify(activatePersonBody)}`);
+  await smokePersonRow.getByRole('button', { name: 'Suspend' }).waitFor({ state: 'visible' });
+  const enrollmentStartPromise = page.waitForResponse((response) =>
+    response.request().method() === 'POST' &&
+    new URL(response.url()).pathname === `/api/v1/people/${encodeURIComponent(smokePerson.subject_id)}/cards/enrollment-sessions`
+  );
+  expectingReaderOffline503 = true;
+  await page.getByRole('button', { name: 'Scan on Reader' }).first().click();
+  const enrollmentStart = await enrollmentStartPromise;
+  const enrollmentError = await enrollmentStart.json().catch(() => ({}));
+  assert.equal(enrollmentStart.status(), 503, `Expected READER_OFFLINE for the real Person ID; got ${enrollmentStart.status()}: ${JSON.stringify(enrollmentError)}`);
+  assert.equal(enrollmentError.code, 'READER_OFFLINE');
+  await modal.getByText(/door reader must be online/i).waitFor({ state: 'visible' });
+  await modal.getByRole('button', { name: 'Close', exact: true }).click();
 
   // 10. Visit remaining core routes & verify zero errors
   for (const route of ['/app/overview', '/app/notifications', '/app/diagnostics', '/app/settings', '/app/profile']) {
@@ -225,7 +312,15 @@ try {
     await page.waitForSelector('.app-content');
   }
 
+  // Verify audio requires a deliberate user gesture and preference is persisted per operator.
+  await page.goto(`${baseUrl}/app/notifications`, { waitUntil: 'networkidle' });
+  await page.locator('#notification-audio-enable').click();
+  await page.getByText('Audio is enabled for this browser session').waitFor();
+  await page.locator('#notification-critical-sound').check();
+  await page.getByText('Critical alert sound enabled.').waitFor();
+
   // 11. Toggle Dark -> Light -> Dark theme
+  await page.goto(baseUrl + '/app/profile', { waitUntil: 'networkidle' });
   await page.click('#profile-theme-toggle');
   assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-theme')), 'light');
   await page.click('#profile-theme-toggle');
@@ -260,8 +355,18 @@ try {
 
   await page.fill('#login-username', 'viewer_ui');
   await page.fill('#login-password', 'Viewer-Smoke-Pass#2026');
+  const viewerLoginResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/auth/login'
+  );
   await page.click('#login-submit-btn');
-  await page.waitForURL(`${baseUrl}/app/overview`);
+  const viewerLoginResponse = await viewerLoginResponsePromise;
+  const viewerLoginBody = await viewerLoginResponse.json().catch(() => ({}));
+  assert.equal(viewerLoginResponse.status(), 200, `Viewer login failed with HTTP ${viewerLoginResponse.status()}: ${JSON.stringify(viewerLoginBody)}`);
+  assert.equal(viewerLoginBody.user?.role, 'Viewer', `Expected Viewer role from server: ${JSON.stringify(viewerLoginBody.user || {})}`);
+  await page.waitForURL(baseUrl + '/app/overview', { timeout: 10000 }).catch(async () => {
+    const errors = await page.locator('.alert-error').allTextContents().catch(() => []);
+    throw new Error(`Viewer login returned HTTP 200 but did not reach Overview. Current URL: ${page.url()}. Visible errors: ${errors.join(' | ')}`);
+  });
 
   // Viewer must not see Users & Access or Settings in sidebar
   assert.equal(await page.getByRole('link', { name: 'Users & Access' }).count(), 0);
@@ -270,6 +375,29 @@ try {
   await page.getByRole('link', { name: 'Rooms' }).click();
   await page.waitForURL(`${baseUrl}/app/rooms`);
   assert.equal(await page.locator('#add-room-btn').count(), 0);
+
+  // Sign Out is part of the Profile page; navigate there explicitly before ending the Viewer session.
+  await page.goto(`${baseUrl}/app/profile`, { waitUntil: 'networkidle' });
+  await page.locator('.app-content').getByRole('button', { name: 'Sign Out' }).click();
+  await page.waitForURL(`${baseUrl}/login`);
+
+  // Return to Admin and verify the implemented operator deletion route.
+  await page.fill('#login-username', 'admin');
+  await page.fill('#login-password', adminPass);
+  await page.click('#login-submit-btn');
+  await page.waitForURL(`${baseUrl}/app/overview`);
+  await page.goto(`${baseUrl}/app/users`, { waitUntil: 'networkidle' });
+  const viewerRow = page.locator('tr').filter({ hasText: 'viewer_ui' });
+  await viewerRow.getByRole('button', { name: 'Delete' }).click();
+  await modal.waitFor({ state: 'visible' });
+  const deleteOperatorPromise = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/users/delete'
+  );
+  await modal.getByRole('button', { name: 'Delete Operator' }).click();
+  const deleteOperatorResponse = await deleteOperatorPromise;
+  const deleteOperatorBody = await deleteOperatorResponse.json().catch(() => ({}));
+  assert.equal(deleteOperatorResponse.status(), 200, `Expected operator deletion HTTP 200; got ${deleteOperatorResponse.status()}: ${JSON.stringify(deleteOperatorBody)}`);
+  await page.locator('tr').filter({ hasText: 'viewer_ui' }).waitFor({ state: 'detached', timeout: 5000 });
 
   // 14. Strict Air-Gap & Error Assertions
   assert.deepEqual(
