@@ -158,6 +158,9 @@ try {
 
   // Step 1: Identity — assert the browser validation matches the backend ID contract.
   await modal.locator('#wiz-device-id').fill('1mqtt-ui-sensor');
+  const deviceTypeOptions = await modal.locator('#wiz-device-type option').evaluateAll((options) => options.map((option) => option.value));
+  assert.deepEqual(deviceTypeOptions, ['SENSORS', 'CAMERA', 'ACCESS', 'RELAY', 'MIXED']);
+  await modal.locator('#wiz-device-type').selectOption('SENSORS');
   await modal.locator('#wiz-device-name').fill('UI MQTT Sensor');
   await modal.getByRole('button', { name: 'Continue' }).click();
   await modal.getByText(/Device ID must start with a lowercase letter/).waitFor({ state: 'visible' });
