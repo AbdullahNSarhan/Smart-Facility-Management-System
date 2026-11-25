@@ -317,6 +317,7 @@ try {
   await page.getByText('Critical alert sound enabled.').waitFor();
 
   // 11. Toggle Dark -> Light -> Dark theme
+  await page.goto(baseUrl + '/app/profile', { waitUntil: 'networkidle' });
   await page.click('#profile-theme-toggle');
   assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-theme')), 'light');
   await page.click('#profile-theme-toggle');
