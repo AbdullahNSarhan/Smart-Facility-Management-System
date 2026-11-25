@@ -259,6 +259,7 @@ function renderToastHost() {
         el('button', {
           type: 'button',
           class: 'toast-close',
+          title: 'Dismiss notification',
           'aria-label': 'Dismiss notification',
           onClick: () => dismissToast(t.id)
         }, [svgIcon('icon-close', 14)])
@@ -294,6 +295,7 @@ export function openModal({ title, subtitle = '', body, actions = [], wide = fal
       el('button', {
         type: 'button',
         class: 'btn-icon',
+        title: 'Close dialog',
         'aria-label': 'Close dialog',
         onClick: closeModal
       }, [svgIcon('icon-close', 16)])
@@ -357,6 +359,7 @@ export function openDrawer({ title, subtitle = '', body, actions = [], onClose =
       el('button', {
         type: 'button',
         class: 'btn-icon',
+        title: 'Close detail drawer',
         'aria-label': 'Close detail drawer',
         onClick: closeDrawer
       }, [svgIcon('icon-close', 16)])

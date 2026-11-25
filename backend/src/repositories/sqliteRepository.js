@@ -137,14 +137,33 @@ export class SqliteRepository {
     return this.listSafeSystemUsers().find((u) => u.id === newId);
   }
 
-  updateAdminCredentials({ actorUserId, currentUsername, newUsername, newPassword }) {
+  updateAdminCredentials({ actorUserId, currentPassword, newUsername, newPassword }) {
+    const actor = this.findUserById(actorUserId);
+    if (!actor || !actor.enabled || actor.role !== 'Admin') {
+      const err = new Error('Target Administrator account not found');
+      err.code = 'ADMIN_NOT_FOUND';
+      throw err;
+    }
+
+    if (typeof currentPassword !== 'string' || !verifySecret(currentPassword, actor.password_hash)) {
+      this.insertAccessLog({
+        node_id: 'backend',
+        username: actor.username,
+        modality: 'ADMIN_PROFILE',
+        event: `Rejected Administrator credential rotation for "${actor.username}" (invalid current password)`,
+        status: 'DENIED'
+      });
+      const err = new Error('Current password is incorrect');
+      err.code = 'INVALID_CURRENT_PASSWORD';
+      throw err;
+    }
+
     const now = new Date().toISOString();
     const newHash = hashSecret(String(newPassword));
 
     const tx = this.sqlite.transaction(() => {
-      const target =
-        this.findUserById(actorUserId) || this.findUserByUsername(currentUsername);
-      if (!target || target.role !== 'Admin') {
+      const target = this.findUserById(actorUserId);
+      if (!target || !target.enabled || target.role !== 'Admin') {
         const err = new Error('Target Administrator account not found');
         err.code = 'ADMIN_NOT_FOUND';
         throw err;
@@ -165,12 +184,14 @@ export class SqliteRepository {
         )
         .run(newUsername, newHash, now, target.id);
 
+      this.revokeAllSessionsForUser(target.id);
+
       this.insertAccessLog({
         timestamp: now,
         node_id: 'backend',
         username: newUsername,
         modality: 'ADMIN_PROFILE',
-        event: `Rotated Administrator credentials (${target.username} -> ${newUsername})`,
+        event: `Rotated Administrator credentials (${target.username} -> ${newUsername}) and revoked prior sessions`,
         status: 'UPDATED'
       });
 

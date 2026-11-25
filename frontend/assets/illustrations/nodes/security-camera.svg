@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 96" fill="none">
+  <defs>
+    <linearGradient id="camShell" x1="20" y1="18" x2="96" y2="74" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#231F3A"/>
+      <stop offset="1" stop-color="#111626"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="60" cy="85" rx="34" ry="5" fill="#A78BFA" fill-opacity="0.18"/>
+  <path d="M22 66h16l8-12" stroke="#A78BFA" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="16" y="58" width="8" height="16" rx="2.5" fill="#1E293B" stroke="#A78BFA" stroke-width="1.6"/>
+  <rect x="28" y="22" width="66" height="38" rx="12" transform="rotate(-8 28 22)" fill="url(#camShell)" stroke="#A78BFA" stroke-width="1.8"/>
+  <circle cx="77" cy="37" r="13" fill="#0B1020" stroke="#C4B5FD" stroke-width="1.7"/>
+  <circle cx="77" cy="37" r="7" fill="#A78BFA" fill-opacity="0.28" stroke="#A78BFA" stroke-width="1.5"/>
+  <circle cx="75" cy="35" r="2.2" fill="#EDE9FE"/>
+  <circle cx="42" cy="34" r="2.6" fill="#A78BFA"/>
+  <path d="M95 30l13-6v24l-13-6" fill="#A78BFA" fill-opacity="0.14" stroke="#A78BFA" stroke-opacity="0.5" stroke-width="1.3" stroke-linejoin="round"/>
+</svg>

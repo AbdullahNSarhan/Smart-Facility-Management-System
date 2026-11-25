@@ -377,20 +377,48 @@ export function createApiRouter({
     try {
       const updatedId = repo.updateAdminCredentials({
         actorUserId: req.user.id,
-        currentUsername: parsed.data.currentUsername || req.user.username,
+        currentPassword: parsed.data.currentPassword,
         newUsername: parsed.data.newUsername,
         newPassword: parsed.data.newPassword
       });
 
-      return res.status(200).json({
+      if (wsGateway) {
+        wsGateway.disconnectUser(updatedId);
+      }
+
+      const rotatedSession = repo.createSession({
+        userId: updatedId,
+        ttlMs: config.sessionAbsoluteTtlMs,
+        userAgent: String(req.headers['user-agent'] || ''),
+        ipAddress: String(req.ip || req.socket?.remoteAddress || '')
+      });
+
+      setSessionCookie(res, rotatedSession.rawToken, config);
+
+      const responsePayload = {
         ok: true,
         id: updatedId,
         username: parsed.data.newUsername,
+        csrfToken: rotatedSession.csrfToken,
+        expiresAt: rotatedSession.expiresAt,
+        sessions_revoked: true,
         request_id: req.requestId
-      });
+      };
+
+      if (config.allowBearerCompat) {
+        responsePayload.token = rotatedSession.rawToken;
+      }
+
+      return res.status(200).json(responsePayload);
     } catch (err) {
       const status =
-        err.code === 'USERNAME_CONFLICT' ? 409 : err.code === 'ADMIN_NOT_FOUND' ? 404 : 400;
+        err.code === 'INVALID_CURRENT_PASSWORD'
+          ? 403
+          : err.code === 'USERNAME_CONFLICT'
+            ? 409
+            : err.code === 'ADMIN_NOT_FOUND'
+              ? 404
+              : 400;
       return res.status(status).json({
         ok: false,
         error: err.message,

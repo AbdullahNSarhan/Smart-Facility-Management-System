@@ -19,6 +19,40 @@ fi
 for cmd in git docker curl flock mktemp python3; do
   have "$cmd" || die "Required command is missing: $cmd"
 done
+
+REPO_UID="$(stat -c '%u' "$PROJECT_DIR" 2>/dev/null || echo 0)"
+REPO_GID="$(stat -c '%g' "$PROJECT_DIR" 2>/dev/null || echo 0)"
+
+ensure_git_safe_directory() {
+  local repo_dir="$1"
+  [[ -d "$repo_dir/.git" ]] || return 0
+  local canon_dir owner_uid
+  canon_dir="$(cd -- "$repo_dir" && pwd -P)"
+  owner_uid="$(stat -c '%u' "$canon_dir" 2>/dev/null || echo "$EUID")"
+  if [[ "$owner_uid" != "$EUID" ]]; then
+    if ! git --no-pager config --global --get-all safe.directory 2>/dev/null | grep -Fxq "$canon_dir"; then
+      git config --global --add safe.directory "$canon_dir"
+    fi
+  fi
+}
+
+apply_mosquitto_permissions() {
+  if [[ "${LCI_SKIP_ROOT_CHECK:-0}" != "1" && $EUID -eq 0 ]]; then
+    chown "${REPO_UID}:1883" mosquitto/passwd mosquitto/acl mosquitto/mosquitto.conf || die "Could not set Mosquitto file ownership."
+    chmod 0640 mosquitto/passwd mosquitto/acl mosquitto/mosquitto.conf || die "Could not set Mosquitto file permissions."
+  else
+    chmod 0600 mosquitto/passwd mosquitto/acl || die "Could not set Mosquitto file permissions."
+  fi
+}
+
+restore_repo_owner_if_nonroot() {
+  if [[ "${LCI_SKIP_ROOT_CHECK:-0}" != "1" && $EUID -eq 0 && "$REPO_UID" != "0" ]]; then
+    chown -R "${REPO_UID}:${REPO_GID}" "$PROJECT_DIR/.git" 2>/dev/null || true
+    [[ -d "$PROJECT_DIR/dist" ]] && chown -R "${REPO_UID}:${REPO_GID}" "$PROJECT_DIR/dist" 2>/dev/null || true
+  fi
+}
+
+ensure_git_safe_directory "$PROJECT_DIR"
 docker info >/dev/null 2>&1 || die "Docker daemon is not responding."
 docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required."
 [[ -f .env ]] || die ".env is missing. Refusing to recreate deployment secrets automatically."
@@ -119,6 +153,8 @@ cleanup() {
     git -C "$PROJECT_DIR" worktree remove --force "$TEST_TREE" >/dev/null 2>&1 || true
     git -C "$PROJECT_DIR" worktree prune >/dev/null 2>&1 || true
   fi
+  apply_mosquitto_permissions 2>/dev/null || true
+  restore_repo_owner_if_nonroot
   rm -rf -- "$TMP_DIR"
   if [[ "$rc" -ne 0 ]]; then
     warn "Update stopped with exit code $rc. Review the message above and service logs before retrying."
@@ -188,11 +224,8 @@ else
   die "A running backend and non-empty SQLite database were not found. Refusing an update without a verified backup."
 fi
 
-# Keep the existing Mosquitto UID/GID and least-privilege file modes.
-if [[ "${LCI_SKIP_ROOT_CHECK:-0}" != "1" ]]; then
-  chown 1883:1883 mosquitto/passwd mosquitto/acl || die "Could not set Mosquitto file ownership."
-fi
-chmod 600 mosquitto/passwd mosquitto/acl || die "Could not set Mosquitto file permissions."
+# Preserve developer/appliance repository owner alongside Mosquitto GID 1883 read access.
+apply_mosquitto_permissions
 
 # Preserve the entire previous dist/ directory so the error trap can restore all assets
 # and index.html if any post-merge deployment or readiness check fails.
@@ -204,6 +237,9 @@ fi
 log "Fast-forwarding the deployment checkout to $REMOTE_SHORT."
 git merge --ff-only "$REMOTE_FULL" || die "Fast-forward failed. No reset was attempted."
 GIT_FAST_FORWARDED=1
+
+# Re-apply Mosquitto permissions after merge in case tracked mosquitto/acl or mosquitto.conf changed under umask 077.
+apply_mosquitto_permissions
 
 # The frontend is served from a bind-mounted dist/ directory; Compose does not build it.
 # Publish the exact dist/ artifact produced by the candidate build, copying index.html last

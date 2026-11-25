@@ -57,6 +57,19 @@ validate_port() {
   [[ "$p" =~ ^[0-9]{1,5}$ ]] && (( 10#$p >= 1 && 10#$p <= 65535 ))
 }
 
+ensure_git_safe_directory() {
+  local repo_dir="$1"
+  [[ -d "$repo_dir/.git" ]] || return 0
+  local canon_dir repo_uid
+  canon_dir="$(cd -- "$repo_dir" && pwd -P)"
+  repo_uid="$(stat -c '%u' "$canon_dir" 2>/dev/null || echo "$EUID")"
+  if [[ "$repo_uid" != "$EUID" ]]; then
+    if ! git --no-pager config --global --get-all safe.directory 2>/dev/null | grep -Fxq "$canon_dir"; then
+      git config --global --add safe.directory "$canon_dir"
+    fi
+  fi
+}
+
 discover_lan_ips() {
   # Air-gap safe discovery: enumerates ALL non-loopback, non-container IPv4 addresses
   # without requiring internet reachability (unlike `ip route get 1.1.1.1`).
@@ -141,6 +154,7 @@ if [[ ! -f "${SCRIPT_DIR:-/nonexistent}/docker-compose.yml" ]]; then
   log "Bootstrap mode: preparing repository at $INSTALL_DIR"
   command -v git >/dev/null 2>&1 || { apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates curl; }
   if [[ -d "$INSTALL_DIR/.git" ]]; then
+    ensure_git_safe_directory "$INSTALL_DIR"
     if [[ -n "$(git -C "$INSTALL_DIR" status --porcelain)" ]]; then
       die "$INSTALL_DIR has local changes. Review them before running the remote installer; no files were overwritten."
     fi
@@ -156,6 +170,7 @@ fi
 
 PROJECT_DIR="$SCRIPT_DIR"
 cd "$PROJECT_DIR"
+ensure_git_safe_directory "$PROJECT_DIR"
 
 # Run discovery report first
 run_host_discovery
@@ -326,7 +341,7 @@ if [[ -d .git ]]; then
   mkdir -p .git/info
   EXCLUDE_FILE=".git/info/exclude"
   touch "$EXCLUDE_FILE"
-  for entry in "/.env" "/DEPLOYMENT-CREDENTIALS.txt" "/mosquitto/passwd" "/mosquitto/device-credentials.txt" "/nginx/certs/" "/backups/" "/dist-release/"; do
+  for entry in "/.env" "/DEPLOYMENT-CREDENTIALS.txt" "/mosquitto/passwd" "/mosquitto/device-credentials.txt" "/mosquitto/provisioned-credentials/" "/nginx/certs/" "/backups/" "/dist-release/"; do
     grep -Fxq "$entry" "$EXCLUDE_FILE" || printf '%s\n' "$entry" >> "$EXCLUDE_FILE"
   done
 fi
@@ -366,10 +381,13 @@ else
   log "Existing Mosquitto password file detected; preserving its credentials."
 fi
 
-if [[ "${LCI_SKIP_ROOT_CHECK:-0}" != "1" ]]; then
-  chown 1883:1883 mosquitto/passwd mosquitto/acl
+REPO_OWNER_UID="$(stat -c '%u' "$PROJECT_DIR" 2>/dev/null || echo 0)"
+if [[ "${LCI_SKIP_ROOT_CHECK:-0}" != "1" && $EUID -eq 0 ]]; then
+  chown "${REPO_OWNER_UID}:1883" mosquitto/passwd mosquitto/acl mosquitto/mosquitto.conf
+  chmod 0640 mosquitto/passwd mosquitto/acl mosquitto/mosquitto.conf
+else
+  chmod 0600 mosquitto/passwd mosquitto/acl
 fi
-chmod 600 mosquitto/passwd mosquitto/acl
 
 [[ -f deployment/validation.Dockerfile ]] || die "Deployment validation Dockerfile is missing."
 log "Preparing Node.js 24 validation image (git, bash, flock)"

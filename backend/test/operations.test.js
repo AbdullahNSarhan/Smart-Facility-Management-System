@@ -164,11 +164,18 @@ describe('Release candidate operations: registry, notifications and alarms',()=>
   });
 
   it('cleans expired notifications without deleting alarm evidence or receipt integrity',async()=>{
-    await create();online();await makeRule({hold_s:0});send(frame(1,40));
+    await create();online();await makeRule({hold_s:0});send(frame(1,40));send(frame(2,41));
+    ctx.db.prepare("UPDATE device_frames SET received_at='2000-01-01T00:00:00.000Z' WHERE seq=1").run();
     ctx.operations.notify({title:'Old event'});const id=ctx.db.prepare("SELECT id FROM notifications WHERE title='Old event'").get().id;
     await mutate('put',`/notifications/${id}/read`,{read:true});ctx.db.prepare("UPDATE notifications SET timestamp='2000-01-01T00:00:00.000Z' WHERE id=?").run(id);
-    assert.equal((await mutate('put','/retention',{days:7},true)).status,403);await mutate('put','/retention',{days:7});tick();
+    assert.equal((await mutate('put','/retention',{days:6})).status,400);
+    assert.equal((await mutate('put','/retention',{days:366})).status,400);
+    assert.equal((await mutate('put','/retention',{days:7},true)).status,403);
+    const retRes=await mutate('put','/retention',{days:7});assert.equal(retRes.status,200);assert.equal(retRes.body.days,7);
+    assert.ok(ctx.db.prepare("SELECT 1 FROM management_audit WHERE action='NOTIFICATION_RETENTION'").get());
+    tick();
     assert.equal(ctx.db.prepare('SELECT 1 FROM notifications WHERE id=?').get(id),undefined);assert.equal(ctx.db.prepare('SELECT 1 FROM notification_reads WHERE notification_id=?').get(id),undefined);
+    assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM device_frames WHERE device_id='lab_sensor'").get().n,1);
     assert.equal((await get('/alarms')).body.alarms.length,1);
   });
 

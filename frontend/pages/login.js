@@ -16,9 +16,10 @@ export function renderLoginPage({ navigate, query }) {
       type: 'button',
       class: 'btn-icon',
       title: 'Toggle Dark / Light theme',
-      'aria-label': 'Toggle theme',
+      'aria-label': store.theme === 'dark' ? 'Switch to Light theme' : 'Switch to Dark theme',
       onClick: () => {
         toggleTheme();
+        themeBtn.setAttribute('aria-label', store.theme === 'dark' ? 'Switch to Light theme' : 'Switch to Dark theme');
         themeBtn.replaceChildren(svgIcon(store.theme === 'dark' ? 'icon-sun' : 'icon-moon', 16));
       }
     },

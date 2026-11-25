@@ -99,9 +99,13 @@ describe('Facility management, identity separation and reader enrollment', () =>
 
   it('preserves rotated administrator credentials across restart without recreating the bootstrap account', async () => {
     const newPassword = 'Quote\'and;spaces 2026!';
+    const preRotateCookie = cookie;
     const rotated = await request(ctx.app).post('/api/auth/admin-profile').set('Cookie',cookie).set('X-CSRF-Token',csrf)
-      .send({ newUsername:'renamed_admin', newPassword });
+      .send({ currentPassword: password, newUsername:'renamed_admin', newPassword });
     assert.equal(rotated.status,200);
+    assert.equal((await request(ctx.app).get('/api/auth/session').set('Cookie',preRotateCookie)).status,401);
+    const rotatedCookie = rotated.headers['set-cookie'][0].split(';')[0];
+    assert.equal((await request(ctx.app).get('/api/auth/session').set('Cookie',rotatedCookie)).status,200);
     await ctx.stop(); ctx = createBackendContext(overrides());
     assert.equal(ctx.repo.findUserByUsername('admin'),undefined);
     assert.ok(ctx.repo.verifyUserCredentials('renamed_admin',newPassword));

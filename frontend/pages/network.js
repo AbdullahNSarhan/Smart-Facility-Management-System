@@ -3,7 +3,7 @@
 // plus adaptive Device Connectivity Matrix. Strictly evidence-led; zero fake network scanning.
 
 import { api } from '../api.js';
-import { store, onLiveEvent } from '../store.js';
+import { store, subscribe, onLiveEvent } from '../store.js';
 import { el, clear, svgIcon, formatAge, formatTimestamp } from '../utils.js';
 import {
   pageHeader,
@@ -16,6 +16,13 @@ import {
   renderAdaptiveCollection,
   emptyState
 } from '../components/ui.js';
+import {
+  EMPTY_ILLUSTRATIONS,
+  resolveDeviceVisual,
+  resolveInfrastructureVisual,
+  renderNodeIllustration,
+  renderCategoryChip
+} from '../visuals.js';
 
 function statusToTone(state) {
   const s = String(state || 'UNKNOWN').toUpperCase();
@@ -60,7 +67,7 @@ function buildTopologySvg({ nodes, links, selectedId, onSelect }) {
   for (const node of nodes) {
     const g = document.createElementNS(ns, 'g');
     const isSelected = node.id === selectedId;
-    g.setAttribute('class', `topo-node${isSelected ? ' is-selected' : ''}`);
+    g.setAttribute('class', `topo-node cat-${node.category || 'infra'}${isSelected ? ' is-selected' : ''}`);
     g.setAttribute('tabindex', '0');
     g.setAttribute('role', 'button');
     g.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
@@ -116,6 +123,8 @@ export function renderNetworkPage({ navigate }) {
   let disposed = false;
   let selectedNodeId = 'backend';
   let latestData = null;
+  let topoResizeObserver = null;
+  let lastWsSignature = `${store.wsTelemetry}|${store.wsNotifications}|${store.wsMfa}`;
 
   const headerSlot = el('div');
   const noticeSlot = el('div');
@@ -172,9 +181,15 @@ export function renderNetworkPage({ navigate }) {
         ? 'CONNECTED'
         : store.wsTelemetry === 'CONNECTED' || store.wsNotifications === 'CONNECTED'
           ? 'DEGRADED'
-          : 'OFFLINE';
+          : store.wsTelemetry === 'CONNECTING' || store.wsNotifications === 'CONNECTING'
+            ? 'CONNECTING'
+            : 'OFFLINE';
 
     const backendState = ready?.status === 'ready' ? 'READY' : 'DEGRADED';
+    const browserVis = resolveInfrastructureVisual('browser');
+    const backendVis = resolveInfrastructureVisual('backend');
+    const sqliteVis = resolveInfrastructureVisual('sqlite');
+    const mqttVis = resolveInfrastructureVisual('mqtt');
 
     const nodes = [
       {
@@ -189,6 +204,8 @@ export function renderNetworkPage({ navigate }) {
         state: wsState,
         statusLabel: wsState,
         tone: statusToTone(wsState),
+        category: browserVis.category,
+        visual: browserVis,
         kind: 'CORE',
         details: [
           { label: 'Origin Host', value: window.location.host, mono: true },
@@ -211,6 +228,8 @@ export function renderNetworkPage({ navigate }) {
         state: backendState,
         statusLabel: backendState === 'READY' ? 'Ready' : 'Degraded',
         tone: statusToTone(backendState),
+        category: backendVis.category,
+        visual: backendVis,
         kind: 'CORE',
         details: [
           { label: 'Readiness', value: ready?.status || 'unknown' },
@@ -232,12 +251,14 @@ export function renderNetworkPage({ navigate }) {
         state: sqliteOk ? 'HEALTHY' : 'ERROR',
         statusLabel: sqliteOk ? 'Healthy' : 'Error',
         tone: statusToTone(sqliteOk ? 'HEALTHY' : 'ERROR'),
+        category: sqliteVis.category,
+        visual: sqliteVis,
         kind: 'CORE',
         details: [
           { label: 'Health Check', value: sqliteOk ? 'OK' : 'Failed' },
           { label: 'Journal Mode', value: String(ready?.sqlite?.journal_mode || diag?.sqlite?.journal_mode || 'wal').toUpperCase(), mono: true },
           { label: 'Foreign Keys', value: (ready?.sqlite?.foreign_keys ?? diag?.sqlite?.foreign_keys) ? 'Enabled' : 'Disabled' },
-          { label: 'Retention Window', value: `${diag?.retention_days ?? 30} days` }
+          { label: 'Retention Window', value: `${diag?.retention_days ?? 90} days` }
         ]
       },
       {
@@ -252,6 +273,8 @@ export function renderNetworkPage({ navigate }) {
         state: mqttState,
         statusLabel: mqttState,
         tone: statusToTone(mqttState),
+        category: mqttVis.category,
+        visual: mqttVis,
         kind: 'CORE',
         details: [
           { label: 'Broker State', value: mqttState },
@@ -273,6 +296,7 @@ export function renderNetworkPage({ navigate }) {
       const y = 26 + idx * 66;
       const devState = d.in_maintenance ? 'MAINTENANCE' : d.status || 'UNKNOWN';
       const tone = statusToTone(devState);
+      const devVis = resolveDeviceVisual(d);
       const isMqtt = d.transport === 'MQTT_V1' || d.transport === 'LEGACY_V1';
       nodes.push({
         id: `dev:${d.device_id}`,
@@ -286,6 +310,8 @@ export function renderNetworkPage({ navigate }) {
         state: devState,
         statusLabel: devState,
         tone,
+        category: devVis.category,
+        visual: devVis,
         kind: 'DEVICE',
         device: d
       });
@@ -309,6 +335,7 @@ export function renderNetworkPage({ navigate }) {
         state: 'INFO',
         statusLabel: 'Additional devices',
         tone: 'info',
+        category: 'infra',
         kind: 'OVERFLOW'
       });
       links.push({ from: 'mqtt', to: 'dev:overflow', tone: 'muted' });
@@ -323,56 +350,64 @@ export function renderNetworkPage({ navigate }) {
 
     if (selected.kind === 'DEVICE' && selected.device) {
       const d = selected.device;
+      const devVis = selected.visual || resolveDeviceVisual(d);
       const freshEndpoints = (d.endpoints || []).filter((e) => e.fresh).length;
       const totalEndpoints = (d.endpoints || []).length;
 
-      return el('aside', { class: 'card stack-md network-inspector', id: 'network-node-inspector', 'aria-label': 'Selected node details' }, [
-        el('div', { class: 'row-between' }, [
-          el('div', { class: 'stack-xs' }, [
-            el('div', { class: 'kicker', text: 'REGISTERED DEVICE NODE' }),
-            el('h2', { class: 'card-title', text: d.name })
+      return el(
+        'aside',
+        { class: `card stack-md network-inspector cat-${devVis.category}`, id: 'network-node-inspector', 'aria-label': 'Selected node details' },
+        [
+          el('div', { class: 'row-between flex-wrap' }, [
+            el('div', { class: 'device-identity-cell' }, [
+              renderNodeIllustration(devVis, { size: 'md', alt: `${devVis.categoryLabel} illustration` }),
+              el('div', { class: 'stack-xs min-w-0' }, [
+                renderCategoryChip(devVis.category, devVis.categoryLabel),
+                el('h2', { class: 'card-title', text: d.name })
+              ])
+            ]),
+            statusIndicator(d.in_maintenance ? 'MAINTENANCE' : d.status)
           ]),
-          statusIndicator(d.in_maintenance ? 'MAINTENANCE' : d.status)
-        ]),
-        d.manifest_drift?.has_drift
-          ? disclaimerBanner({
-              icon: 'icon-warning',
-              tone: 'warn',
-              title: 'Manifest Drift Detected',
-              message: 'Announced endpoints differ from approved registry metadata.'
-            })
-          : null,
-        keyValueList([
-          { label: 'Device ID', node: copyableValue(d.device_id, { label: 'Copy device ID' }) },
-          { label: 'Assigned Room', value: d.room_name ? `${d.room_code} · ${d.room_name}` : d.room_id },
-          { label: 'Transport', value: d.transport, mono: true },
-          {
-            label: 'Address / Path',
-            value: d.transport === 'MQTT_V1' ? 'Broker-mediated (no direct IP)' : d.ip ? `${d.ip}:${d.port || 80}${d.path || ''}` : 'Not configured',
-            mono: d.transport !== 'MQTT_V1'
-          },
-          { label: 'MQTT Identity', value: d.mqtt_identity_status || 'NOT_APPLICABLE' },
-          { label: 'Last Seen', value: d.last_seen_at ? `${formatAge(d.last_seen_at)} (${formatTimestamp(d.last_seen_at)})` : 'Never observed' },
-          { label: 'Endpoint Freshness', value: `${freshEndpoints} / ${totalEndpoints} fresh`, mono: true },
-          { label: 'Stale Window', value: `${d.stale_after_s ?? 90} s`, mono: true }
-        ]),
-        el('div', { class: 'btn-row' }, [
-          el('button', {
-            type: 'button',
-            class: 'btn btn-primary btn-sm',
-            text: 'Inspect Device',
-            onClick: () => navigate(`/app/devices/${encodeURIComponent(d.device_id)}`)
-          }),
-          d.room_id
-            ? el('button', {
-                type: 'button',
-                class: 'btn btn-secondary btn-sm',
-                text: 'Open Room',
-                onClick: () => navigate(`/app/rooms/${encodeURIComponent(d.room_id)}`)
+          d.manifest_drift?.has_drift
+            ? disclaimerBanner({
+                icon: 'icon-warning',
+                tone: 'warn',
+                title: 'Manifest Drift Detected',
+                message: 'Announced endpoints differ from approved registry metadata.'
               })
-            : null
-        ])
-      ]);
+            : null,
+          keyValueList([
+            { label: 'Device ID', node: copyableValue(d.device_id, { label: 'Copy device ID' }) },
+            { label: 'Assigned Room', value: d.room_name ? `${d.room_code} · ${d.room_name}` : d.room_id },
+            { label: 'Transport', value: d.transport, mono: true },
+            {
+              label: 'Address / Path',
+              value: d.transport === 'MQTT_V1' ? 'Broker-mediated (no direct IP)' : d.ip ? `${d.ip}:${d.port || 80}${d.path || ''}` : 'Not configured',
+              mono: d.transport !== 'MQTT_V1'
+            },
+            { label: 'MQTT Identity', value: d.mqtt_identity_status || 'NOT_APPLICABLE' },
+            { label: 'Last Seen', value: d.last_seen_at ? `${formatAge(d.last_seen_at)} (${formatTimestamp(d.last_seen_at)})` : 'Never observed' },
+            { label: 'Endpoint Freshness', value: `${freshEndpoints} / ${totalEndpoints} fresh`, mono: true },
+            { label: 'Stale Window', value: `${d.stale_after_s ?? 90} s`, mono: true }
+          ]),
+          el('div', { class: 'btn-row' }, [
+            el('button', {
+              type: 'button',
+              class: 'btn btn-primary btn-sm',
+              text: 'Inspect Device',
+              onClick: () => navigate(`/app/devices/${encodeURIComponent(d.device_id)}`)
+            }),
+            d.room_id
+              ? el('button', {
+                  type: 'button',
+                  class: 'btn btn-secondary btn-sm',
+                  text: 'Open Room',
+                  onClick: () => navigate(`/app/rooms/${encodeURIComponent(d.room_id)}`)
+                })
+              : null
+          ])
+        ]
+      );
     }
 
     if (selected.kind === 'OVERFLOW') {
@@ -389,24 +424,32 @@ export function renderNetworkPage({ navigate }) {
       ]);
     }
 
-    return el('aside', { class: 'card stack-md network-inspector', id: 'network-node-inspector', 'aria-label': 'Selected service details' }, [
-      el('div', { class: 'row-between' }, [
-        el('div', { class: 'stack-xs' }, [
-          el('div', { class: 'kicker', text: 'CORE INFRASTRUCTURE NODE' }),
-          el('h2', { class: 'card-title', text: selected.title })
+    const coreVis = selected.visual || resolveInfrastructureVisual(selected.id);
+    return el(
+      'aside',
+      { class: `card stack-md network-inspector cat-${coreVis.category}`, id: 'network-node-inspector', 'aria-label': 'Selected service details' },
+      [
+        el('div', { class: 'row-between flex-wrap' }, [
+          el('div', { class: 'device-identity-cell' }, [
+            renderNodeIllustration(coreVis, { size: 'md', alt: `${coreVis.categoryLabel} illustration` }),
+            el('div', { class: 'stack-xs min-w-0' }, [
+              renderCategoryChip(coreVis.category, coreVis.categoryLabel),
+              el('h2', { class: 'card-title', text: selected.title })
+            ])
+          ]),
+          statusIndicator(selected.state, selected.statusLabel)
         ]),
-        statusIndicator(selected.state, selected.statusLabel)
-      ]),
-      keyValueList(selected.details || []),
-      el('div', { class: 'btn-row' }, [
-        el('button', {
-          type: 'button',
-          class: 'btn btn-secondary btn-sm',
-          text: 'Open Diagnostics',
-          onClick: () => navigate('/app/diagnostics')
-        })
-      ])
-    ]);
+        keyValueList(selected.details || []),
+        el('div', { class: 'btn-row' }, [
+          el('button', {
+            type: 'button',
+            class: 'btn btn-secondary btn-sm',
+            text: 'Open Diagnostics',
+            onClick: () => navigate('/app/diagnostics')
+          })
+        ])
+      ]
+    );
   }
 
   function renderView() {
@@ -440,6 +483,27 @@ export function renderNetworkPage({ navigate }) {
       }
     });
 
+    if (topoResizeObserver) {
+      topoResizeObserver.disconnect();
+      topoResizeObserver = null;
+    }
+
+    const canvasWrap = el('div', { class: 'topology-canvas-wrap' }, [svgNode]);
+    const scrollHint = el('div', {
+      id: 'topology-scroll-hint',
+      class: 'topology-scroll-hint',
+      role: 'note',
+      hidden: true
+    }, [
+      el('span', { text: 'Swipe horizontally to explore topology' }),
+      svgIcon('icon-chevron-right', 13)
+    ]);
+
+    const syncScrollHint = () => {
+      if (disposed || !canvasWrap.isConnected) return;
+      scrollHint.hidden = canvasWrap.scrollWidth <= canvasWrap.clientWidth + 2;
+    };
+
     const diagramCard = el('section', { class: 'card stack-sm', 'aria-label': 'Interactive Network Topology' }, [
       el('div', { class: 'card-head' }, [
         el('div', { class: 'stack-xs' }, [
@@ -448,7 +512,8 @@ export function renderNetworkPage({ navigate }) {
         ]),
         el('span', { class: 'text-xs text-muted tabular-nums', text: `${devices.length} active device${devices.length === 1 ? '' : 's'}` })
       ]),
-      el('div', { class: 'topology-canvas-wrap' }, [svgNode]),
+      canvasWrap,
+      scrollHint,
       el('div', { class: 'topology-legend' }, [
         statusIndicator('ONLINE', 'Fresh / Connected', { compact: true }),
         statusIndicator('STALE', 'Stale / Degraded', { compact: true }),
@@ -461,6 +526,12 @@ export function renderNetworkPage({ navigate }) {
     topoSectionSlot.appendChild(
       el('div', { class: 'network-layout' }, [diagramCard, renderInspector(graph)])
     );
+
+    requestAnimationFrame(syncScrollHint);
+    if (typeof window.ResizeObserver === 'function') {
+      topoResizeObserver = new window.ResizeObserver(syncScrollHint);
+      topoResizeObserver.observe(canvasWrap);
+    }
 
     // Adaptive Device Connectivity Matrix
     clear(matrixSlot);
@@ -475,18 +546,26 @@ export function renderNetworkPage({ navigate }) {
           rows: devices,
           onRowClick: (d) => navigate(`/app/devices/${encodeURIComponent(d.device_id)}`),
           emptyNode: emptyState({
-            icon: 'icon-cpu',
+            illustration: EMPTY_ILLUSTRATIONS.DEVICES,
             title: 'No registered devices',
             message: 'Register a controller under Devices to observe transport connectivity.'
           }),
           columns: [
             {
-              label: 'Device',
-              render: (d) =>
-                el('div', { class: 'stack-xs' }, [
-                  el('span', { class: 'font-semibold', text: d.name }),
-                  el('span', { class: 'mono text-xs text-muted', text: d.device_id })
-                ])
+              label: 'Device & Category',
+              render: (d) => {
+                const vis = resolveDeviceVisual(d);
+                return el('div', { class: 'device-identity-cell' }, [
+                  renderNodeIllustration(vis, { size: 'sm' }),
+                  el('div', { class: 'stack-xs' }, [
+                    el('div', { class: 'row-gap-sm' }, [
+                      el('span', { class: 'font-semibold', text: d.name }),
+                      renderCategoryChip(vis.category, vis.categoryLabel)
+                    ]),
+                    el('span', { class: 'mono text-xs text-muted', text: d.device_id })
+                  ])
+                ]);
+              }
             },
             { label: 'Room', render: (d) => d.room_name || d.room_code || '—' },
             { label: 'Transport', render: (d) => el('span', { class: 'meta-tag mono', text: d.transport }) },
@@ -510,46 +589,67 @@ export function renderNetworkPage({ navigate }) {
               label: 'Last Seen',
               className: 'mono text-xs tabular-nums text-secondary',
               render: (d) => formatAge(d.last_seen_at)
+            },
+            {
+              label: 'Actions',
+              align: 'right',
+              render: (d) =>
+                el('button', {
+                  type: 'button',
+                  class: 'btn btn-secondary btn-sm',
+                  text: 'Inspect',
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    navigate(`/app/devices/${encodeURIComponent(d.device_id)}`);
+                  }
+                })
             }
           ],
-          renderMobileCard: (d) =>
-            el(
-              'article',
-              {
-                class: 'card record-card',
-                onClick: () => navigate(`/app/devices/${encodeURIComponent(d.device_id)}`)
-              },
-              [
-                el('div', { class: 'record-card-head' }, [
+          renderMobileCard: (d) => {
+            const vis = resolveDeviceVisual(d);
+            return el('article', { class: 'card record-card' }, [
+              el('div', { class: 'record-card-head' }, [
+                el('div', { class: 'device-identity-cell' }, [
+                  renderNodeIllustration(vis, { size: 'sm' }),
                   el('div', { class: 'stack-xs' }, [
                     el('div', { class: 'font-semibold', text: d.name }),
-                    el('div', { class: 'mono text-xs text-muted', text: d.device_id })
-                  ]),
-                  statusIndicator(d.in_maintenance ? 'MAINTENANCE' : d.status, null, { compact: true })
-                ]),
-                el('div', { class: 'record-card-grid' }, [
-                  el('div', { class: 'record-card-field' }, [
-                    el('span', { class: 'record-card-label', text: 'Transport' }),
-                    el('span', { class: 'mono text-xs', text: d.transport })
-                  ]),
-                  el('div', { class: 'record-card-field' }, [
-                    el('span', { class: 'record-card-label', text: 'Address' }),
-                    el('span', {
-                      class: 'mono text-xs',
-                      text: d.transport === 'MQTT_V1' ? 'Broker-mediated' : d.ip ? `${d.ip}:${d.port || 80}` : '—'
-                    })
-                  ]),
-                  el('div', { class: 'record-card-field' }, [
-                    el('span', { class: 'record-card-label', text: 'MQTT Identity' }),
-                    statusIndicator(d.mqtt_identity_status || 'NOT_APPLICABLE', null, { compact: true })
-                  ]),
-                  el('div', { class: 'record-card-field' }, [
-                    el('span', { class: 'record-card-label', text: 'Last Seen' }),
-                    el('span', { class: 'mono text-xs', text: formatAge(d.last_seen_at) })
+                    el('div', { class: 'mono text-xs text-muted', text: d.device_id }),
+                    renderCategoryChip(vis.category, vis.categoryLabel)
                   ])
+                ]),
+                statusIndicator(d.in_maintenance ? 'MAINTENANCE' : d.status, null, { compact: true })
+              ]),
+              el('div', { class: 'record-card-grid' }, [
+                el('div', { class: 'record-card-field' }, [
+                  el('span', { class: 'record-card-label', text: 'Transport' }),
+                  el('span', { class: 'mono text-xs', text: d.transport })
+                ]),
+                el('div', { class: 'record-card-field' }, [
+                  el('span', { class: 'record-card-label', text: 'Address' }),
+                  el('span', {
+                    class: 'mono text-xs',
+                    text: d.transport === 'MQTT_V1' ? 'Broker-mediated' : d.ip ? `${d.ip}:${d.port || 80}` : '—'
+                  })
+                ]),
+                el('div', { class: 'record-card-field' }, [
+                  el('span', { class: 'record-card-label', text: 'MQTT Identity' }),
+                  statusIndicator(d.mqtt_identity_status || 'NOT_APPLICABLE', null, { compact: true })
+                ]),
+                el('div', { class: 'record-card-field' }, [
+                  el('span', { class: 'record-card-label', text: 'Last Seen' }),
+                  el('span', { class: 'mono text-xs', text: formatAge(d.last_seen_at) })
                 ])
-              ]
-            )
+              ]),
+              el('div', { class: 'record-card-actions' }, [
+                el('button', {
+                  type: 'button',
+                  class: 'btn btn-primary btn-sm',
+                  text: 'Inspect Device',
+                  onClick: () => navigate(`/app/devices/${encodeURIComponent(d.device_id)}`)
+                })
+              ])
+            ]);
+          }
         })
       ])
     );
@@ -578,6 +678,13 @@ export function renderNetworkPage({ navigate }) {
   }
 
   let debounce = null;
+  const unsubStore = subscribe(() => {
+    if (disposed) return;
+    const nextSig = `${store.wsTelemetry}|${store.wsNotifications}|${store.wsMfa}`;
+    if (nextSig === lastWsSignature) return;
+    lastWsSignature = nextSig;
+    if (latestData) renderView();
+  });
   const unsub = onLiveEvent('telemetry', () => {
     clearTimeout(debounce);
     debounce = setTimeout(load, 2000);
@@ -590,6 +697,11 @@ export function renderNetworkPage({ navigate }) {
     cleanup: () => {
       disposed = true;
       clearTimeout(debounce);
+      if (topoResizeObserver) {
+        topoResizeObserver.disconnect();
+        topoResizeObserver = null;
+      }
+      unsubStore();
       unsub();
     }
   };

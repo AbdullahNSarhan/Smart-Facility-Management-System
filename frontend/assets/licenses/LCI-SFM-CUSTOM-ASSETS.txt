@@ -1,0 +1,13 @@
+LCI-SFM First-Party Custom SVG Illustrations & System Icons
+===========================================================
+Author: LCI-SFM Platform Engineering
+License: MIT License (First-Party Repository Assets)
+Scope:
+  - frontend/assets/illustrations/nodes/*.svg (11 device & infrastructure illustrations)
+  - frontend/assets/illustrations/empty-states/*.svg (4 empty-state illustrations)
+  - frontend/assets/illustrations/dashboard/*.svg (2 facility & room zone illustrations)
+  - frontend/assets/icons/**/*.svg (standalone local SVG icon definitions)
+
+All vector illustrations in these directories were authored locally for LCI-SFM
+with zero third-party stock imagery, watermarks, or external runtime dependencies.
+They may be freely bundled, modified, and deployed offline as part of LCI-SFM.

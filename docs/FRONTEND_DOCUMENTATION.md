@@ -41,44 +41,44 @@ Node.js Central Backend (Express + ws) <----> SQLite (WAL + Foreign Keys)
 | `index.html` | Strict air-gapped CSP, metadata, local 24×24 inline SVG icon sprite, `#app-root` mount |
 | `styles.css` | Dark Industrial Graphite (default) + Light Technical Neutral CSS custom properties, 6-state semantic tokens, adaptive table/mobile cards, slide-over drawers, wizard stepper, SVG topology styles, `prefers-reduced-motion` |
 | `app.js` / `frontend/main.js` | Application bootstrap and exported helpers |
-| `frontend/router.js` | History API router for `/`, `/login`, and 13 authenticated `/app/*` routes with auth guards and overlay cleanup |
+| `frontend/router.js` | History API router for `/`, `/login`, and 14 authenticated `/app/*` routes (16 total SPA routes) with auth guards and overlay cleanup |
 | `frontend/api.js` | Same-origin `fetch` client with `X-CSRF-Token` injection aligned 1:1 with `/api/*` and `/api/v1/*` routes |
-| `frontend/store.js` | Reactive session/theme store, WebSocket manager with exponential backoff, toasts, focus-trapped modals, and accessible slide-over detail drawers |
-| `frontend/utils.js` | Safe DOM constructor (`el()`), formatting, CSV formula-safe export, local SVG sparklines and history trend charts |
-| `frontend/components/ui.js` | Shared primitives: 6-state `statusIndicator` (icon + color + text), `pageHeader`, `kpiCard`, `loadingSkeleton`, `emptyState`, `errorPanel`, `disclaimerBanner`, `copyableValue`, `keyValueList`, `timelineList`, `segmentedFilter`, and `renderAdaptiveCollection` |
-| `frontend/widgets.js` | Generic endpoint widget renderer (`METRIC_TREND`, `BOOLEAN_STATE`, `SWITCH_CONTROL`, `ACCESS_STATE`, `CAMERA_SNAPSHOT`) driven strictly by endpoint metadata |
+| `frontend/store.js` | Reactive session/theme store, WebSocket manager (`/ws/telemetry`, `/ws/notifications`, `/ws/mfa`) with exponential backoff, toasts, focus-trapped modals, and accessible slide-over detail drawers |
+| `frontend/utils.js` | Safe DOM constructor (`el()`), formatting, CSV formula-safe export, local SVG sparklines, timestamp-proportional trend/step charts (`buildHistoryChartSvg`), and min/avg/max rollup band charts (`buildRollupChartSvg`) |
+| `frontend/components/ui.js` | Shared primitives: semantic `statusIndicator` (icon + color + text), `pageHeader`, `kpiCard`, `loadingSkeleton`, `emptyState`, `errorPanel`, `disclaimerBanner`, `copyableValue`, `keyValueList`, `timelineList`, `segmentedFilter`, and `renderAdaptiveCollection` |
+| `frontend/widgets.js` | Generic endpoint widget renderer (`METRIC_TREND`, `BOOLEAN_STATE`, `SWITCH_CONTROL`, `ACCESS_STATE`, `CAMERA_SNAPSHOT` with automatic Blob URL lifecycle cleanup and explicit simulation placeholder) driven strictly by endpoint metadata |
 | `frontend/pages/shell.js` | Collapsible desktop sidebar, mobile drawer (`Esc` dismiss), breadcrumbs, local host origin readout, live connectivity status, notification bell, and theme toggle |
-| `frontend/pages/landing.js` | Local appliance landing page (`/`) consuming `/api/public/info` |
+| `frontend/pages/landing.js` | Local appliance landing page (`/`) consuming `/api/public/info` (including truthful `info.simulation` mode notice) |
 | `frontend/pages/login.js` | Dedicated operator login (`/login`) with accessible password visibility toggle and safe relative redirect |
-| `frontend/pages/overview.js` | Facility Overview (`/app/overview`) with isolated section loading (`Promise.allSettled`), KPI row, Central Service Readiness Strip, Managed Rooms grid, Priority Attention Queue, and Compact Activity Feed |
-| `frontend/pages/rooms.js` | Rooms directory (`/app/rooms`) and Room detail (`/app/rooms/:roomId`) with adaptive table/cards and safe room reassignment |
-| `frontend/pages/devices.js` | Devices directory (`/app/devices`), Guided 4-Step Device Registration Wizard, Quarantined device review, Device detail (`/app/devices/:deviceId`) with command history and copyable MQTT topics/CLI, and Endpoint history (`/app/devices/:deviceId/endpoints/:endpointKey`) with server-filtered time presets |
+| `frontend/pages/overview.js` | Facility Overview (`/app/overview`) with isolated section loading (`Promise.allSettled`), KPI row, Central Service Readiness Strip, Managed Rooms grid, Priority Attention Queue (`?alarm_id=` deep-links), and Compact Activity Feed |
+| `frontend/pages/rooms.js` | Rooms directory (`/app/rooms`, `?action=create`) and Room detail (`/app/rooms/:roomId`) with live environmental summary strip, assigned devices, room alarms, recent room commands, and safe room reassignment |
+| `frontend/pages/devices.js` | Devices directory (`/app/devices`), Guided 4-Step Device Registration/Edit Wizard (preserving full endpoint metadata & sensor bounds), Quarantine review queue (`PENDING`/`APPROVED`/`DISMISSED`), Device detail (`/app/devices/:deviceId`) with configurable Maintenance window (`1–1440` min), command history, recent telemetry frames, and copyable MQTT topics/CLI, plus Endpoint history (`/app/devices/:deviceId/endpoints/:endpointKey`) with `100`/`250`/`500` sample limits and live `/ws/telemetry` updates |
 | `frontend/pages/network.js` | Interactive Network & Connectivity view (`/app/network`) with clickable/keyboard-selectable SVG topology diagram, synchronized Node Inspection Panel, and Device Connectivity Matrix |
-| `frontend/pages/operations.js` | Alarms & Monitoring Rules (`/app/alarms`, 1:1 `ruleSchema` + Slide-Over Timeline Drawer), Notifications (`/app/notifications`), and Events & Audit Logs (`/app/events` + Slide-Over Record Detail Drawer) |
-| `frontend/pages/admin.js` | Diagnostics (`/app/diagnostics`), separated Dashboard Operators & Facility People/Credentials (`/app/users`), Facility Settings & Server-Side Destinations (`/app/settings`), and Operator Profile (`/app/profile`) |
+| `frontend/pages/operations.js` | Alarms & Monitoring Rules (`/app/alarms`, strict hysteresis validation, device/date filters, pagination, `?alarm_id=` drawer deep-links), Notifications (`/app/notifications`, room/device filters, `Inspect Alarm` actions), and Events & Audit Logs (`/app/events`, curated columns, `camera_events` tab with `/ws/mfa` live refresh, legacy `environmental_telemetry` min/avg/max rollup charts via `/api/telemetry/aggregate`, `100`/`250`/`500` row limits, and Slide-Over Record Detail Drawer) |
+| `frontend/pages/admin.js` | Diagnostics (`/app/diagnostics`, release stage/physical acceptance/adapters, SQLite WAL, MQTT topic subscriptions, WebSocket counts, simulation scenarios), separated Dashboard Operators & Facility People/Credentials (`/app/users`, person edit, pagination, credential Block/Revoke, 45s RFID reader enrollment), Facility Settings (`/app/settings`, Facility Profile, Data Retention Policy `PUT /api/v1/retention` `7–365` days, Baseline Node Destinations & Display Thresholds), and Operator Profile (`/app/profile`, password visibility toggles, verified Admin credential rotation) |
 
 ---
 
-## 3. Route Map
+## 3. Route Map (16 Total SPA Routes: 2 Public + 14 Authenticated)
 
 | Route | Access | Purpose |
 |---|---|---|
-| `/` | Public | Local appliance overview and safe `/api/public/info` status |
+| `/` | Public | Local appliance overview, simulator notice (`info.simulation`), and safe `/api/public/info` status |
 | `/login` | Public | Dedicated operator sign-in (`?next=/app/...` validated relative redirect) |
 | `/app/overview` | Auth | Facility KPIs, service readiness strip, managed rooms, attention queue, and activity feed |
-| `/app/rooms` | Auth | Active/archived rooms directory (Admin CRUD) |
-| `/app/rooms/:roomId` | Auth | Room summary, assigned devices, room alarms, and move-device workflow |
-| `/app/devices` | Auth | Device registry, quarantine approval queue, and 4-step registration wizard |
-| `/app/devices/:deviceId` | Auth | Heartbeat vs endpoint freshness, manifest drift alerts, generic widgets, command history, MQTT CLI |
-| `/app/devices/:deviceId/endpoints/:endpointKey` | Auth | Time-windowed (`1h`/`6h`/`24h`/`7d`/`All`) SVG trend chart, summary stats, samples, and CSV export |
+| `/app/rooms` | Auth | Active/archived rooms directory (`?action=create` Admin CRUD) |
+| `/app/rooms/:roomId` | Auth | Room environmental summary strip, assigned devices, room alarms, recent commands, and move-device workflow |
+| `/app/devices` | Auth | Device registry, `PENDING`/`APPROVED`/`DISMISSED` quarantine queue, and 4-step registration/edit wizard |
+| `/app/devices/:deviceId` | Auth | Heartbeat vs endpoint freshness, configurable Maintenance modal/banner, manifest drift alerts, generic widgets, command history, recent telemetry frames, MQTT CLI |
+| `/app/devices/:deviceId/endpoints/:endpointKey` | Auth | Time-windowed (`1h`/`6h`/`24h`/`7d`/`All`) timestamp-proportional SVG trend/step chart, `100`/`250`/`500` sample limits, truncation warnings, summary stats, and CSV export |
 | `/app/network` | Auth | Interactive SVG infrastructure/device topology, node inspector, and connectivity matrix |
-| `/app/alarms` | Auth | Severity-ordered alarm queue with lifecycle drawer + deterministic sensor rules |
-| `/app/notifications` | Auth | Role-scoped operator inbox, read tracking, and per-user critical alert sound preference |
-| `/app/events` | Auth | Allowlisted SQLite audit/log explorer with structured slide-over inspector and filtered CSV export |
-| `/app/diagnostics` | Auth | Platform readiness, SQLite WAL, MQTT broker, WebSocket channel stats, and simulation controls (if enabled) |
-| `/app/users` | Admin | Separated Dashboard Operators (`/api/v1/operators`) and Facility People/Credentials (`/api/v1/people`) |
-| `/app/settings` | Admin | Facility profile (`/api/v1/facility`) and server-side baseline node destinations (`/api/v1/settings`) |
-| `/app/profile` | Auth | Session details, Dark/Light theme toggle, Admin credential rotation, and sign-out |
+| `/app/alarms` | Auth | Severity-ordered alarm queue with room/device/date filters, pagination, `?alarm_id=` deep-linked lifecycle drawer + deterministic sensor rules |
+| `/app/notifications` | Auth | Role-scoped operator inbox with room/device filters, `Inspect Alarm` links, read tracking, and per-user critical alert sound preference |
+| `/app/events` | Auth | Allowlisted SQLite audit/log explorer (`access_logs`, `camera_events` + `/ws/mfa`, `environmental_telemetry` + `/api/telemetry/aggregate` rollups, `system_errors`, `commands`, Admin `management_audit`) with `100`/`250`/`500` row limits, slide-over inspector, and filtered CSV export |
+| `/app/diagnostics` | Auth | Platform release stage & adapter metadata, SQLite WAL, MQTT topic subscriptions, WebSocket channel stats, and simulation controls (if enabled) |
+| `/app/users` | Admin | Separated Dashboard Operators (`/api/v1/operators`, desktop & mobile controls) and Facility People/Credentials (`/api/v1/people`, edit, pagination, Block/Revoke, RFID enrollment) |
+| `/app/settings` | Admin | Facility profile (`/api/v1/facility`), Data Retention Policy (`PUT /api/v1/retention`, `7–365` days), and baseline node destinations & display thresholds (`/api/v1/settings`) |
+| `/app/profile` | Auth | Session details, Dark/Light theme toggle, verified Admin credential rotation (with current-password check & session revocation), Viewer guidance banner, and sign-out |
 
 ---
 

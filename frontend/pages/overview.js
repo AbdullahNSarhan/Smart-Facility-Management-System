@@ -3,7 +3,7 @@
 // Priority Attention Queue, and Compact Activity Feed with Slide-Over detail inspection.
 
 import { api } from '../api.js';
-import { store, isAdmin, onLiveEvent, notify, openDrawer } from '../store.js';
+import { store, subscribe, isAdmin, onLiveEvent, notify, openDrawer } from '../store.js';
 import { el, clear, svgIcon, formatAge, formatTimestamp } from '../utils.js';
 import {
   pageHeader,
@@ -15,6 +15,13 @@ import {
   disclaimerBanner,
   keyValueList
 } from '../components/ui.js';
+import {
+  DASHBOARD_ILLUSTRATIONS,
+  EMPTY_ILLUSTRATIONS,
+  resolveDeviceVisual,
+  renderCategoryChip,
+  renderCategoryIconBadge
+} from '../visuals.js';
 
 function severityRank(sev) {
   const s = String(sev || '').toUpperCase();
@@ -37,16 +44,40 @@ function getMqttReadinessDisplay(mqtt) {
   return { state: 'DISCONNECTED', label: 'Disconnected' };
 }
 
+function getBrowserStreamReadiness(s) {
+  if (s.wsTelemetry === 'CONNECTED' && s.wsNotifications === 'CONNECTED') {
+    return { state: 'CONNECTED', label: 'Telemetry + Alerts' };
+  }
+  if (s.wsTelemetry === 'CONNECTED' || s.wsNotifications === 'CONNECTED') {
+    return { state: 'DEGRADED', label: 'Partial WS' };
+  }
+  if (s.wsTelemetry === 'CONNECTING' || s.wsNotifications === 'CONNECTING') {
+    return { state: 'CONNECTING', label: 'Connecting' };
+  }
+  return { state: 'OFFLINE', label: 'Disconnected' };
+}
+
 export function renderOverviewPage({ navigate }) {
   const container = el('div', { class: 'stack-lg' });
   let disposed = false;
   let refreshTimer = null;
+  let wsReadinessMount = null;
+  let lastWsKey = '';
 
   const headerSlot = el('div');
   const bannerSlot = el('div');
   const kpiSlot = el('div');
   const readinessSlot = el('div');
   const bodySlot = el('div');
+
+  function syncWsReadiness() {
+    if (disposed || !wsReadinessMount) return;
+    const nextKey = `${store.wsTelemetry}|${store.wsNotifications}`;
+    if (nextKey === lastWsKey && wsReadinessMount.childElementCount > 0) return;
+    lastWsKey = nextKey;
+    const wsInfo = getBrowserStreamReadiness(store);
+    wsReadinessMount.replaceChildren(statusIndicator(wsInfo.state, wsInfo.label));
+  }
 
   container.append(headerSlot, bannerSlot, kpiSlot, readinessSlot, bodySlot);
 
@@ -73,11 +104,21 @@ export function renderOverviewPage({ navigate }) {
     ]);
 
     const actions = [];
-    if (item.device_id) {
+    if (item.alarm_id) {
       actions.push(
         el('button', {
           type: 'button',
           class: 'btn btn-secondary btn-sm',
+          text: 'Inspect Alarm',
+          onClick: () => navigate(`/app/alarms?alarm_id=${encodeURIComponent(item.alarm_id)}`)
+        })
+      );
+    }
+    if (item.device_id) {
+      actions.push(
+        el('button', {
+          type: 'button',
+          class: 'btn btn-ghost btn-sm',
           text: 'Inspect Device',
           onClick: () => navigate(`/app/devices/${encodeURIComponent(item.device_id)}`)
         })
@@ -152,7 +193,7 @@ export function renderOverviewPage({ navigate }) {
             ? el('button', {
                 type: 'button',
                 class: 'btn btn-secondary btn-sm',
-                onClick: () => navigate('/app/rooms')
+                onClick: () => navigate('/app/rooms?action=create')
               }, [svgIcon('icon-plus', 14), el('span', { text: 'Add Room' })])
             : null,
           admin
@@ -211,6 +252,8 @@ export function renderOverviewPage({ navigate }) {
             label: 'Active Rooms',
             value: rooms.length,
             sub: `${fac?.archived_rooms || 0} archived · ${subtitleParts[0] || 'On-premises'}`,
+            category: 'network',
+            icon: 'icon-rooms',
             onClick: () => navigate('/app/rooms')
           }),
           kpiCard({
@@ -218,6 +261,8 @@ export function renderOverviewPage({ navigate }) {
             value: `${ds.online} / ${ds.registered}`,
             sub: `${ds.stale} stale · ${ds.unknown} unseen · ${ds.maintenance} maint.`,
             tone: ds.registered > 0 && ds.online === ds.registered ? 'ok' : ds.stale > 0 ? 'warn' : 'default',
+            category: 'env',
+            icon: 'icon-cpu',
             onClick: () => navigate('/app/devices')
           }),
           kpiCard({
@@ -225,6 +270,8 @@ export function renderOverviewPage({ navigate }) {
             value: activeAlarms,
             sub: activeAlarms === 0 ? 'No active alarm conditions' : `${critAlarms} critical in recent window`,
             tone: critAlarms > 0 ? 'crit' : activeAlarms > 0 ? 'warn' : 'ok',
+            category: 'relay',
+            icon: 'icon-warning',
             onClick: () => navigate('/app/alarms')
           }),
           kpiCard({
@@ -232,7 +279,9 @@ export function renderOverviewPage({ navigate }) {
             value: pendingCount,
             sub: pendingCount > 0 ? 'Quarantined devices awaiting Admin approval' : 'No unapproved device announcements',
             tone: pendingCount > 0 ? 'pending' : 'default',
-            onClick: () => navigate('/app/devices')
+            category: 'infra',
+            icon: 'icon-shield',
+            onClick: () => navigate('/app/devices?focus=quarantine')
           })
         ])
       );
@@ -240,6 +289,7 @@ export function renderOverviewPage({ navigate }) {
 
     // 3. Central Service Readiness Strip
     clear(readinessSlot);
+    wsReadinessMount = null;
     if (!ready && !overview?.health) {
       readinessSlot.appendChild(
         errorPanel({
@@ -252,8 +302,9 @@ export function renderOverviewPage({ navigate }) {
       const h = ready || { status: overview?.health?.sqlite?.ok ? 'ready' : 'degraded', ...overview?.health };
       const sqliteOk = Boolean(h.sqlite?.ok);
       const mqttInfo = getMqttReadinessDisplay(h.mqtt);
-      const wsHealthy = store.wsTelemetry === 'CONNECTED' && store.wsNotifications === 'CONNECTED';
-      const wsState = wsHealthy ? 'CONNECTED' : store.wsTelemetry === 'CONNECTED' || store.wsNotifications === 'CONNECTED' ? 'DEGRADED' : 'OFFLINE';
+      wsReadinessMount = el('div', { id: 'overview-ws-readiness-value' });
+      lastWsKey = '';
+      syncWsReadiness();
 
       readinessSlot.appendChild(
         el('section', { class: 'readiness-strip', 'aria-label': 'Central Service Readiness' }, [
@@ -274,7 +325,7 @@ export function renderOverviewPage({ navigate }) {
           ]),
           el('div', { class: 'readiness-cell' }, [
             el('span', { class: 'readiness-label', text: 'Browser Live Streams' }),
-            statusIndicator(wsState, wsHealthy ? 'Telemetry + Alerts' : wsState === 'DEGRADED' ? 'Partial WS' : 'Disconnected')
+            wsReadinessMount
           ])
         ])
       );
@@ -302,11 +353,11 @@ export function renderOverviewPage({ navigate }) {
       rooms.length === 0
         ? el('div', { class: 'card' }, [
             emptyState({
-              icon: 'icon-rooms',
+              illustration: DASHBOARD_ILLUSTRATIONS.ROOM_ZONE,
               title: 'No active rooms configured',
               message: 'Create your first facility room to assign wired controllers and endpoints.',
               actionLabel: admin ? 'Add Room' : '',
-              onAction: admin ? () => navigate('/app/rooms') : null
+              onAction: admin ? () => navigate('/app/rooms?action=create') : null
             })
           ])
         : el(
@@ -333,24 +384,26 @@ export function renderOverviewPage({ navigate }) {
                 .filter(Boolean)
                 .join(' · ');
 
+              const roomDevices = devices.filter((d) => d.room_id === room.room_id);
+              const uniqueCategories = Array.from(new Set(roomDevices.map((d) => resolveDeviceVisual(d).category)));
+
               return el(
-                'article',
+                'a',
                 {
-                  class: 'card room-card',
-                  tabindex: '0',
-                  role: 'button',
+                  href: `/app/rooms/${encodeURIComponent(room.room_id)}`,
+                  class: 'card interactive-card room-card',
                   'aria-label': `Open room ${room.name}`,
-                  onClick: () => navigate(`/app/rooms/${encodeURIComponent(room.room_id)}`),
-                  onKeydown: (e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      navigate(`/app/rooms/${encodeURIComponent(room.room_id)}`);
-                    }
+                  onClick: (e) => {
+                    e.preventDefault();
+                    navigate(`/app/rooms/${encodeURIComponent(room.room_id)}`);
                   }
                 },
                 [
                   el('div', { class: 'row-between' }, [
-                    el('span', { class: 'meta-tag mono', text: room.room_code }),
+                    el('div', { class: 'row-gap-sm' }, [
+                      renderCategoryIconBadge('network', 'icon-rooms', 'sm'),
+                      el('span', { class: 'meta-tag mono', text: room.room_code })
+                    ]),
                     statusIndicator(
                       roomState,
                       alarms > 0 ? `${alarms} Active Alarm${alarms > 1 ? 's' : ''}` : undefined,
@@ -364,6 +417,13 @@ export function renderOverviewPage({ navigate }) {
                       text: [room.building, room.floor].filter(Boolean).join(' · ') || 'No building/floor tag'
                     })
                   ]),
+                  uniqueCategories.length > 0
+                    ? el(
+                        'div',
+                        { class: 'row-gap-sm' },
+                        uniqueCategories.slice(0, 4).map((cat) => renderCategoryChip(cat))
+                      )
+                    : null,
                   el('div', { class: 'room-metrics-row' }, [
                     el('div', {}, [
                       el('div', { class: 'room-metric-label', text: 'Online' }),
@@ -380,6 +440,10 @@ export function renderOverviewPage({ navigate }) {
                       el('div', { class: 'room-metric-label', text: 'Env' }),
                       el('div', { class: 'room-metric-val mono text-xs tabular-nums', text: envLine || '—' })
                     ])
+                  ]),
+                  el('div', { class: 'room-card-cta' }, [
+                    el('span', { text: 'Open room details' }),
+                    svgIcon('icon-chevron-right', 14)
                   ])
                 ]
               );
@@ -401,7 +465,7 @@ export function renderOverviewPage({ navigate }) {
         title: alarm.title,
         meta: `${alarm.device_name || alarm.device_id} · ${formatAge(alarm.raised_at)}`,
         actionLabel: 'Inspect',
-        onAction: () => navigate('/app/alarms')
+        onAction: () => navigate(`/app/alarms?alarm_id=${encodeURIComponent(alarm.alarm_id)}`)
       });
     }
 
@@ -509,6 +573,7 @@ export function renderOverviewPage({ navigate }) {
     refreshTimer = setTimeout(() => load(true), 1500);
   };
 
+  const unsubStore = subscribe(syncWsReadiness);
   const unsubTel = onLiveEvent('telemetry', scheduleRefresh);
   const unsubNotif = onLiveEvent('notifications', scheduleRefresh);
 
@@ -519,6 +584,7 @@ export function renderOverviewPage({ navigate }) {
     cleanup: () => {
       disposed = true;
       clearTimeout(refreshTimer);
+      unsubStore();
       unsubTel();
       unsubNotif();
     }

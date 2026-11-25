@@ -13,7 +13,15 @@ import {
   buildHistoryChartSvg,
   exportRowsToCsv
 } from '../utils.js';
-import { renderEndpointWidget } from '../widgets.js';
+import { renderEndpointWidget, cleanupWidgetBlobs } from '../widgets.js';
+import {
+  EMPTY_ILLUSTRATIONS,
+  resolveDeviceVisual,
+  resolveEndpointVisual,
+  renderNodeIllustration,
+  renderCategoryChip,
+  renderCategoryIconBadge
+} from '../visuals.js';
 import {
   pageHeader,
   statusIndicator,
@@ -31,8 +39,38 @@ const KIND_TO_DATA_TYPES = {
   SENSOR: ['NUMBER', 'BOOLEAN'],
   SWITCH: ['ENUM', 'BOOLEAN'],
   ACCESS: ['ENUM'],
-  CAMERA: ['MEDIA']
+  CAMERA: ['MEDIA', 'BOOLEAN']
 };
+
+const DEVICE_TYPE_ALLOWED_KINDS = {
+  SENSORS: ['SENSOR'],
+  CAMERA: ['CAMERA'],
+  ACCESS: ['ACCESS'],
+  RELAY: ['SWITCH'],
+  MIXED: ['SENSOR', 'SWITCH', 'CAMERA', 'ACCESS']
+};
+
+const SAFE_DEVICE_PATH_REGEX = /^\/[a-zA-Z0-9_/-]+(?:\.(?:json|jpg))?$/;
+const VALID_WIDGET_ENUM = new Set([
+  'AUTO',
+  'METRIC_TREND',
+  'BOOLEAN_STATE',
+  'SWITCH_CONTROL',
+  'ACCESS_STATE',
+  'CAMERA_SNAPSHOT'
+]);
+
+function sanitizeDisplayConfig(raw) {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const clean = {};
+  if (typeof raw.widget === 'string' && VALID_WIDGET_ENUM.has(raw.widget)) {
+    clean.widget = raw.widget;
+  }
+  if (Number.isInteger(raw.precision) && raw.precision >= 0 && raw.precision <= 4) {
+    clean.precision = raw.precision;
+  }
+  return Object.keys(clean).length > 0 ? clean : undefined;
+}
 
 function isPrivateNodeIPv4(value) {
   const parts = String(value || '').split('.');
@@ -67,6 +105,9 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
   const activeRooms = rooms.filter((r) => r.status === 'ACTIVE' || r.room_id === device?.room_id);
 
   const capMap = new Map();
+  for (const [k, dts] of Object.entries(KIND_TO_DATA_TYPES)) {
+    capMap.set(k, [...dts]);
+  }
   if (Array.isArray(capabilities) && capabilities.length) {
     for (const c of capabilities) {
       if (!capMap.has(c.capability)) capMap.set(c.capability, []);
@@ -75,7 +116,7 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
   }
   const allowedDataTypes = (kind) => capMap.get(kind) || KIND_TO_DATA_TYPES[kind] || ['NUMBER'];
 
-  // Wizard mutable state
+  // Wizard mutable state (preserves all backend endpoint metadata fields on edit)
   const state = {
     step: 0, // 0: Identity, 1: Transport, 2: Endpoints, 3: Review
     device_id: device?.device_id || pending?.device_id || '',
@@ -89,26 +130,61 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
     port: Number(device?.port || 80),
     path: device?.path || '/telemetry',
     stale_after_s: Number(device?.stale_after_s || 90),
+    protocol_version: device?.protocol_version || '1',
+    mqtt_identity_status: device?.mqtt_identity_status || undefined,
     endpoints:
       device?.endpoints?.length
         ? device.endpoints.map((e) => ({
             endpoint_key: e.endpoint_key,
             label: e.label,
+            description: e.description || '',
             kind: e.kind,
             data_type: e.data_type || allowedDataTypes(e.kind)[0],
             unit: e.unit || '',
-            writable: Boolean(e.writable)
+            readable: e.readable !== undefined ? Boolean(e.readable) : true,
+            writable: Boolean(e.writable),
+            retention_enabled: e.retention_enabled !== undefined ? Boolean(e.retention_enabled) : true,
+            min_value: typeof e.min_value === 'number' && Number.isFinite(e.min_value) ? e.min_value : null,
+            max_value: typeof e.max_value === 'number' && Number.isFinite(e.max_value) ? e.max_value : null,
+            allowed_values: Array.isArray(e.allowed_values) ? [...e.allowed_values] : null,
+            display_config: sanitizeDisplayConfig(e.display_config),
+            command_profile: e.command_profile !== undefined ? e.command_profile : undefined
           }))
         : pending?.manifest?.endpoints?.length
           ? pending.manifest.endpoints.map((e) => ({
               endpoint_key: e.endpoint_key || 'sensor_1',
               label: e.label || e.endpoint_key || 'Sensor 1',
+              description: '',
               kind: e.kind || 'SENSOR',
               data_type: e.data_type || allowedDataTypes(e.kind || 'SENSOR')[0],
               unit: e.unit || '',
-              writable: Boolean(e.writable)
+              readable: true,
+              writable: Boolean(e.writable),
+              retention_enabled: true,
+              min_value: null,
+              max_value: null,
+              allowed_values: null,
+              display_config: undefined,
+              command_profile: undefined
             }))
-          : [{ endpoint_key: 'temperature', label: 'Temperature', kind: 'SENSOR', data_type: 'NUMBER', unit: '°C', writable: false }]
+          : [
+              {
+                endpoint_key: 'temperature',
+                label: 'Temperature',
+                description: '',
+                kind: 'SENSOR',
+                data_type: 'NUMBER',
+                unit: '°C',
+                readable: true,
+                writable: false,
+                retention_enabled: true,
+                min_value: null,
+                max_value: null,
+                allowed_values: null,
+                display_config: undefined,
+                command_profile: undefined
+              }
+            ]
   };
 
   const stepLabels = ['Identity', 'Transport', 'Endpoints', 'Review'];
@@ -147,15 +223,27 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
         return false;
       }
     } else if (stepIdx === 1) {
+      const ip = state.ip.trim();
       if (state.transport !== 'MQTT_V1') {
-        const ip = state.ip.trim();
         if (!ip) {
           showError('A private LAN IPv4 address is required for HTTP_JSON_V1, CAMERA_JPEG, or LEGACY_V1 transports.');
           return false;
         }
         if (!isPrivateNodeIPv4(ip)) {
           showError('Use a valid private unicast LAN IPv4 address (RFC1918); network and broadcast addresses are not allowed.');
+          return false;
         }
+        if (!Number.isInteger(state.port) || state.port < 1 || state.port > 65535) {
+          showError('HTTP Port must be a whole number between 1 and 65535.');
+          return false;
+        }
+        if (!SAFE_DEVICE_PATH_REGEX.test(state.path || '')) {
+          showError('HTTP Path must be a clean absolute path (e.g. /telemetry or /capture.jpg) without query strings or traversal.');
+          return false;
+        }
+      } else if (ip && !isPrivateNodeIPv4(ip)) {
+        showError('Use a valid private unicast LAN IPv4 address (RFC1918) or leave empty for MQTT-only nodes.');
+        return false;
       }
       if (!Number.isInteger(state.stale_after_s) || state.stale_after_s < 5 || state.stale_after_s > 3600) {
         showError('Stale timeout must be a whole number between 5 and 3600 seconds.');
@@ -166,6 +254,11 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
         showError('Define at least one endpoint.');
         return false;
       }
+      if (state.endpoints.length > 24) {
+        showError('A device may define at most 24 endpoints.');
+        return false;
+      }
+      const allowedKindsForType = DEVICE_TYPE_ALLOWED_KINDS[state.device_type] || ['SENSOR', 'SWITCH', 'CAMERA', 'ACCESS'];
       const seen = new Set();
       for (const ep of state.endpoints) {
         if (!/^[a-z][a-z0-9_-]{0,47}$/.test(ep.endpoint_key)) {
@@ -181,9 +274,41 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
           showError(`Endpoint "${ep.endpoint_key}" requires a display label.`);
           return false;
         }
+        if (!allowedKindsForType.includes(ep.kind)) {
+          showError(
+            `Endpoint "${ep.endpoint_key}" kind (${ep.kind}) does not match device type ${state.device_type} (allowed: ${allowedKindsForType.join(', ')}).`
+          );
+          return false;
+        }
+        if (state.transport === 'CAMERA_JPEG' && ep.kind !== 'CAMERA') {
+          showError('CAMERA_JPEG transport accepts CAMERA endpoints only.');
+          return false;
+        }
         if (!allowedDataTypes(ep.kind).includes(ep.data_type)) {
           showError(`Data type ${ep.data_type} is incompatible with ${ep.kind}.`);
           return false;
+        }
+        if (ep.writable && ep.kind !== 'SWITCH') {
+          showError(`Only SWITCH endpoints can be marked writable ("${ep.endpoint_key}").`);
+          return false;
+        }
+        if (ep.writable && state.transport !== 'MQTT_V1') {
+          showError(`Writable endpoint "${ep.endpoint_key}" requires MQTT_V1 transport.`);
+          return false;
+        }
+        if (ep.kind === 'SENSOR' && ep.data_type === 'NUMBER') {
+          const hasMin = ep.min_value !== null && ep.min_value !== undefined && ep.min_value !== '';
+          const hasMax = ep.max_value !== null && ep.max_value !== undefined && ep.max_value !== '';
+          const minNum = hasMin ? Number(ep.min_value) : null;
+          const maxNum = hasMax ? Number(ep.max_value) : null;
+          if ((hasMin && !Number.isFinite(minNum)) || (hasMax && !Number.isFinite(maxNum))) {
+            showError(`Endpoint "${ep.endpoint_key}" min/max bounds must be valid finite numbers.`);
+            return false;
+          }
+          if (minNum !== null && maxNum !== null && minNum >= maxNum) {
+            showError(`Endpoint "${ep.endpoint_key}" min_value (${minNum}) must be strictly below max_value (${maxNum}).`);
+            return false;
+          }
         }
       }
     }
@@ -260,6 +385,7 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
       });
 
       const descInput = el('textarea', {
+        id: 'wiz-device-desc',
         class: 'textarea',
         value: state.description,
         placeholder: 'Physical mounting location or controller purpose...'
@@ -268,7 +394,7 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
         state.description = descInput.value;
       });
 
-      const enabledCb = el('input', { type: 'checkbox', checked: state.enabled });
+      const enabledCb = el('input', { id: 'wiz-device-enabled', type: 'checkbox', checked: state.enabled });
       enabledCb.addEventListener('change', () => {
         state.enabled = enabledCb.checked;
       });
@@ -293,11 +419,11 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
             typeSelect
           ]),
           el('div', { class: 'form-field form-field-full' }, [
-            el('label', { class: 'form-label', text: 'Description' }),
+            el('label', { class: 'form-label', for: 'wiz-device-desc', text: 'Description' }),
             descInput
           ]),
           el('div', { class: 'form-field form-field-full' }, [
-            el('label', { class: 'checkbox-row' }, [
+            el('label', { class: 'checkbox-row', for: 'wiz-device-enabled' }, [
               enabledCb,
               el('span', { text: 'Enable monitoring and ingestion for this device' })
             ])
@@ -423,6 +549,7 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
           type: 'text',
           value: ep.endpoint_key,
           disabled: isLegacy,
+          'aria-label': `Endpoint ${idx + 1} key`,
           placeholder: 'endpoint_key'
         });
         keyIn.addEventListener('input', () => {
@@ -433,6 +560,7 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
           class: 'input',
           type: 'text',
           value: ep.label,
+          'aria-label': `Endpoint ${idx + 1} display label`,
           placeholder: 'Display label'
         });
         lblIn.addEventListener('input', () => {
@@ -441,27 +569,47 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
 
         const kindSel = el(
           'select',
-          { class: 'select', disabled: isLegacy },
+          { class: 'select', disabled: isLegacy, 'aria-label': `Endpoint ${idx + 1} capability kind` },
           ['SENSOR', 'SWITCH', 'ACCESS', 'CAMERA'].map((k) =>
             el('option', { value: k, text: k, selected: k === ep.kind })
           )
         );
         kindSel.addEventListener('change', () => {
+          const prevKind = ep.kind;
           ep.kind = kindSel.value;
           const validTypes = allowedDataTypes(ep.kind);
           if (!validTypes.includes(ep.data_type)) ep.data_type = validTypes[0];
-          if (ep.kind !== 'SWITCH') ep.writable = false;
+          if (ep.kind !== 'SWITCH') {
+            ep.writable = false;
+            ep.command_profile = null;
+          }
+          if (ep.kind !== prevKind) {
+            ep.allowed_values = null;
+            if (ep.kind !== 'SENSOR' || ep.data_type !== 'NUMBER') {
+              ep.min_value = null;
+              ep.max_value = null;
+            }
+          }
           renderCurrentStep();
         });
 
         const dtOptions = allowedDataTypes(ep.kind);
         const dtSel = el(
           'select',
-          { class: 'select', disabled: isLegacy },
+          { class: 'select', disabled: isLegacy, 'aria-label': `Endpoint ${idx + 1} data type` },
           dtOptions.map((dt) => el('option', { value: dt, text: dt, selected: dt === ep.data_type }))
         );
         dtSel.addEventListener('change', () => {
+          const prevDt = ep.data_type;
           ep.data_type = dtSel.value;
+          if (ep.data_type !== prevDt && ep.data_type !== 'ENUM') {
+            ep.allowed_values = null;
+          }
+          if (ep.data_type !== 'NUMBER') {
+            ep.min_value = null;
+            ep.max_value = null;
+          }
+          renderCurrentStep();
         });
 
         const unitIn = el('input', {
@@ -469,6 +617,7 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
           type: 'text',
           value: ep.unit || '',
           disabled: ep.data_type !== 'NUMBER',
+          'aria-label': `Endpoint ${idx + 1} unit`,
           placeholder: ep.data_type === 'NUMBER' ? 'Unit' : '—'
         });
         unitIn.addEventListener('input', () => {
@@ -478,36 +627,84 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
         const writableCb = el('input', {
           type: 'checkbox',
           checked: Boolean(ep.writable),
-          disabled: isLegacy || ep.kind !== 'SWITCH'
+          disabled: isLegacy || ep.kind !== 'SWITCH' || state.transport !== 'MQTT_V1'
         });
         writableCb.addEventListener('change', () => {
           ep.writable = writableCb.checked;
         });
 
-        listWrap.appendChild(
-          el('div', { class: 'endpoint-editor-row' }, [
-            keyIn,
-            lblIn,
-            kindSel,
-            dtSel,
-            unitIn,
-            el('label', { class: 'checkbox-row text-xs', title: 'Writable MQTT switch output' }, [
-              writableCb,
-              el('span', { text: 'Write' })
+        let boundsRow = null;
+        if (ep.kind === 'SENSOR' && ep.data_type === 'NUMBER') {
+          const minId = `wiz-ep-min-${idx}`;
+          const maxId = `wiz-ep-max-${idx}`;
+          const minIn = el('input', {
+            id: minId,
+            class: 'input mono',
+            type: 'number',
+            step: 'any',
+            value: ep.min_value !== null && ep.min_value !== undefined ? String(ep.min_value) : '',
+            placeholder: 'Optional',
+            'aria-label': `Minimum value for ${ep.endpoint_key || `endpoint ${idx + 1}`}`
+          });
+          minIn.addEventListener('input', () => {
+            const raw = minIn.value.trim();
+            ep.min_value = raw === '' ? null : Number(raw);
+          });
+
+          const maxIn = el('input', {
+            id: maxId,
+            class: 'input mono',
+            type: 'number',
+            step: 'any',
+            value: ep.max_value !== null && ep.max_value !== undefined ? String(ep.max_value) : '',
+            placeholder: 'Optional',
+            'aria-label': `Maximum value for ${ep.endpoint_key || `endpoint ${idx + 1}`}`
+          });
+          maxIn.addEventListener('input', () => {
+            const raw = maxIn.value.trim();
+            ep.max_value = raw === '' ? null : Number(raw);
+          });
+
+          boundsRow = el('div', { class: 'endpoint-bounds-row' }, [
+            el('span', { class: 'text-xs text-muted', text: 'Valid Sensor Range (optional):' }),
+            el('div', { class: 'endpoint-bounds-field' }, [
+              el('label', { class: 'text-xs text-secondary', for: minId, text: 'Min' }),
+              minIn
             ]),
-            !isLegacy
-              ? el('button', {
-                  type: 'button',
-                  class: 'btn-icon',
-                  title: 'Remove endpoint',
-                  'aria-label': 'Remove endpoint',
-                  disabled: state.endpoints.length <= 1,
-                  onClick: () => {
-                    state.endpoints.splice(idx, 1);
-                    renderCurrentStep();
-                  }
-                }, [svgIcon('icon-close', 14)])
-              : null
+            el('div', { class: 'endpoint-bounds-field' }, [
+              el('label', { class: 'text-xs text-secondary', for: maxId, text: 'Max' }),
+              maxIn
+            ])
+          ]);
+        }
+
+        listWrap.appendChild(
+          el('div', { class: 'endpoint-editor-card' }, [
+            el('div', { class: 'endpoint-editor-row' }, [
+              keyIn,
+              lblIn,
+              kindSel,
+              dtSel,
+              unitIn,
+              el('label', { class: 'checkbox-row text-xs', title: 'Writable MQTT switch output' }, [
+                writableCb,
+                el('span', { text: 'Write' })
+              ]),
+              !isLegacy
+                ? el('button', {
+                    type: 'button',
+                    class: 'btn-icon',
+                    title: 'Remove endpoint',
+                    'aria-label': 'Remove endpoint',
+                    disabled: state.endpoints.length <= 1,
+                    onClick: () => {
+                      state.endpoints.splice(idx, 1);
+                      renderCurrentStep();
+                    }
+                  }, [svgIcon('icon-close', 14)])
+                : null
+            ]),
+            boundsRow
           ])
         );
       });
@@ -520,13 +717,23 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
               type: 'button',
               class: 'btn btn-secondary btn-sm',
               onClick: () => {
+                const defaultKind = (DEVICE_TYPE_ALLOWED_KINDS[state.device_type] || ['SENSOR'])[0];
+                const defaultDt = allowedDataTypes(defaultKind)[0];
                 state.endpoints.push({
                   endpoint_key: `endpoint_${state.endpoints.length + 1}`,
                   label: `Endpoint ${state.endpoints.length + 1}`,
-                  kind: 'SENSOR',
-                  data_type: 'NUMBER',
+                  description: '',
+                  kind: defaultKind,
+                  data_type: defaultDt,
                   unit: '',
-                  writable: false
+                  readable: true,
+                  writable: false,
+                  retention_enabled: true,
+                  min_value: null,
+                  max_value: null,
+                  allowed_values: null,
+                  display_config: undefined,
+                  command_profile: undefined
                 });
                 renderCurrentStep();
               }
@@ -555,15 +762,22 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
         ]),
         el('div', { class: 'card card-compact stack-xs' }, [
           el('div', { class: 'kicker', text: `ENDPOINTS (${state.endpoints.length})` }),
-          ...state.endpoints.map((ep) =>
-            el('div', { class: 'row-between text-sm' }, [
+          ...state.endpoints.map((ep) => {
+            const hasBounds =
+              ep.kind === 'SENSOR' &&
+              ep.data_type === 'NUMBER' &&
+              (ep.min_value !== null || ep.max_value !== null);
+            const boundsLabel = hasBounds
+              ? ` · range [${ep.min_value ?? '−∞'}..${ep.max_value ?? '+∞'}]`
+              : '';
+            return el('div', { class: 'row-between text-sm' }, [
               el('span', { class: 'mono', text: `${ep.endpoint_key} (${ep.label})` }),
               el('span', {
                 class: 'text-xs text-secondary mono',
-                text: `${ep.kind}/${ep.data_type}${ep.unit ? ` · ${ep.unit}` : ''}${ep.writable ? ' · WRITABLE' : ''}`
+                text: `${ep.kind}/${ep.data_type}${ep.unit ? ` · ${ep.unit}` : ''}${boundsLabel}${ep.writable ? ' · WRITABLE' : ''}`
               })
-            ])
-          )
+            ]);
+          })
         ])
       );
     }
@@ -585,7 +799,11 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
       return;
     }
 
+    if (!validateStep(0) || !validateStep(1) || !validateStep(2)) return;
+
     nextBtn.disabled = true;
+    backBtn.disabled = true;
+    nextBtn.textContent = 'Saving…';
     clearError();
     try {
       const payload = {
@@ -595,20 +813,44 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
         room_id: state.room_id,
         device_type: state.device_type,
         transport: state.transport,
-        ip: state.transport === 'MQTT_V1' ? '' : state.ip.trim(),
+        ip: state.transport === 'MQTT_V1' ? state.ip.trim() : state.ip.trim(),
         port: Number(state.port || 80),
         path: state.path || '/telemetry',
         enabled: Boolean(state.enabled),
         stale_after_s: Number(state.stale_after_s || 90),
-        endpoints: state.endpoints.map((ep) => ({
-          endpoint_key: ep.endpoint_key,
-          label: ep.label.trim(),
-          kind: ep.kind,
-          data_type: ep.data_type,
-          unit: ep.data_type === 'NUMBER' ? ep.unit || '' : '',
-          writable: ep.kind === 'SWITCH' ? Boolean(ep.writable) : false
-        }))
+        protocol_version: state.protocol_version || '1',
+        endpoints: state.endpoints.map((ep) => {
+          const isNumSensor = ep.kind === 'SENSOR' && ep.data_type === 'NUMBER';
+          const isWritableSwitch = ep.kind === 'SWITCH' && Boolean(ep.writable);
+          const serialized = {
+            endpoint_key: ep.endpoint_key,
+            label: ep.label.trim(),
+            description: ep.description || '',
+            kind: ep.kind,
+            data_type: ep.data_type,
+            unit: ep.data_type === 'NUMBER' ? ep.unit || '' : '',
+            readable: ep.readable !== false,
+            writable: isWritableSwitch,
+            retention_enabled: ep.retention_enabled !== false,
+            min_value:
+              isNumSensor && ep.min_value !== null && ep.min_value !== undefined && ep.min_value !== ''
+                ? Number(ep.min_value)
+                : null,
+            max_value:
+              isNumSensor && ep.max_value !== null && ep.max_value !== undefined && ep.max_value !== ''
+                ? Number(ep.max_value)
+                : null,
+            allowed_values: Array.isArray(ep.allowed_values) ? ep.allowed_values : null,
+            command_profile: isWritableSwitch ? ep.command_profile || 'MQTT_SWITCH_V1' : ep.command_profile ?? null
+          };
+          const cleanDisp = sanitizeDisplayConfig(ep.display_config);
+          if (cleanDisp) serialized.display_config = cleanDisp;
+          return serialized;
+        })
       };
+      if (isEdit && state.mqtt_identity_status) {
+        payload.mqtt_identity_status = state.mqtt_identity_status;
+      }
       if (isEdit) {
         payload.version = device.version;
         await api.updateDevice(device.device_id, payload);
@@ -627,6 +869,10 @@ function openDeviceWizard({ device = null, pending = null, rooms = [], defaultRo
       }
     } finally {
       nextBtn.disabled = false;
+      backBtn.disabled = false;
+      if (state.step === 3) {
+        nextBtn.textContent = isEdit ? 'Save Device' : 'Register Device';
+      }
     }
   });
 
@@ -657,6 +903,8 @@ export function renderDevicesListPage({ query, navigate }) {
   let roomFilter = query?.get('room_id') || '';
   let transportFilter = '';
   let includeArchived = false;
+  let quarantineStatus = 'PENDING'; // PENDING | APPROVED | DISMISSED
+  let showQuarantinePanel = query?.get('focus') === 'quarantine';
   let cachedRooms = [];
   let cachedCaps = [];
 
@@ -734,6 +982,26 @@ export function renderDevicesListPage({ query, navigate }) {
       description: 'Register and inspect wired controllers, review quarantined MQTT announcements, and monitor per-device liveness.',
       actions: [
         admin
+          ? (() => {
+              const qBtn = el('button', {
+                id: 'toggle-quarantine-panel-btn',
+                type: 'button',
+                class: 'btn btn-secondary btn-sm',
+                'aria-expanded': showQuarantinePanel ? 'true' : 'false',
+                onClick: () => {
+                  showQuarantinePanel = !showQuarantinePanel;
+                  qBtn.setAttribute('aria-expanded', showQuarantinePanel ? 'true' : 'false');
+                  loadAll();
+                }
+              }, [
+                svgIcon('icon-shield', 14),
+                el('span', { text: 'Quarantine Queue' }),
+                svgIcon('icon-chevron-down', 13, 'expand-chevron')
+              ]);
+              return qBtn;
+            })()
+          : null,
+        admin
           ? el('button', {
               id: 'register-device-btn',
               type: 'button',
@@ -792,7 +1060,7 @@ export function renderDevicesListPage({ query, navigate }) {
           rows: devices,
           onRowClick: (d) => navigate(`/app/devices/${encodeURIComponent(d.device_id)}`),
           emptyNode: emptyState({
-            icon: 'icon-cpu',
+            illustration: EMPTY_ILLUSTRATIONS.DEVICES,
             title: searchTerm || roomFilter || transportFilter ? 'No matching devices' : 'No devices registered',
             message: 'Register a controller with the 4-step wizard or clear your filters.',
             actionLabel: admin && !searchTerm ? 'Register Device' : '',
@@ -802,15 +1070,21 @@ export function renderDevicesListPage({ query, navigate }) {
           }),
           columns: [
             {
-              label: 'Device',
-              render: (d) =>
-                el('div', { class: 'stack-xs' }, [
-                  el('div', { class: 'row-gap-sm' }, [
-                    el('span', { class: 'font-semibold', text: d.name }),
-                    d.manifest_drift?.has_drift ? statusIndicator('DRIFT', 'Drift', { compact: true }) : null
-                  ]),
-                  el('span', { class: 'mono text-xs text-muted', text: d.device_id })
-                ])
+              label: 'Device & Category',
+              render: (d) => {
+                const vis = resolveDeviceVisual(d);
+                return el('div', { class: 'device-identity-cell' }, [
+                  renderNodeIllustration(vis, { size: 'sm' }),
+                  el('div', { class: 'stack-xs' }, [
+                    el('div', { class: 'row-gap-sm' }, [
+                      el('span', { class: 'font-semibold', text: d.name }),
+                      renderCategoryChip(vis.category, vis.categoryLabel),
+                      d.manifest_drift?.has_drift ? statusIndicator('DRIFT', 'Drift', { compact: true }) : null
+                    ]),
+                    el('span', { class: 'mono text-xs text-muted', text: d.device_id })
+                  ])
+                ]);
+              }
             },
             {
               label: 'Room',
@@ -857,12 +1131,17 @@ export function renderDevicesListPage({ query, navigate }) {
                 })
             }
           ],
-          renderMobileCard: (d) =>
-            el('article', { class: 'card record-card' }, [
+          renderMobileCard: (d) => {
+            const vis = resolveDeviceVisual(d);
+            return el('article', { class: 'card record-card' }, [
               el('div', { class: 'record-card-head' }, [
-                el('div', { class: 'stack-xs' }, [
-                  el('div', { class: 'font-semibold', text: d.name }),
-                  el('div', { class: 'mono text-xs text-muted', text: d.device_id })
+                el('div', { class: 'device-identity-cell' }, [
+                  renderNodeIllustration(vis, { size: 'md' }),
+                  el('div', { class: 'stack-xs' }, [
+                    el('div', { class: 'font-semibold', text: d.name }),
+                    el('div', { class: 'mono text-xs text-muted', text: d.device_id }),
+                    renderCategoryChip(vis.category, vis.categoryLabel)
+                  ])
                 ]),
                 statusIndicator(d.archived ? 'ARCHIVED' : d.in_maintenance ? 'MAINTENANCE' : d.status, null, { compact: true })
               ]),
@@ -896,7 +1175,8 @@ export function renderDevicesListPage({ query, navigate }) {
                   onClick: () => navigate(`/app/devices/${encodeURIComponent(d.device_id)}`)
                 })
               ])
-            ])
+            ]);
+          }
         })
       );
     } catch (err) {
@@ -914,10 +1194,11 @@ export function renderDevicesListPage({ query, navigate }) {
 
   async function loadAll() {
     if (disposed) return;
-    const [roomsRes, capsRes, pendingRes] = await Promise.allSettled([
+    const [roomsRes, capsRes, pendingRes, overviewRes] = await Promise.allSettled([
       api.listRooms({ status: '' }),
       api.getCapabilities(),
-      admin ? api.listPendingDevices('PENDING') : Promise.resolve({ pending_devices: [] })
+      admin ? api.listPendingDevices(quarantineStatus) : Promise.resolve({ pending_devices: [] }),
+      !admin ? api.getOverview() : Promise.resolve(null)
     ]);
     if (disposed) return;
 
@@ -937,56 +1218,128 @@ export function renderDevicesListPage({ query, navigate }) {
 
     clear(pendingSlot);
     const pendingList = pendingRes.status === 'fulfilled' ? pendingRes.value?.pending_devices || [] : [];
-    if (admin && pendingList.length > 0) {
+    const viewerPendingCount = overviewRes.status === 'fulfilled' ? Number(overviewRes.value?.pending_devices || 0) : 0;
+
+    if (!admin && (viewerPendingCount > 0 || showQuarantinePanel)) {
       pendingSlot.appendChild(
-        el('section', { class: 'card stack-sm notice-pending' }, [
+        el('div', { id: 'viewer-quarantine-banner' }, [
+          disclaimerBanner({
+            icon: 'icon-shield',
+            tone: 'info',
+            title: 'Quarantine Review Requires Administrator Role',
+            message:
+              viewerPendingCount > 0
+                ? `${viewerPendingCount} unapproved MQTT device announcement${viewerPendingCount === 1 ? ' is' : 's are'} currently held in quarantine with telemetry and commands blocked. Sign in with an Admin account to inspect manifests, approve registration, or dismiss announcements.`
+                : 'No unapproved device announcements are currently pending. Quarantined device approval and dismissal require an Administrator account.'
+          })
+        ])
+      );
+    } else if (admin && (pendingList.length > 0 || quarantineStatus !== 'PENDING' || showQuarantinePanel)) {
+      const isPendingView = quarantineStatus === 'PENDING';
+      pendingSlot.appendChild(
+        el('section', { class: `card stack-sm${isPendingView && pendingList.length > 0 ? ' notice-pending' : ''}`, id: 'quarantine-review-panel' }, [
           el('div', { class: 'row-between' }, [
-            statusIndicator('PENDING_REVIEW', `${pendingList.length} Quarantined Device${pendingList.length > 1 ? 's' : ''} Awaiting Admin Approval`),
-            el('span', { class: 'text-xs text-muted', text: 'Telemetry & commands blocked until approved' })
+            el('div', { class: 'stack-xs' }, [
+              isPendingView
+                ? statusIndicator(
+                    pendingList.length > 0 ? 'PENDING_REVIEW' : 'HEALTHY',
+                    pendingList.length > 0
+                      ? `${pendingList.length} Quarantined Device${pendingList.length > 1 ? 's' : ''} Awaiting Admin Approval`
+                      : 'No Quarantined Devices Pending Review'
+                  )
+                : statusIndicator('INFO', `Quarantine History · ${quarantineStatus} (${pendingList.length})`),
+              el('span', {
+                class: 'text-xs text-muted',
+                text: 'Unregistered MQTT_V1 heartbeats remain isolated until an Administrator registers or dismisses them.'
+              })
+            ]),
+            segmentedFilter({
+              ariaLabel: 'Quarantine status filter',
+              value: quarantineStatus,
+              options: [
+                { value: 'PENDING', label: 'Pending' },
+                { value: 'APPROVED', label: 'Approved' },
+                { value: 'DISMISSED', label: 'Dismissed' }
+              ],
+              onChange: (val) => {
+                quarantineStatus = val;
+                showQuarantinePanel = true;
+                loadAll();
+              }
+            })
           ]),
-          el(
-            'div',
-            { class: 'queue-list' },
-            pendingList.map((p) =>
-              el('div', { class: 'queue-item' }, [
-                el('div', { class: 'queue-item-main' }, [
-                  el('div', { class: 'mono font-semibold text-sm', text: p.device_id }),
-                  el('div', {
-                    class: 'text-xs text-secondary',
-                    text: `Firmware: ${p.firmware_version || 'unknown'} · Announced ${formatAge(p.last_seen_at)} · ${(p.manifest?.endpoints || []).length} endpoints`
-                  })
-                ]),
-                el('div', { class: 'btn-row' }, [
-                  el('button', {
-                    type: 'button',
-                    class: 'btn btn-primary btn-sm',
-                    text: 'Review & Approve',
-                    onClick: () =>
-                      openDeviceWizard({
-                        pending: p,
-                        rooms: cachedRooms,
-                        capabilities: cachedCaps,
-                        onSaved: loadAll
-                      })
-                  }),
-                  el('button', {
+          pendingList.length === 0
+            ? el('div', {
+                class: 'text-sm text-muted',
+                text: `No ${quarantineStatus.toLowerCase()} quarantine records found.`
+              })
+            : el(
+                'div',
+                { class: 'queue-list' },
+                pendingList.map((p) => {
+                  const dismissBtn = el('button', {
                     type: 'button',
                     class: 'btn btn-secondary btn-sm',
                     text: 'Dismiss',
                     onClick: async () => {
+                      const ok = await confirmDialog({
+                        title: `Dismiss quarantined device "${p.device_id}"?`,
+                        subtitle: 'MQTT Quarantine Queue',
+                        message:
+                          'Dismissing removes this announcement from the active pending queue. Telemetry and commands remain blocked unless an Administrator explicitly registers this device.',
+                        confirmLabel: 'Dismiss Announcement',
+                        specs: [
+                          ['Device ID', p.device_id],
+                          ['Firmware', p.firmware_version || 'unknown'],
+                          ['Announced Endpoints', String((p.manifest?.endpoints || []).length)]
+                        ]
+                      });
+                      if (!ok) return;
+                      dismissBtn.disabled = true;
+                      dismissBtn.textContent = 'Dismissing…';
                       try {
                         await api.dismissPendingDevice(p.device_id);
                         showToast('Quarantined device dismissed', p.device_id, 'info');
                         loadAll();
                       } catch (err) {
                         showToast('Dismiss failed', err.message, 'error');
+                        dismissBtn.disabled = false;
+                        dismissBtn.textContent = 'Dismiss';
                       }
                     }
-                  })
-                ])
-              ])
-            )
-          )
+                  });
+
+                  return el('div', { class: 'queue-item' }, [
+                    el('div', { class: 'queue-item-main' }, [
+                      el('div', { class: 'row-gap-sm' }, [
+                        el('span', { class: 'mono font-semibold text-sm', text: p.device_id }),
+                        !isPendingView ? statusIndicator(p.status || quarantineStatus, null, { compact: true }) : null
+                      ]),
+                      el('div', {
+                        class: 'text-xs text-secondary',
+                        text: `Firmware: ${p.firmware_version || 'unknown'} · Announced ${formatAge(p.last_seen_at)} · ${(p.manifest?.endpoints || []).length} endpoints`
+                      })
+                    ]),
+                    isPendingView
+                      ? el('div', { class: 'btn-row' }, [
+                          el('button', {
+                            type: 'button',
+                            class: 'btn btn-primary btn-sm',
+                            text: 'Review & Approve',
+                            onClick: () =>
+                              openDeviceWizard({
+                                pending: p,
+                                rooms: cachedRooms,
+                                capabilities: cachedCaps,
+                                onSaved: loadAll
+                              })
+                          }),
+                          dismissBtn
+                        ])
+                      : null
+                  ]);
+                })
+              )
         ])
       );
     }
@@ -1017,34 +1370,179 @@ export function renderDevicesListPage({ query, navigate }) {
 }
 
 // ============================================================================
-// DEVICE DETAIL PAGE (/app/devices/:deviceId)
+// DEVICE MAINTENANCE MODAL & DETAIL PAGE (/app/devices/:deviceId)
 // ============================================================================
+function openMaintenanceModal({ device, onSaved }) {
+  const presets = [
+    { minutes: 15, label: '15m' },
+    { minutes: 30, label: '30m' },
+    { minutes: 60, label: '1h' },
+    { minutes: 240, label: '4h' },
+    { minutes: 1440, label: '24h' }
+  ];
+
+  const minutesInput = el('input', {
+    id: 'maint-minutes-input',
+    class: 'input mono tabular-nums',
+    type: 'number',
+    min: 1,
+    max: 1440,
+    step: 1,
+    value: '30'
+  });
+  const reasonInput = el('textarea', {
+    id: 'maint-reason-input',
+    class: 'textarea',
+    maxlength: 240,
+    placeholder: 'Describe the maintenance activity for the audit log (3–240 characters)...'
+  });
+  const presetWrap = el('div', { class: 'preset-chip-row', role: 'group', 'aria-label': 'Maintenance duration presets' });
+  const errBox = el('div', { class: 'form-error', role: 'alert', hidden: true });
+
+  const syncPresets = () => {
+    const val = Number(minutesInput.value);
+    clear(presetWrap);
+    for (const p of presets) {
+      presetWrap.appendChild(
+        el('button', {
+          type: 'button',
+          class: `btn btn-xs ${val === p.minutes ? 'btn-primary' : 'btn-secondary'}`,
+          'aria-pressed': val === p.minutes ? 'true' : 'false',
+          text: p.label,
+          onClick: () => {
+            minutesInput.value = String(p.minutes);
+            errBox.hidden = true;
+            syncPresets();
+          }
+        })
+      );
+    }
+  };
+  minutesInput.addEventListener('input', syncPresets);
+  syncPresets();
+
+  const body = el('div', { class: 'stack-md' }, [
+    errBox,
+    disclaimerBanner({
+      icon: 'icon-clock',
+      tone: 'warn',
+      message:
+        'Enabling maintenance suppresses stale-device and threshold alarm triggers and disables remote switch actuation until the window expires or an Administrator ends maintenance.'
+    }),
+    el('div', { class: 'form-grid' }, [
+      el('div', { class: 'form-field' }, [
+        el('label', { class: 'form-label', for: 'maint-minutes-input', text: 'Duration (1–1440 minutes) *' }),
+        minutesInput,
+        el('span', { class: 'form-hint', text: 'Maximum supported window: 1440 minutes (24 hours).' })
+      ]),
+      el('div', { class: 'form-field' }, [
+        el('span', { class: 'form-label', text: 'Quick Presets' }),
+        presetWrap
+      ]),
+      el('div', { class: 'form-field form-field-full' }, [
+        el('label', { class: 'form-label', for: 'maint-reason-input', text: 'Audited Maintenance Reason *' }),
+        reasonInput
+      ])
+    ])
+  ]);
+
+  const submitBtn = el('button', {
+    id: 'maint-submit-btn',
+    type: 'button',
+    class: 'btn btn-primary',
+    text: 'Start Maintenance Window',
+    onClick: async () => {
+      errBox.hidden = true;
+      const minutes = Number(minutesInput.value.trim());
+      const reason = reasonInput.value.trim();
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+        errBox.textContent = 'Maintenance duration must be a whole integer between 1 and 1440 minutes.';
+        errBox.hidden = false;
+        return;
+      }
+      if (reason.length < 3 || reason.length > 240) {
+        errBox.textContent = 'Provide a maintenance reason between 3 and 240 characters.';
+        errBox.hidden = false;
+        return;
+      }
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Saving…';
+      try {
+        await api.setMaintenance(device.device_id, { minutes, reason });
+        showToast('Maintenance window active', `${device.name} (${minutes} min)`, 'success');
+        closeModal();
+        if (onSaved) onSaved();
+      } catch (err) {
+        errBox.textContent = err.message || 'Failed to enable maintenance mode.';
+        errBox.hidden = false;
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Start Maintenance Window';
+      }
+    }
+  });
+
+  openModal({
+    title: `Schedule Maintenance · ${device.name}`,
+    subtitle: `${device.device_id} · Alarm & Command Suppression`,
+    body,
+    actions: [
+      el('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', onClick: closeModal }),
+      submitBtn
+    ]
+  });
+}
+
 export function renderDeviceDetailPage({ params, navigate }) {
   const deviceId = decodeURIComponent(params.deviceId);
   const container = el('div', { class: 'stack-lg' });
   const admin = isAdmin();
   let disposed = false;
   let refreshTimer = null;
+  let frameHistoryLimit = 100;
 
   const contentSlot = el('div', { class: 'stack-lg' });
   container.appendChild(contentSlot);
 
+  async function handleEndMaintenance(dev) {
+    const ok = await confirmDialog({
+      title: `End Maintenance Mode for ${dev.name}?`,
+      subtitle: 'Device Maintenance',
+      message: 'Monitoring rules, stale-device detection, and remote switch commands will resume immediately.',
+      confirmLabel: 'End Maintenance'
+    });
+    if (!ok || disposed) return;
+    try {
+      await api.setMaintenance(dev.device_id, {
+        minutes: 0,
+        reason: 'Maintenance completed by operator'
+      });
+      showToast('Maintenance ended', dev.name, 'success');
+      load(false);
+    } catch (err) {
+      showToast('Maintenance update failed', err.message, 'error');
+    }
+  }
+
   async function load(silent = false) {
     if (disposed) return;
     if (!silent) {
+      cleanupWidgetBlobs();
       clear(contentSlot);
       contentSlot.appendChild(loadingSkeleton('table', 4));
     }
 
-    const [devRes, cmdsRes, roomsRes, capsRes] = await Promise.allSettled([
+    const [devRes, cmdsRes, framesRes, roomsRes, capsRes] = await Promise.allSettled([
       api.getDevice(deviceId),
       api.getDeviceCommands(deviceId),
+      api.getDeviceHistory(deviceId, { limit: frameHistoryLimit }),
       admin ? api.listRooms({ status: '' }) : Promise.resolve({ rooms: [] }),
       admin ? api.getCapabilities() : Promise.resolve({ capabilities: [] })
     ]);
     if (disposed) return;
 
     if (devRes.status !== 'fulfilled') {
+      cleanupWidgetBlobs();
       clear(contentSlot);
       contentSlot.appendChild(
         errorPanel({
@@ -1058,9 +1556,11 @@ export function renderDeviceDetailPage({ params, navigate }) {
 
     const dev = devRes.value.device;
     const commands = cmdsRes.status === 'fulfilled' ? cmdsRes.value.commands || [] : [];
+    const frames = framesRes.status === 'fulfilled' ? framesRes.value.frames || [] : [];
     const rooms = roomsRes.status === 'fulfilled' ? roomsRes.value.rooms || [] : [];
     const caps = capsRes.status === 'fulfilled' ? capsRes.value.capabilities || [] : [];
 
+    cleanupWidgetBlobs();
     clear(contentSlot);
 
     // Header
@@ -1107,30 +1607,14 @@ export function renderDeviceDetailPage({ params, navigate }) {
             : null,
           admin && !dev.archived
             ? el('button', {
+                id: 'device-maintenance-btn',
                 type: 'button',
                 class: 'btn btn-secondary btn-sm',
                 text: dev.in_maintenance ? 'End Maintenance' : 'Maintenance',
-                onClick: async () => {
-                  const minutes = dev.in_maintenance ? 0 : 30;
-                  const ok = await confirmDialog({
-                    title: dev.in_maintenance ? 'End Maintenance Mode?' : 'Enable 30-Minute Maintenance?',
-                    message: dev.in_maintenance
-                      ? 'Monitoring and alarm evaluation will resume immediately.'
-                      : 'Suppresses stale and threshold alarm triggers for 30 minutes while hardware maintenance is performed.',
-                    confirmLabel: dev.in_maintenance ? 'End Maintenance' : 'Start 30m Maintenance'
-                  });
-                  if (!ok) return;
-                  try {
-                    await api.setMaintenance(dev.device_id, {
-                      minutes,
-                      reason: dev.in_maintenance ? 'Maintenance completed' : 'Operator scheduled maintenance'
-                    });
-                    showToast('Maintenance updated', dev.name, 'success');
-                    load(false);
-                  } catch (err) {
-                    showToast('Maintenance update failed', err.message, 'error');
-                  }
-                }
+                onClick: () =>
+                  dev.in_maintenance
+                    ? handleEndMaintenance(dev)
+                    : openMaintenanceModal({ device: dev, onSaved: () => load(false) })
               })
             : null,
           admin && !dev.slot && !dev.archived
@@ -1175,6 +1659,67 @@ export function renderDeviceDetailPage({ params, navigate }) {
         ]
       })
     );
+
+    // Visual Hardware Identity Hero (Category & Illustration strictly separated from Operational Status)
+    const devVis = resolveDeviceVisual(dev);
+    contentSlot.appendChild(
+      el('section', { id: 'device-identity-hero', class: `card device-hero-card cat-${devVis.category}` }, [
+        el('div', { class: 'device-hero-main' }, [
+          renderNodeIllustration(devVis, { size: 'lg', alt: `${devVis.categoryLabel} illustration` }),
+          el('div', { class: 'stack-xs min-w-0' }, [
+            el('div', { class: 'row-gap-sm flex-wrap' }, [
+              renderCategoryChip(devVis.category, devVis.categoryLabel),
+              el('span', { class: 'meta-tag mono', text: dev.transport }),
+              dev.slot ? el('span', { class: 'meta-tag mono', text: `Slot ${dev.slot}` }) : null
+            ]),
+            el('div', {
+              class: 'font-semibold text-base',
+              text: `${dev.room_code ? `${dev.room_code} · ` : ''}${dev.room_name || dev.room_id || 'Unassigned Room'}`
+            }),
+            el('div', {
+              class: 'text-xs text-muted mono',
+              text:
+                dev.transport === 'MQTT_V1'
+                  ? `ID: ${dev.device_id} · Broker-mediated MQTT_V1`
+                  : `ID: ${dev.device_id} · ${dev.ip ? `${dev.ip}:${dev.port || 80}${dev.path || ''}` : 'Direct LAN Node'}`
+            })
+          ])
+        ]),
+        el('div', { class: 'stack-xs' }, [
+          el('span', { class: 'text-xs text-muted', text: 'Operational Health' }),
+          statusIndicator(
+            dev.archived ? 'ARCHIVED' : dev.in_maintenance ? 'MAINTENANCE' : dev.status,
+            dev.last_seen_at
+              ? `${dev.archived ? 'ARCHIVED' : dev.in_maintenance ? 'MAINTENANCE' : dev.status} (${formatAge(dev.last_seen_at)})`
+              : 'Never Observed'
+          )
+        ])
+      ])
+    );
+
+    // Active Maintenance Window Banner
+    if (dev.in_maintenance) {
+      contentSlot.appendChild(
+        el('div', { id: 'device-maintenance-banner' }, [
+          disclaimerBanner({
+            icon: 'icon-clock',
+            tone: 'warn',
+            title: 'Maintenance Window Active — Alarms & Actuation Suppressed',
+            message: `Active until ${dev.maintenance_until ? formatTimestamp(dev.maintenance_until) : 'scheduled expiry'}${dev.maintenance_reason ? ` · Reason: ${dev.maintenance_reason}` : ''}.`,
+            actions: admin
+              ? [
+                  el('button', {
+                    type: 'button',
+                    class: 'btn btn-secondary btn-sm',
+                    text: 'End Maintenance',
+                    onClick: () => handleEndMaintenance(dev)
+                  })
+                ]
+              : []
+          })
+        ])
+      );
+    }
 
     // Manifest Drift Banner (preserves unexpected_keys, missing_keys, changed_keys)
     if (dev.manifest_drift?.has_drift) {
@@ -1236,7 +1781,11 @@ export function renderDeviceDetailPage({ params, navigate }) {
         el('h2', { class: 'section-title', text: `Registered Endpoints (${eps.length})` }),
         eps.length === 0
           ? el('div', { class: 'card' }, [
-              emptyState({ title: 'No endpoints configured', message: 'Edit this device to add sensor, switch, access, or camera endpoints.' })
+              emptyState({
+                illustration: EMPTY_ILLUSTRATIONS.DEVICES,
+                title: 'No endpoints configured',
+                message: 'Edit this device to add sensor, switch, access, or camera endpoints.'
+              })
             ])
           : el(
               'div',
@@ -1277,6 +1826,78 @@ export function renderDeviceDetailPage({ params, navigate }) {
                 )
               ])
             ])
+      ]),
+      el('section', { class: 'card stack-sm', id: 'device-recent-frames' }, [
+        el('div', { class: 'card-head' }, [
+          el('div', { class: 'stack-xs' }, [
+            el('h2', { class: 'card-title', text: 'Recent Telemetry Frames' }),
+            el('span', {
+              class: 'text-xs text-muted tabular-nums',
+              text: `${frames.length} persisted frame${frames.length === 1 ? '' : 's'} loaded (limit ${frameHistoryLimit})`
+            })
+          ]),
+          segmentedFilter({
+            ariaLabel: 'Device frame history limit',
+            value: String(frameHistoryLimit),
+            options: [
+              { value: '100', label: '100' },
+              { value: '250', label: '250' },
+              { value: '500', label: '500' }
+            ],
+            onChange: (val) => {
+              frameHistoryLimit = Number(val) || 100;
+              load(true);
+            }
+          })
+        ]),
+        frames.length >= frameHistoryLimit
+          ? disclaimerBanner({
+              icon: 'icon-clock',
+              tone: 'warn',
+              message: `Showing the latest ${frames.length} frames (limit ${frameHistoryLimit} reached). Increase the limit or open individual Endpoint History for bounded date-range exports.`
+            })
+          : null,
+        frames.length === 0
+          ? el('div', { class: 'text-sm text-muted', text: 'No telemetry frames recorded for this device yet.' })
+          : el('div', { class: 'table-wrap' }, [
+              el('table', { class: 'data-table', 'aria-label': 'Recent device telemetry frames' }, [
+                el('thead', {}, [
+                  el('tr', {}, [
+                    el('th', { text: 'Received' }),
+                    el('th', { text: 'Endpoint Values' }),
+                    el('th', { text: 'Age' })
+                  ])
+                ]),
+                el(
+                  'tbody',
+                  {},
+                  frames.slice(0, 15).map((f) => {
+                    const entries = Object.entries(f.values || {});
+                    return el('tr', {}, [
+                      el('td', { class: 'mono text-xs tabular-nums', text: formatTimestamp(f.received_at) }),
+                      el(
+                        'td',
+                        {},
+                        entries.length === 0
+                          ? '—'
+                          : el(
+                              'div',
+                              { class: 'frame-kv-strip' },
+                              entries.map(([k, v]) => {
+                                const epMeta = eps.find((item) => item.endpoint_key === k) || { unit: '' };
+                                return el('span', {
+                                  class: 'meta-tag mono',
+                                  text: `${k}: ${formatEndpointValue(v, epMeta)}`
+                                });
+                              })
+                            )
+                      ),
+                      el('td', { class: 'mono text-xs text-muted tabular-nums', text: formatAge(f.received_at) })
+                    ]);
+                  })
+                )
+              ])
+            ])
       ])
     ]);
 
@@ -1309,7 +1930,13 @@ export function renderDeviceDetailPage({ params, navigate }) {
           { label: 'Stale Timeout', value: `${dev.stale_after_s ?? 90} s`, mono: true },
           { label: 'Firmware Version', value: dev.firmware_version || 'Unreported', mono: true },
           { label: 'Protocol Version', value: `v${dev.protocol_version || '1'}`, mono: true },
-          { label: 'Last Seen', value: formatTimestamp(dev.last_seen_at), mono: true }
+          { label: 'Last Seen', value: formatTimestamp(dev.last_seen_at), mono: true },
+          dev.in_maintenance
+            ? { label: 'Maintenance Until', value: dev.maintenance_until ? formatTimestamp(dev.maintenance_until) : 'Active', mono: true }
+            : null,
+          dev.in_maintenance && dev.maintenance_reason
+            ? { label: 'Maintenance Reason', value: dev.maintenance_reason }
+            : null
         ])
       ]),
       dev.transport === 'MQTT_V1'
@@ -1372,6 +1999,7 @@ export function renderDeviceDetailPage({ params, navigate }) {
     cleanup: () => {
       disposed = true;
       clearTimeout(refreshTimer);
+      cleanupWidgetBlobs();
       unsub();
     }
   };
@@ -1385,9 +2013,10 @@ export function renderEndpointDetailPage({ params, navigate }) {
   const endpointKey = decodeURIComponent(params.endpointKey);
   const container = el('div', { class: 'stack-lg' });
   let disposed = false;
+  let refreshTimer = null;
 
   let rangePreset = 'all'; // 1h | 6h | 24h | 7d | all
-  let limitVal = 200;
+  let limitVal = 100; // 100 | 250 | 500
 
   const rangeSlot = el('div');
   const bodySlot = el('div', { class: 'stack-lg' });
@@ -1409,23 +2038,42 @@ export function renderEndpointDetailPage({ params, navigate }) {
     clear(rangeSlot);
     rangeSlot.appendChild(
       el('div', { class: 'card card-compact row-between' }, [
-        segmentedFilter({
-          ariaLabel: 'History time window',
-          value: rangePreset,
-          options: [
-            { value: '1h', label: '1h' },
-            { value: '6h', label: '6h' },
-            { value: '24h', label: '24h' },
-            { value: '7d', label: '7d' },
-            { value: 'all', label: 'All Recent' }
-          ],
-          onChange: (val) => {
-            rangePreset = val;
-            renderRangeBar();
-            load();
-          }
-        }),
-        el('span', { class: 'text-xs text-muted', text: `Server-filtered window (up to ${limitVal} samples)` })
+        el('div', { class: 'row-gap-sm' }, [
+          el('span', { class: 'text-xs text-muted', text: 'Window:' }),
+          segmentedFilter({
+            ariaLabel: 'History time window',
+            value: rangePreset,
+            options: [
+              { value: '1h', label: '1h' },
+              { value: '6h', label: '6h' },
+              { value: '24h', label: '24h' },
+              { value: '7d', label: '7d' },
+              { value: 'all', label: 'All Recent' }
+            ],
+            onChange: (val) => {
+              rangePreset = val;
+              renderRangeBar();
+              load();
+            }
+          })
+        ]),
+        el('div', { class: 'row-gap-sm' }, [
+          el('span', { class: 'text-xs text-muted', text: 'Sample limit:' }),
+          segmentedFilter({
+            ariaLabel: 'History sample limit',
+            value: String(limitVal),
+            options: [
+              { value: '100', label: '100' },
+              { value: '250', label: '250' },
+              { value: '500', label: '500' }
+            ],
+            onChange: (val) => {
+              limitVal = Number(val) || 100;
+              renderRangeBar();
+              load();
+            }
+          })
+        ])
       ])
     );
   }
@@ -1451,10 +2099,12 @@ export function renderEndpointDetailPage({ params, navigate }) {
   container.append(rangeSlot, bodySlot);
   renderRangeBar();
 
-  async function load() {
+  async function load(silent = false) {
     if (disposed) return;
-    clear(bodySlot);
-    bodySlot.appendChild(loadingSkeleton('table', 4));
+    if (!silent) {
+      clear(bodySlot);
+      bodySlot.appendChild(loadingSkeleton('table', 4));
+    }
 
     try {
       const data = await api.getEndpointHistory(deviceId, endpointKey, computeRangeQuery());
@@ -1466,11 +2116,32 @@ export function renderEndpointDetailPage({ params, navigate }) {
 
       clear(bodySlot);
 
+      // Truncation warning when selected sample limit is reached
+      if (points.length >= limitVal) {
+        bodySlot.appendChild(
+          el('div', { id: 'endpoint-history-truncation' }, [
+            disclaimerBanner({
+              icon: 'icon-warning',
+              tone: 'warn',
+              title: `Sample Limit Reached (${points.length} / ${limitVal})`,
+              message:
+                limitVal < 500
+                  ? `Only the latest ${limitVal} samples in this range were returned. Switch Sample limit up to 500 or narrow the time window.`
+                  : 'Maximum per-request window of 500 samples reached; narrow the time window to inspect older intervals.'
+            })
+          ])
+        );
+      }
+
       // Summary KPI row
+      const epVis = resolveEndpointVisual(ep);
       bodySlot.appendChild(
         el('div', { class: 'kpi-grid' }, [
-          el('div', { class: 'card kpi-card' }, [
-            el('div', { class: 'kpi-label', text: 'Latest Reading' }),
+          el('div', { class: `card kpi-card cat-${epVis.category}` }, [
+            el('div', { class: 'row-between' }, [
+              el('div', { class: 'kpi-label', text: 'Latest Reading' }),
+              renderCategoryIconBadge(epVis.category, epVis.icon, 'sm')
+            ]),
             el('div', { class: 'kpi-value tabular-nums', text: formatEndpointValue(s.latest ?? ep.last_value, ep) }),
             statusIndicator(ep.fresh ? 'FRESH' : ep.status || 'UNKNOWN', null, { compact: true })
           ]),
@@ -1482,7 +2153,7 @@ export function renderEndpointDetailPage({ params, navigate }) {
           el('div', { class: 'card kpi-card' }, [
             el('div', { class: 'kpi-label', text: 'Average' }),
             el('div', { class: 'kpi-value tabular-nums', text: s.avg !== undefined ? formatEndpointValue(s.avg, ep) : '—' }),
-            el('div', { class: 'kpi-sub', text: `${points.length} samples plotted` })
+            el('div', { class: 'kpi-sub', text: `${points.length} / ${limitVal} samples` })
           ]),
           el('div', { class: 'card kpi-card' }, [
             el('div', { class: 'kpi-label', text: 'Maximum' }),
@@ -1492,11 +2163,20 @@ export function renderEndpointDetailPage({ params, navigate }) {
         ])
       );
 
-      // Trend Chart
+      // Trend / State-Step Chart
       bodySlot.appendChild(
-        el('section', { class: 'card stack-sm' }, [
+        el('section', { class: `card stack-sm cat-${epVis.category}` }, [
           el('div', { class: 'card-head' }, [
-            el('h2', { class: 'card-title', text: `${ep.label || endpointKey} Trend` }),
+            el('div', { class: 'widget-head-identity' }, [
+              renderCategoryIconBadge(epVis.category, epVis.icon, 'md'),
+              el('div', { class: 'stack-xs' }, [
+                el('h2', { class: 'card-title', text: `${ep.label || endpointKey} ${ep.kind === 'SWITCH' || ep.kind === 'ACCESS' || ep.data_type === 'BOOLEAN' ? 'State Timeline' : 'Trend'}` }),
+                el('span', {
+                  class: 'text-xs text-muted',
+                  text: 'Timestamp-proportional X-axis from persisted device_frames'
+                })
+              ])
+            ]),
             el('button', {
               type: 'button',
               class: 'btn btn-secondary btn-sm',
@@ -1515,7 +2195,13 @@ export function renderEndpointDetailPage({ params, navigate }) {
               }
             }, [svgIcon('icon-download', 14), el('span', { text: `Export CSV (${points.length})` })])
           ]),
-          buildHistoryChartSvg(points, { unit: ep.unit || '', label: `${ep.label} trend chart` })
+          buildHistoryChartSvg(points, {
+            unit: ep.unit || '',
+            kind: ep.kind,
+            dataType: ep.data_type,
+            rangePreset,
+            label: `${ep.label || endpointKey} trend chart`
+          })
         ])
       );
 
@@ -1529,7 +2215,7 @@ export function renderEndpointDetailPage({ params, navigate }) {
           ]),
           reversed.length === 0
             ? emptyState({
-                icon: 'icon-activity',
+                illustration: EMPTY_ILLUSTRATIONS.TELEMETRY,
                 title: 'No samples in selected time window',
                 message: 'Switch to All Recent or wait for incoming device frames.'
               })
@@ -1564,18 +2250,27 @@ export function renderEndpointDetailPage({ params, navigate }) {
         errorPanel({
           title: 'Failed to load endpoint history',
           message: err.message,
-          onRetry: load
+          onRetry: () => load(false)
         })
       );
     }
   }
 
-  load();
+  const unsubTel = onLiveEvent('telemetry', (msg) => {
+    if (msg.device_id === deviceId || msg.node_id === deviceId) {
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => load(true), 1200);
+    }
+  });
+
+  load(false);
 
   return {
     node: container,
     cleanup: () => {
       disposed = true;
+      clearTimeout(refreshTimer);
+      unsubTel();
     }
   };
 }

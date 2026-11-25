@@ -14,21 +14,26 @@ const STATUS_MAP = {
   READY: { tone: 'ok', icon: 'icon-check-circle', label: 'Ready' },
   CONNECTED: { tone: 'ok', icon: 'icon-check-circle', label: 'Connected' },
   ACTIVE: { tone: 'ok', icon: 'icon-check-circle', label: 'Active' },
+  ASSIGNED: { tone: 'ok', icon: 'icon-check-circle', label: 'Assigned' },
   PROVISIONED: { tone: 'ok', icon: 'icon-check-circle', label: 'Provisioned' },
   RESOLVED: { tone: 'ok', icon: 'icon-check-circle', label: 'Resolved' },
   STATE_REPORTED: { tone: 'ok', icon: 'icon-check-circle', label: 'State Reported' },
+  STATE_CONFIRMED: { tone: 'ok', icon: 'icon-check-circle', label: 'State Confirmed' },
   EXECUTED: { tone: 'ok', icon: 'icon-check-circle', label: 'Executed' },
   GRANTED: { tone: 'ok', icon: 'icon-check-circle', label: 'Granted' },
+  VERIFIED: { tone: 'ok', icon: 'icon-check-circle', label: 'Verified' },
   APPROVED: { tone: 'ok', icon: 'icon-check-circle', label: 'Approved' },
 
   // Warning / Stale / Degraded
   WARNING: { tone: 'warn', icon: 'icon-warning', label: 'Warning' },
+  WARN: { tone: 'warn', icon: 'icon-warning', label: 'Warning' },
   STALE: { tone: 'warn', icon: 'icon-clock', label: 'Stale' },
   DEGRADED: { tone: 'warn', icon: 'icon-warning', label: 'Degraded' },
   ATTENTION: { tone: 'warn', icon: 'icon-warning', label: 'Attention' },
   ACKNOWLEDGED: { tone: 'warn', icon: 'icon-clock', label: 'Acknowledged' },
   DRIFT: { tone: 'warn', icon: 'icon-warning', label: 'Manifest Drift' },
   SUSPENDED: { tone: 'warn', icon: 'icon-clock', label: 'Suspended' },
+  BLOCKED: { tone: 'warn', icon: 'icon-lock', label: 'Blocked' },
   TIMED_OUT: { tone: 'warn', icon: 'icon-clock', label: 'Timed Out' },
 
   // Critical / Error / Offline / Denied
@@ -40,7 +45,6 @@ const STATUS_MAP = {
   REJECTED: { tone: 'crit', icon: 'icon-x-circle', label: 'Rejected' },
   DENIED: { tone: 'crit', icon: 'icon-x-circle', label: 'Denied' },
   REVOKED: { tone: 'crit', icon: 'icon-x-circle', label: 'Revoked' },
-  BLOCKED: { tone: 'crit', icon: 'icon-x-circle', label: 'Blocked' },
   UNAVAILABLE: { tone: 'crit', icon: 'icon-x-circle', label: 'Unavailable' },
 
   // Pending / Maintenance / Review / Sync
@@ -62,6 +66,9 @@ const STATUS_MAP = {
   DISABLED: { tone: 'muted', icon: 'icon-x-circle', label: 'Disabled' },
   ARCHIVED: { tone: 'muted', icon: 'icon-clock', label: 'Archived' },
   STANDBY: { tone: 'muted', icon: 'icon-clock', label: 'Standby' },
+  DISMISSED: { tone: 'muted', icon: 'icon-x-circle', label: 'Dismissed' },
+  UNVERIFIED: { tone: 'muted', icon: 'icon-info', label: 'Unverified' },
+  LOGGED_OUT: { tone: 'muted', icon: 'icon-info', label: 'Logged Out' },
   UNPROVISIONED: { tone: 'muted', icon: 'icon-info', label: 'Unprovisioned' },
   NOT_APPLICABLE: { tone: 'muted', icon: 'icon-info', label: 'N/A' },
   LEGACY: { tone: 'muted', icon: 'icon-info', label: 'Legacy' },
@@ -110,17 +117,30 @@ export function pageHeader({ title, description = '', meta = null, actions = [] 
 /**
  * Standardized KPI Metric Card with click-through support and tabular numerals.
  */
-export function kpiCard({ label, value, sub = '', tone = 'default', onClick = null }) {
+export function kpiCard({ label, value, sub = '', tone = 'default', category = '', icon = '', onClick = null }) {
   const clickable = typeof onClick === 'function';
+  const catCls = category ? ` cat-${category} kpi-has-cat` : '';
   const node = el(
     clickable ? 'button' : 'div',
     {
       type: clickable ? 'button' : undefined,
-      class: `card kpi-card kpi-tone-${tone}${clickable ? ' kpi-clickable' : ''}`,
+      class: `card kpi-card kpi-tone-${tone}${catCls}${clickable ? ' kpi-clickable' : ''}`,
       onClick: clickable ? onClick : undefined
     },
     [
-      el('div', { class: 'kpi-label', text: label }),
+      el('div', { class: 'kpi-top-row' }, [
+        el('div', { class: 'kpi-label-wrap' }, [
+          icon
+            ? el('span', { class: `kpi-cat-icon${category ? ` cat-${category}` : ''}`, 'aria-hidden': 'true' }, [
+                svgIcon(icon, 15)
+              ])
+            : null,
+          el('span', { class: 'kpi-label', text: label })
+        ]),
+        clickable
+          ? el('span', { class: 'kpi-action-cue', 'aria-hidden': 'true' }, [svgIcon('icon-arrow-up-right', 14)])
+          : null
+      ]),
       el('div', { class: 'kpi-value tabular-nums', text: String(value) }),
       sub ? el('div', { class: 'kpi-sub', text: sub }) : null
     ]
@@ -168,9 +188,22 @@ export function loadingSkeleton(variant = 'table', count = 4) {
 /**
  * Structured Empty State with optional primary and secondary actions.
  */
-export function emptyState({ icon = 'icon-info', title, message, actionLabel = '', onAction = null, secondaryLabel = '', onSecondary = null }) {
+export function emptyState({
+  icon = 'icon-info',
+  illustration = '',
+  title,
+  message,
+  actionLabel = '',
+  onAction = null,
+  secondaryLabel = '',
+  onSecondary = null
+}) {
   return el('div', { class: 'empty-state' }, [
-    el('div', { class: 'empty-state-icon' }, [svgIcon(icon, 22)]),
+    illustration
+      ? el('div', { class: 'empty-state-illus', 'aria-hidden': 'true' }, [
+          el('img', { src: illustration, alt: '', loading: 'eager', decoding: 'async' })
+        ])
+      : el('div', { class: 'empty-state-icon' }, [svgIcon(icon, 22)]),
     el('h3', { class: 'empty-state-title', text: title }),
     message ? el('p', { class: 'empty-state-msg', text: message }) : null,
     actionLabel || secondaryLabel
@@ -369,9 +402,17 @@ export function renderAdaptiveCollection({
           {
             class: clickable ? 'row-clickable' : undefined,
             tabindex: clickable ? '0' : undefined,
-            onClick: clickable ? () => onRowClick(row) : undefined,
+            onClick: clickable
+              ? (e) => {
+                  if (e.target.closest('button, a, input, select, textarea, label, .copyable-inline, .copyable-block')) {
+                    return;
+                  }
+                  onRowClick(row);
+                }
+              : undefined,
             onKeydown: clickable
               ? (e) => {
+                  if (e.target !== tr) return;
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
                     onRowClick(row);

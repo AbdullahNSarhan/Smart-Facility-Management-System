@@ -5,6 +5,20 @@ import { api } from './api.js';
 import { store, isAdmin, showToast, confirmDialog } from './store.js';
 import { el, clear, formatAge, formatEndpointValue, buildSparklineSvg, svgIcon } from './utils.js';
 import { statusIndicator } from './components/ui.js';
+import { resolveEndpointVisual, renderCategoryIconBadge, NODE_ILLUSTRATIONS } from './visuals.js';
+
+const activeWidgetBlobUrls = new Set();
+
+export function cleanupWidgetBlobs() {
+  for (const url of activeWidgetBlobUrls) {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      // ignore
+    }
+  }
+  activeWidgetBlobUrls.clear();
+}
 
 function getLiveValue(device, ep) {
   const live = store.latestTelemetryByDevice.get(device.device_id);
@@ -27,15 +41,19 @@ export function renderEndpointWidget(device, ep, { navigate, onMutated }) {
   const admin = isAdmin();
   const { value, observedAt } = getLiveValue(device, ep);
   const freshness = getEndpointFreshnessState(device, ep);
+  const epVis = resolveEndpointVisual(ep);
 
-  const card = el('article', { class: 'card widget-card' });
+  const card = el('article', { class: `card widget-card cat-${epVis.category}` });
 
-  // Header
+  // Header: category identity (left) + independent operational status (right)
   card.appendChild(
     el('div', { class: 'row-between' }, [
-      el('div', { class: 'stack-xs' }, [
-        el('div', { class: 'font-semibold', text: ep.label || ep.endpoint_key }),
-        el('div', { class: 'mono text-xs text-muted', text: `${ep.endpoint_key} · ${ep.kind}/${ep.data_type}` })
+      el('div', { class: 'widget-head-identity' }, [
+        renderCategoryIconBadge(epVis.category, epVis.icon, 'sm'),
+        el('div', { class: 'stack-xs' }, [
+          el('div', { class: 'font-semibold', text: ep.label || ep.endpoint_key }),
+          el('div', { class: 'mono text-xs text-muted', text: `${ep.endpoint_key} · ${ep.kind}/${ep.data_type}` })
+        ])
       ]),
       statusIndicator(freshness, freshness === 'UNKNOWN' ? 'Unseen' : undefined, { compact: true })
     ])
@@ -201,15 +219,52 @@ export function renderEndpointWidget(device, ep, { navigate, onMutated }) {
       );
     }
   } else if (widgetType === 'CAMERA_SNAPSHOT') {
-    const frameBox = el('div', { class: 'camera-preview-frame' }, [
-      el('span', {
-        class: 'text-xs text-muted',
-        text: device.simulation
-          ? 'Isolated simulator: upstream camera capture disabled'
-          : 'No snapshot loaded yet — click Capture Snapshot'
-      })
-    ]);
+    const camIllus = () =>
+      el('img', {
+        src: NODE_ILLUSTRATIONS.SECURITY_CAMERA,
+        alt: '',
+        class: 'camera-placeholder-illus',
+        loading: 'eager',
+        decoding: 'async'
+      });
+    const frameBox = el(
+      'div',
+      { class: 'camera-preview-frame', 'data-simulation': device.simulation ? 'true' : 'false' },
+      device.simulation
+        ? [
+            el('div', { class: 'camera-placeholder-stack' }, [
+              camIllus(),
+              statusIndicator('SIMULATION', 'SIMULATION · Synthetic Preview Placeholder', { compact: true }),
+              el('span', {
+                class: 'text-xs text-muted',
+                text: 'Isolated simulator mode: no upstream camera IP is contacted; physical JPEG proxy capture is disabled.'
+              })
+            ])
+          ]
+        : [
+            el('div', { class: 'camera-placeholder-stack' }, [
+              camIllus(),
+              el('span', {
+                class: 'text-xs text-muted',
+                text: 'No snapshot loaded yet — click Capture Snapshot'
+              })
+            ])
+          ]
+    );
     let activeBlobUrl = null;
+    const revokeCurrentBlob = () => {
+      if (activeBlobUrl) {
+        activeWidgetBlobUrls.delete(activeBlobUrl);
+        try {
+          URL.revokeObjectURL(activeBlobUrl);
+        } catch {
+          // ignore
+        }
+        activeBlobUrl = null;
+      }
+    };
+    card._cleanup = revokeCurrentBlob;
+
     const captureBtn = el('button', {
       type: 'button',
       class: 'btn btn-secondary btn-sm',
@@ -220,8 +275,9 @@ export function renderEndpointWidget(device, ep, { navigate, onMutated }) {
         captureBtn.textContent = 'Capturing...';
         try {
           const blob = await api.getCameraSnapshotBlob(device.device_id);
-          if (activeBlobUrl) URL.revokeObjectURL(activeBlobUrl);
+          revokeCurrentBlob();
           activeBlobUrl = URL.createObjectURL(blob);
+          activeWidgetBlobUrls.add(activeBlobUrl);
           clear(frameBox);
           frameBox.appendChild(
             el('img', {
@@ -229,7 +285,7 @@ export function renderEndpointWidget(device, ep, { navigate, onMutated }) {
               alt: `${device.name} authenticated backend JPEG snapshot`
             })
           );
-          showToast('Snapshot captured', 'Fetched via authenticated backend proxy.', 'success');
+          showToast('Snapshot captured', 'Fetched via authenticated backend proxy (ephemeral preview).', 'success');
         } catch (err) {
           clear(frameBox);
           frameBox.appendChild(

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 96" fill="none">
+  <ellipse cx="60" cy="84" rx="38" ry="5.5" fill="#22D3EE" fill-opacity="0.12"/>
+  <rect x="18" y="16" width="84" height="58" rx="10" fill="#131C2B" stroke="#32445F" stroke-width="1.6"/>
+  <line x1="28" y1="60" x2="92" y2="60" stroke="#233146" stroke-width="1.4"/>
+  <polyline points="28,48 44,48 52,34 62,56 70,42 78,48 92,48" stroke="#22D3EE" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="92" cy="48" r="3" fill="#22D3EE"/>
+</svg>

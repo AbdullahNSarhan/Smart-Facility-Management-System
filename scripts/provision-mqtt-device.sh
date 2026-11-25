@@ -65,12 +65,27 @@ run_mosquitto_passwd() {
   fi
 }
 
+resolve_owner_ids() {
+  local ref_dir
+  ref_dir="$(cd -- "$(dirname -- "$PASSWD_FILE")" 2>/dev/null && pwd -P || printf '%s' "$PROJECT_DIR")"
+  OWNER_UID="$(stat -c '%u' "$ref_dir" 2>/dev/null || stat -c '%u' "$PROJECT_DIR" 2>/dev/null || echo 0)"
+  OWNER_GID="$(stat -c '%g' "$ref_dir" 2>/dev/null || stat -c '%g' "$PROJECT_DIR" 2>/dev/null || echo 0)"
+}
+
 fix_passwd_permissions() {
-  [[ -f "$PASSWD_FILE" ]] || return 0
+  resolve_owner_ids
   if [[ "${LCI_SKIP_ROOT_CHECK:-0}" != "1" && $EUID -eq 0 ]]; then
-    chown 1883:1883 "$PASSWD_FILE" 2>/dev/null || true
+    if [[ -f "$PASSWD_FILE" ]]; then
+      chown "${OWNER_UID}:1883" "$PASSWD_FILE"
+      chmod 0640 "$PASSWD_FILE"
+    fi
+    if [[ -f "$ACL_FILE" ]]; then
+      chown "${OWNER_UID}:1883" "$ACL_FILE"
+      chmod 0640 "$ACL_FILE"
+    fi
+  else
+    [[ -f "$PASSWD_FILE" ]] && chmod 0600 "$PASSWD_FILE"
   fi
-  chmod 600 "$PASSWD_FILE"
 }
 
 reload_broker_if_running() {
@@ -187,7 +202,11 @@ case "$ACTION" in
       die "Identity '$DEVICE_ID' does not exist in $PASSWD_FILE. Use 'add $DEVICE_ID' first."
     fi
 
-    PASSWORD="$(openssl rand -hex 24)"
+    if command -v openssl >/dev/null 2>&1; then
+      PASSWORD="$(openssl rand -hex 24)"
+    else
+      PASSWORD="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+    fi
     run_mosquitto_passwd -b "$PASSWD_FILE" "$DEVICE_ID" "$PASSWORD"
     fix_passwd_permissions
 
@@ -204,6 +223,9 @@ subscribe_command=lci/v1/devices/$DEVICE_ID/command
 provisioned_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
     chmod 600 "$CRED_FILE"
+    if [[ "${LCI_SKIP_ROOT_CHECK:-0}" != "1" && $EUID -eq 0 && "${OWNER_UID:-0}" != "0" ]]; then
+      chown "${OWNER_UID}:${OWNER_GID}" "$OUT_DIR" "$CRED_FILE"
+    fi
     unset PASSWORD
     reload_broker_if_running
     log "Provisioned MQTT identity '$DEVICE_ID' ($ACTION)."

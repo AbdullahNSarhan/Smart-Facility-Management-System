@@ -627,13 +627,143 @@ describe('LCI-SFM Production Node.js Backend Integration Suite', () => {
     );
   });
 
-  it('rotates Administrator credentials via POST /api/auth/admin-profile and invalidates old password', async () => {
+  let preRotationSessions = [];
+  let rotatedAdminCookie = null;
+  let rotatedAdminToken = null;
+  let rotatedAdminCsrf = null;
+
+  it('rejects unauthenticated, missing-CSRF, and non-Admin requests on POST /api/auth/admin-profile', async () => {
+    // 1. Unauthenticated request (no cookie or token) -> 401
+    const unauthRes = await request(ctx.app)
+      .post('/api/auth/admin-profile')
+      .send({
+        currentPassword: TEST_ADMIN_PASS,
+        newUsername: 'unauth_takeover',
+        newPassword: 'Updated-Str0ng-Pass#2026'
+      });
+    assert.equal(unauthRes.status, 401);
+    assert.equal(unauthRes.body.code, 'UNAUTHORIZED');
+
+    // 2. Invalid Bearer token -> 401
+    const badTokenRes = await request(ctx.app)
+      .post('/api/auth/admin-profile')
+      .set('Authorization', 'Bearer invalid-session-token-value-12345')
+      .send({
+        currentPassword: TEST_ADMIN_PASS,
+        newUsername: 'unauth_takeover',
+        newPassword: 'Updated-Str0ng-Pass#2026'
+      });
+    assert.equal(badTokenRes.status, 401);
+
+    // 3. Cookie-authenticated request missing X-CSRF-Token -> 403 CSRF_INVALID
+    const noCsrfRes = await request(ctx.app)
+      .post('/api/auth/admin-profile')
+      .set('Cookie', adminCookie)
+      .send({
+        currentPassword: TEST_ADMIN_PASS,
+        newUsername: 'csrf_bypass_admin',
+        newPassword: 'Updated-Str0ng-Pass#2026'
+      });
+    assert.equal(noCsrfRes.status, 403);
+    assert.equal(noCsrfRes.body.code, 'CSRF_INVALID');
+
+    // 4. Authenticated Viewer role -> 403 FORBIDDEN_ADMIN_REQUIRED
+    const viewerLoginRes = await request(ctx.app)
+      .post('/api/auth/login')
+      .send({ username: 'viewer_op', password: '654321' });
+    assert.equal(viewerLoginRes.status, 200);
+    const activeViewerToken = viewerLoginRes.body.token;
+
+    const viewerRes = await request(ctx.app)
+      .post('/api/auth/admin-profile')
+      .set('Authorization', `Bearer ${activeViewerToken}`)
+      .send({
+        currentPassword: TEST_ADMIN_PASS,
+        newUsername: 'viewer_escalation',
+        newPassword: 'Updated-Str0ng-Pass#2026'
+      });
+    assert.equal(viewerRes.status, 403);
+    assert.equal(viewerRes.body.code, 'FORBIDDEN_ADMIN_REQUIRED');
+  });
+
+  it('rejects missing or empty currentPassword on POST /api/auth/admin-profile without modifying credentials', async () => {
+    const missingRes = await request(ctx.app)
+      .post('/api/auth/admin-profile')
+      .set('Cookie', adminCookie)
+      .set('X-CSRF-Token', adminCsrf)
+      .send({
+        newUsername: 'sfm_chief_admin',
+        newPassword: 'Updated-Str0ng-Pass#2026'
+      });
+    assert.equal(missingRes.status, 400);
+    assert.equal(missingRes.body.code, 'VALIDATION_ERROR');
+
+    const emptyRes = await request(ctx.app)
+      .post('/api/auth/admin-profile')
+      .set('Cookie', adminCookie)
+      .set('X-CSRF-Token', adminCsrf)
+      .send({
+        currentPassword: '',
+        newUsername: 'sfm_chief_admin',
+        newPassword: 'Updated-Str0ng-Pass#2026'
+      });
+    assert.equal(emptyRes.status, 400);
+    assert.equal(emptyRes.body.code, 'VALIDATION_ERROR');
+
+    assert.ok(ctx.repo.verifyUserCredentials(TEST_ADMIN_USER, TEST_ADMIN_PASS));
+    assert.equal(ctx.repo.findUserByUsername('sfm_chief_admin'), undefined);
+  });
+
+  it('rejects incorrect currentPassword on POST /api/auth/admin-profile without modifying account or revoking sessions', async () => {
+    const beforeAdmin = ctx.repo.findUserByUsername(TEST_ADMIN_USER);
+    assert.ok(beforeAdmin);
+
+    const wrongPassRes = await request(ctx.app)
+      .post('/api/auth/admin-profile')
+      .set('Cookie', adminCookie)
+      .set('X-CSRF-Token', adminCsrf)
+      .send({
+        currentPassword: 'Wrong-Current-Password#9999',
+        newUsername: 'sfm_chief_admin',
+        newPassword: 'Updated-Str0ng-Pass#2026'
+      });
+    assert.equal(wrongPassRes.status, 403);
+    assert.equal(wrongPassRes.body.code, 'INVALID_CURRENT_PASSWORD');
+
+    const afterAdmin = ctx.repo.findUserByUsername(TEST_ADMIN_USER);
+    assert.equal(afterAdmin.password_hash, beforeAdmin.password_hash);
+    assert.equal(ctx.repo.findUserByUsername('sfm_chief_admin'), undefined);
+    assert.ok(ctx.repo.verifyUserCredentials(TEST_ADMIN_USER, TEST_ADMIN_PASS));
+
+    const sessionStillValid = await request(ctx.app)
+      .get('/api/auth/session')
+      .set('Cookie', adminCookie);
+    assert.equal(sessionStillValid.status, 200);
+  });
+
+  it('rotates Administrator credentials via POST /api/auth/admin-profile when currentPassword is valid', async () => {
+    // Establish a second concurrent Admin session prior to rotation
+    const concurrentLogin = await request(ctx.app)
+      .post('/api/auth/login')
+      .send({ username: TEST_ADMIN_USER, password: TEST_ADMIN_PASS });
+    assert.equal(concurrentLogin.status, 200);
+    const concurrentCookie = concurrentLogin.headers['set-cookie'][0].split(';')[0];
+    const concurrentToken = concurrentLogin.body.token;
+
+    preRotationSessions = [
+      { cookie: adminCookie, token: adminToken },
+      { cookie: concurrentCookie, token: concurrentToken }
+    ];
+
+    const beforeHash = ctx.repo.findUserByUsername(TEST_ADMIN_USER).password_hash;
+
     const rotateRes = await request(ctx.app)
       .post('/api/auth/admin-profile')
       .set('Cookie', adminCookie)
       .set('X-CSRF-Token', adminCsrf)
       .send({
         currentUsername: TEST_ADMIN_USER,
+        currentPassword: TEST_ADMIN_PASS,
         newUsername: 'sfm_chief_admin',
         newPassword: 'Updated-Str0ng-Pass#2026'
       });
@@ -641,17 +771,67 @@ describe('LCI-SFM Production Node.js Backend Integration Suite', () => {
     assert.equal(rotateRes.status, 200);
     assert.equal(rotateRes.body.ok, true);
     assert.equal(rotateRes.body.username, 'sfm_chief_admin');
+    assert.equal(rotateRes.body.sessions_revoked, true);
+    assert.ok(rotateRes.body.csrfToken && rotateRes.body.csrfToken !== adminCsrf);
 
+    const setCookieHeader = rotateRes.headers['set-cookie'];
+    assert.ok(Array.isArray(setCookieHeader) && setCookieHeader.length > 0);
+    assert.match(setCookieHeader[0], /HttpOnly/i);
+    assert.match(setCookieHeader[0], /SameSite=Strict/i);
+
+    rotatedAdminCookie = setCookieHeader[0].split(';')[0];
+    rotatedAdminToken = rotateRes.body.token;
+    rotatedAdminCsrf = rotateRes.body.csrfToken;
+
+    const updatedRow = ctx.repo.findUserByUsername('sfm_chief_admin');
+    assert.ok(updatedRow);
+    assert.ok(updatedRow.password_hash.startsWith('scrypt$'));
+    assert.notEqual(updatedRow.password_hash, beforeHash);
+    assert.notEqual(updatedRow.password_hash, 'Updated-Str0ng-Pass#2026');
+
+    adminCookie = rotatedAdminCookie;
+    adminToken = rotatedAdminToken;
+    adminCsrf = rotatedAdminCsrf;
+  });
+
+  it('rejects authentication with old password and accepts new password after rotation', async () => {
     const oldLoginRes = await request(ctx.app)
       .post('/api/auth/login')
       .send({ username: TEST_ADMIN_USER, password: TEST_ADMIN_PASS });
     assert.equal(oldLoginRes.status, 401);
+
+    const newUserOldPassRes = await request(ctx.app)
+      .post('/api/auth/login')
+      .send({ username: 'sfm_chief_admin', password: TEST_ADMIN_PASS });
+    assert.equal(newUserOldPassRes.status, 401);
 
     const newLoginRes = await request(ctx.app)
       .post('/api/auth/login')
       .send({ username: 'sfm_chief_admin', password: 'Updated-Str0ng-Pass#2026' });
     assert.equal(newLoginRes.status, 200);
     assert.equal(newLoginRes.body.role, 'Admin');
+  });
+
+  it('invalidates all pre-rotation Administrator sessions while keeping the rotated session active', async () => {
+    assert.equal(preRotationSessions.length, 2);
+    for (const prev of preRotationSessions) {
+      const byCookie = await request(ctx.app)
+        .get('/api/auth/session')
+        .set('Cookie', prev.cookie);
+      assert.equal(byCookie.status, 401);
+
+      const byBearer = await request(ctx.app)
+        .get('/api/auth/session')
+        .set('Authorization', `Bearer ${prev.token}`);
+      assert.equal(byBearer.status, 401);
+    }
+
+    const rotatedSessionRes = await request(ctx.app)
+      .get('/api/auth/session')
+      .set('Cookie', rotatedAdminCookie);
+    assert.equal(rotatedSessionRes.status, 200);
+    assert.equal(rotatedSessionRes.body.username, 'sfm_chief_admin');
+    assert.equal(rotatedSessionRes.body.csrfToken, rotatedAdminCsrf);
   });
 
   it('auto-migrates only the legacy 192.168.43.225:1880 host while preserving custom hosts and formats readiness status', async () => {

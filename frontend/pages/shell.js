@@ -253,6 +253,7 @@ export function renderAppShell({ pathname, breadcrumbs = [], contentNode, naviga
         {
           type: 'button',
           class: 'btn-icon mobile-menu-btn',
+          title: 'Toggle navigation menu',
           'aria-label': 'Toggle navigation menu',
           onClick: () => setMobileNavOpen(!store.mobileNavOpen)
         },

@@ -6,6 +6,7 @@
 node_modules
 backend/node_modules
 dist
+dist-release
 coverage
 data
 backups
@@ -23,6 +24,7 @@ backups
 DEPLOYMENT-CREDENTIALS.txt
 mosquitto/passwd
 mosquitto/device-credentials.txt
+mosquitto/provisioned-credentials
 docs
 *.md
 install.sh

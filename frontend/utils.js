@@ -211,6 +211,90 @@ export function buildSparklineSvg(values, options = {}) {
   return svg;
 }
 
+function formatChartAxisTime(iso, spanMs = 0, rangePreset = '') {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  const longRange = spanMs >= 6 * 3600 * 1000 || ['24h', '7d', 'all'].includes(String(rangePreset).toLowerCase());
+  if (longRange) {
+    return d.toLocaleString(undefined, {
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+  }
+  return formatShortTime(iso);
+}
+
+const ACCESS_STATE_ORDER = ['LOCKED', 'CLOSED', 'UNLOCKED', 'OPEN'];
+
+function resolveChartMode(samples, options = {}) {
+  const kind = String(options.kind || '').toUpperCase();
+  const dataType = String(options.dataType || '').toUpperCase();
+  if (kind === 'ACCESS') {
+    return {
+      step: true,
+      ticks: [
+        { val: 0, label: 'LOCKED' },
+        { val: 1, label: 'CLOSED' },
+        { val: 2, label: 'UNLOCKED' },
+        { val: 3, label: 'OPEN' }
+      ],
+      min: -0.25,
+      max: 3.25,
+      parse: (raw) => {
+        const idx = ACCESS_STATE_ORDER.indexOf(String(raw ?? '').toUpperCase());
+        return idx >= 0 ? idx : NaN;
+      }
+    };
+  }
+  if (kind === 'SWITCH') {
+    return {
+      step: true,
+      ticks: [
+        { val: 0, label: 'OFF' },
+        { val: 1, label: 'ON' }
+      ],
+      min: -0.2,
+      max: 1.2,
+      parse: (raw) => {
+        if (typeof raw === 'boolean') return raw ? 1 : 0;
+        const s = String(raw ?? '').toUpperCase();
+        if (s === 'ON' || s === 'TRUE' || s === '1') return 1;
+        if (s === 'OFF' || s === 'FALSE' || s === '0') return 0;
+        return NaN;
+      }
+    };
+  }
+  if (dataType === 'BOOLEAN') {
+    return {
+      step: true,
+      ticks: [
+        { val: 0, label: 'FALSE' },
+        { val: 1, label: 'TRUE' }
+      ],
+      min: -0.2,
+      max: 1.2,
+      parse: (raw) => {
+        if (typeof raw === 'boolean') return raw ? 1 : 0;
+        const s = String(raw ?? '').toUpperCase();
+        if (s === 'TRUE' || s === 'ON' || s === '1') return 1;
+        if (s === 'FALSE' || s === 'OFF' || s === '0') return 0;
+        return NaN;
+      }
+    };
+  }
+  return {
+    step: false,
+    ticks: null,
+    min: null,
+    max: null,
+    parse: (raw) => (typeof raw === 'boolean' ? (raw ? 1 : 0) : Number(raw))
+  };
+}
+
 export function buildHistoryChartSvg(samples, options = {}) {
   const width = options.width || 720;
   const height = options.height || 240;
@@ -222,10 +306,11 @@ export function buildHistoryChartSvg(samples, options = {}) {
   svg.setAttribute('role', 'img');
   svg.setAttribute('aria-label', options.label || 'Endpoint history chart');
 
-  const padL = 56;
-  const padR = 16;
+  const mode = resolveChartMode(samples, options);
+  const padL = mode.ticks ? 74 : 58;
+  const padR = 18;
   const padT = 16;
-  const padB = 30;
+  const padB = 32;
   const plotW = width - padL - padR;
   const plotH = height - padT - padB;
 
@@ -233,9 +318,10 @@ export function buildHistoryChartSvg(samples, options = {}) {
     .map((s) => ({
       ts: Date.parse(s.observed_at || s.timestamp || ''),
       iso: s.observed_at || s.timestamp || '',
-      val: typeof s.value === 'boolean' ? (s.value ? 1 : 0) : Number(s.value)
+      val: mode.parse(s.value)
     }))
-    .filter((s) => Number.isFinite(s.val));
+    .filter((s) => Number.isFinite(s.val))
+    .sort((a, b) => (Number.isFinite(a.ts) && Number.isFinite(b.ts) ? a.ts - b.ts : 0));
 
   if (valid.length === 0) {
     const text = document.createElementNS(ns, 'text');
@@ -245,13 +331,13 @@ export function buildHistoryChartSvg(samples, options = {}) {
     text.setAttribute('fill', 'currentColor');
     text.setAttribute('opacity', '0.55');
     text.setAttribute('font-size', '13');
-    text.textContent = 'No numeric or boolean history samples recorded yet';
+    text.textContent = 'No history samples recorded in the selected window';
     svg.appendChild(text);
     return svg;
   }
 
-  let min = Math.min(...valid.map((v) => v.val));
-  let max = Math.max(...valid.map((v) => v.val));
+  let min = mode.min !== null ? mode.min : Math.min(...valid.map((v) => v.val));
+  let max = mode.max !== null ? mode.max : Math.max(...valid.map((v) => v.val));
   if (min === max) {
     min -= 1;
     max += 1;
@@ -259,37 +345,80 @@ export function buildHistoryChartSvg(samples, options = {}) {
   const span = max - min;
 
   // Grid lines and Y labels
-  const ticks = 4;
-  for (let i = 0; i <= ticks; i++) {
-    const ratio = i / ticks;
-    const y = padT + ratio * plotH;
-    const val = max - ratio * span;
+  if (mode.ticks) {
+    for (const t of mode.ticks) {
+      const y = padT + (1 - (t.val - min) / span) * plotH;
+      const line = document.createElementNS(ns, 'line');
+      line.setAttribute('x1', String(padL));
+      line.setAttribute('y1', y.toFixed(1));
+      line.setAttribute('x2', String(width - padR));
+      line.setAttribute('y2', y.toFixed(1));
+      line.setAttribute('class', 'chart-grid-line');
+      svg.appendChild(line);
 
-    const line = document.createElementNS(ns, 'line');
-    line.setAttribute('x1', String(padL));
-    line.setAttribute('y1', y.toFixed(1));
-    line.setAttribute('x2', String(width - padR));
-    line.setAttribute('y2', y.toFixed(1));
-    line.setAttribute('class', 'chart-grid-line');
-    svg.appendChild(line);
+      const lbl = document.createElementNS(ns, 'text');
+      lbl.setAttribute('x', String(padL - 8));
+      lbl.setAttribute('y', (y + 4).toFixed(1));
+      lbl.setAttribute('text-anchor', 'end');
+      lbl.setAttribute('class', 'chart-axis-label');
+      lbl.textContent = t.label;
+      svg.appendChild(lbl);
+    }
+  } else {
+    const ticks = 4;
+    for (let i = 0; i <= ticks; i++) {
+      const ratio = i / ticks;
+      const y = padT + ratio * plotH;
+      const val = max - ratio * span;
 
-    const lbl = document.createElementNS(ns, 'text');
-    lbl.setAttribute('x', String(padL - 8));
-    lbl.setAttribute('y', (y + 4).toFixed(1));
-    lbl.setAttribute('text-anchor', 'end');
-    lbl.setAttribute('class', 'chart-axis-label');
-    lbl.textContent = `${val.toFixed(1)}${unit}`;
-    svg.appendChild(lbl);
+      const line = document.createElementNS(ns, 'line');
+      line.setAttribute('x1', String(padL));
+      line.setAttribute('y1', y.toFixed(1));
+      line.setAttribute('x2', String(width - padR));
+      line.setAttribute('y2', y.toFixed(1));
+      line.setAttribute('class', 'chart-grid-line');
+      svg.appendChild(line);
+
+      const lbl = document.createElementNS(ns, 'text');
+      lbl.setAttribute('x', String(padL - 8));
+      lbl.setAttribute('y', (y + 4).toFixed(1));
+      lbl.setAttribute('text-anchor', 'end');
+      lbl.setAttribute('class', 'chart-axis-label');
+      lbl.textContent = `${val.toFixed(1)}${unit}`;
+      svg.appendChild(lbl);
+    }
   }
 
+  const tsValues = valid.map((v) => v.ts).filter((t) => Number.isFinite(t));
+  const minTs = tsValues.length > 0 ? Math.min(...tsValues) : NaN;
+  const maxTs = tsValues.length > 0 ? Math.max(...tsValues) : NaN;
+  const tsSpan = Number.isFinite(minTs) && Number.isFinite(maxTs) ? maxTs - minTs : 0;
+
   const pts = valid.map((pt, i) => {
-    const x = valid.length === 1 ? padL + plotW / 2 : padL + (i / (valid.length - 1)) * plotW;
+    let x;
+    if (valid.length === 1) {
+      x = padL + plotW / 2;
+    } else if (tsSpan > 0 && Number.isFinite(pt.ts)) {
+      x = padL + ((pt.ts - minTs) / tsSpan) * plotW;
+    } else {
+      x = padL + (i / (valid.length - 1)) * plotW;
+    }
     const y = padT + (1 - (pt.val - min) / span) * plotH;
     return { x, y, pt };
   });
 
   if (pts.length >= 2) {
-    const pathD = pts.map((p, idx) => `${idx === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+    let pathD = '';
+    if (mode.step) {
+      const cmds = [`M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`];
+      for (let i = 1; i < pts.length; i++) {
+        cmds.push(`H${pts[i].x.toFixed(1)}`);
+        cmds.push(`V${pts[i].y.toFixed(1)}`);
+      }
+      pathD = cmds.join(' ');
+    } else {
+      pathD = pts.map((p, idx) => `${idx === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+    }
     const path = document.createElementNS(ns, 'path');
     path.setAttribute('d', pathD);
     path.setAttribute('fill', 'none');
@@ -308,12 +437,166 @@ export function buildHistoryChartSvg(samples, options = {}) {
     }
   }
 
-  // X start/end timestamps
+  // X start / mid / end timestamps (date+time on longer ranges)
   const firstLbl = document.createElementNS(ns, 'text');
   firstLbl.setAttribute('x', String(padL));
   firstLbl.setAttribute('y', String(height - 8));
   firstLbl.setAttribute('class', 'chart-axis-label');
-  firstLbl.textContent = formatShortTime(valid[0].iso);
+  firstLbl.textContent = formatChartAxisTime(valid[0].iso, tsSpan, options.rangePreset);
+  svg.appendChild(firstLbl);
+
+  if (valid.length > 2 && tsSpan > 0) {
+    const midIso = new Date(minTs + tsSpan / 2).toISOString();
+    const midLbl = document.createElementNS(ns, 'text');
+    midLbl.setAttribute('x', (padL + plotW / 2).toFixed(1));
+    midLbl.setAttribute('y', String(height - 8));
+    midLbl.setAttribute('text-anchor', 'middle');
+    midLbl.setAttribute('class', 'chart-axis-label');
+    midLbl.textContent = formatChartAxisTime(midIso, tsSpan, options.rangePreset);
+    svg.appendChild(midLbl);
+  }
+
+  if (valid.length > 1) {
+    const lastLbl = document.createElementNS(ns, 'text');
+    lastLbl.setAttribute('x', String(width - padR));
+    lastLbl.setAttribute('y', String(height - 8));
+    lastLbl.setAttribute('text-anchor', 'end');
+    lastLbl.setAttribute('class', 'chart-axis-label');
+    lastLbl.textContent = formatChartAxisTime(valid[valid.length - 1].iso, tsSpan, options.rangePreset);
+    svg.appendChild(lastLbl);
+  }
+
+  return svg;
+}
+
+export function buildRollupChartSvg(buckets, options = {}) {
+  const width = options.width || 720;
+  const height = options.height || 220;
+  const metric = options.metric || 'temperature'; // 'temperature' | 'humidity'
+  const unit = metric === 'humidity' ? ' %' : ' °C';
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('class', 'history-chart-svg');
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', options.label || 'Time-bucketed environmental rollup chart');
+
+  const padL = 58;
+  const padR = 18;
+  const padT = 16;
+  const padB = 32;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+
+  const valid = (buckets || [])
+    .map((b) => ({
+      ts: Number.isFinite(Number(b.timestamp_ms)) ? Number(b.timestamp_ms) : Date.parse(b.timestamp || ''),
+      iso: b.timestamp || '',
+      avg: Number(b[`${metric}_avg`]),
+      min: Number(b[`${metric}_min`]),
+      max: Number(b[`${metric}_max`]),
+      count: Number(b.sample_count || 0)
+    }))
+    .filter((b) => Number.isFinite(b.avg) && Number.isFinite(b.min) && Number.isFinite(b.max))
+    .sort((a, b) => a.ts - b.ts);
+
+  if (valid.length === 0) {
+    const text = document.createElementNS(ns, 'text');
+    text.setAttribute('x', String(width / 2));
+    text.setAttribute('y', String(height / 2));
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('fill', 'currentColor');
+    text.setAttribute('opacity', '0.55');
+    text.setAttribute('font-size', '13');
+    text.textContent = 'No environmental rollup buckets in selected range';
+    svg.appendChild(text);
+    return svg;
+  }
+
+  let min = Math.min(...valid.map((v) => v.min));
+  let max = Math.max(...valid.map((v) => v.max));
+  if (min === max) {
+    min -= 1;
+    max += 1;
+  }
+  const span = max - min;
+
+  for (let i = 0; i <= 4; i++) {
+    const ratio = i / 4;
+    const y = padT + ratio * plotH;
+    const val = max - ratio * span;
+    const line = document.createElementNS(ns, 'line');
+    line.setAttribute('x1', String(padL));
+    line.setAttribute('y1', y.toFixed(1));
+    line.setAttribute('x2', String(width - padR));
+    line.setAttribute('y2', y.toFixed(1));
+    line.setAttribute('class', 'chart-grid-line');
+    svg.appendChild(line);
+
+    const lbl = document.createElementNS(ns, 'text');
+    lbl.setAttribute('x', String(padL - 8));
+    lbl.setAttribute('y', (y + 4).toFixed(1));
+    lbl.setAttribute('text-anchor', 'end');
+    lbl.setAttribute('class', 'chart-axis-label');
+    lbl.textContent = `${val.toFixed(1)}${unit}`;
+    svg.appendChild(lbl);
+  }
+
+  const minTs = valid[0].ts;
+  const maxTs = valid[valid.length - 1].ts;
+  const tsSpan = Math.max(0, maxTs - minTs);
+
+  const pts = valid.map((pt, idx) => {
+    const x =
+      valid.length === 1
+        ? padL + plotW / 2
+        : tsSpan > 0
+          ? padL + ((pt.ts - minTs) / tsSpan) * plotW
+          : padL + (idx / (valid.length - 1)) * plotW;
+    return {
+      x,
+      yAvg: padT + (1 - (pt.avg - min) / span) * plotH,
+      yMin: padT + (1 - (pt.min - min) / span) * plotH,
+      yMax: padT + (1 - (pt.max - min) / span) * plotH,
+      pt
+    };
+  });
+
+  if (pts.length >= 2) {
+    const upper = pts.map((p, idx) => `${idx === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.yMax.toFixed(1)}`).join(' ');
+    const lower = [...pts]
+      .reverse()
+      .map((p) => `L${p.x.toFixed(1)},${p.yMin.toFixed(1)}`)
+      .join(' ');
+    const band = document.createElementNS(ns, 'path');
+    band.setAttribute('d', `${upper} ${lower} Z`);
+    band.setAttribute('class', 'chart-band-area');
+    svg.appendChild(band);
+
+    const avgPath = document.createElementNS(ns, 'path');
+    avgPath.setAttribute(
+      'd',
+      pts.map((p, idx) => `${idx === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.yAvg.toFixed(1)}`).join(' ')
+    );
+    avgPath.setAttribute('fill', 'none');
+    avgPath.setAttribute('class', 'chart-series-line');
+    svg.appendChild(avgPath);
+  }
+
+  for (const p of pts) {
+    const c = document.createElementNS(ns, 'circle');
+    c.setAttribute('cx', p.x.toFixed(1));
+    c.setAttribute('cy', p.yAvg.toFixed(1));
+    c.setAttribute('r', '2.5');
+    c.setAttribute('class', 'chart-series-dot');
+    svg.appendChild(c);
+  }
+
+  const firstLbl = document.createElementNS(ns, 'text');
+  firstLbl.setAttribute('x', String(padL));
+  firstLbl.setAttribute('y', String(height - 8));
+  firstLbl.setAttribute('class', 'chart-axis-label');
+  firstLbl.textContent = formatChartAxisTime(valid[0].iso, tsSpan, options.rangePreset);
   svg.appendChild(firstLbl);
 
   if (valid.length > 1) {
@@ -322,7 +605,7 @@ export function buildHistoryChartSvg(samples, options = {}) {
     lastLbl.setAttribute('y', String(height - 8));
     lastLbl.setAttribute('text-anchor', 'end');
     lastLbl.setAttribute('class', 'chart-axis-label');
-    lastLbl.textContent = formatShortTime(valid[valid.length - 1].iso);
+    lastLbl.textContent = formatChartAxisTime(valid[valid.length - 1].iso, tsSpan, options.rangePreset);
     svg.appendChild(lastLbl);
   }
 

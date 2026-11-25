@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 96" fill="none">
+  <ellipse cx="60" cy="86" rx="34" ry="5" fill="#60A5FA" fill-opacity="0.18"/>
+  <line x1="60" y1="46" x2="26" y2="24" stroke="#60A5FA" stroke-width="1.8" stroke-dasharray="3 3"/>
+  <line x1="60" y1="46" x2="94" y2="24" stroke="#60A5FA" stroke-width="1.8" stroke-dasharray="3 3"/>
+  <line x1="60" y1="46" x2="26" y2="68" stroke="#60A5FA" stroke-width="1.8" stroke-dasharray="3 3"/>
+  <line x1="60" y1="46" x2="94" y2="68" stroke="#60A5FA" stroke-width="1.8" stroke-dasharray="3 3"/>
+  <polygon points="60,22 81,34 81,58 60,70 39,58 39,34" fill="#162338" stroke="#60A5FA" stroke-width="1.9"/>
+  <circle cx="60" cy="46" r="9" fill="#60A5FA" fill-opacity="0.24" stroke="#93C5FD" stroke-width="1.6"/>
+  <circle cx="60" cy="46" r="3.5" fill="#60A5FA"/>
+  <circle cx="24" cy="23" r="6" fill="#162338" stroke="#93C5FD" stroke-width="1.6"/>
+  <circle cx="96" cy="23" r="6" fill="#162338" stroke="#93C5FD" stroke-width="1.6"/>
+  <circle cx="24" cy="69" r="6" fill="#162338" stroke="#93C5FD" stroke-width="1.6"/>
+  <circle cx="96" cy="69" r="6" fill="#162338" stroke="#93C5FD" stroke-width="1.6"/>
+</svg>

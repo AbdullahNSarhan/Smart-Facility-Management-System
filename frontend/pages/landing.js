@@ -4,6 +4,8 @@
 import { api } from '../api.js';
 import { store, toggleTheme } from '../store.js';
 import { el, svgIcon } from '../utils.js';
+import { disclaimerBanner, statusIndicator } from '../components/ui.js';
+import { DASHBOARD_ILLUSTRATIONS, renderCategoryIconBadge } from '../visuals.js';
 
 export function renderLandingPage({ navigate }) {
   const page = el('div', { class: 'landing-page' });
@@ -32,13 +34,20 @@ export function renderLandingPage({ navigate }) {
         el('a', { href: '#system-status', text: 'System' })
       ]),
       el('div', { class: 'landing-nav-actions' }, [
-        el('button', {
-          type: 'button',
-          class: 'btn-icon',
-          title: 'Toggle Dark / Light theme',
-          'aria-label': 'Toggle theme',
-          onClick: toggleTheme
-        }, [svgIcon(store.theme === 'dark' ? 'icon-sun' : 'icon-moon', 17)]),
+        (() => {
+          const themeBtn = el('button', {
+            type: 'button',
+            class: 'btn-icon',
+            title: 'Toggle Dark / Light theme',
+            'aria-label': store.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme',
+            onClick: () => {
+              toggleTheme();
+              themeBtn.setAttribute('aria-label', store.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+              themeBtn.replaceChildren(svgIcon(store.theme === 'dark' ? 'icon-sun' : 'icon-moon', 17));
+            }
+          }, [svgIcon(store.theme === 'dark' ? 'icon-sun' : 'icon-moon', 17)]);
+          return themeBtn;
+        })(),
         el('button', {
           type: 'button',
           class: 'btn btn-primary',
@@ -49,6 +58,14 @@ export function renderLandingPage({ navigate }) {
     ])
   ]);
   page.appendChild(header);
+
+  // Simulator notice slot — rendered only when /api/public/info confirms simulation === true
+  const simBannerWrap = el('div', {
+    id: 'landing-simulator-banner',
+    class: 'landing-container landing-banner-wrap',
+    hidden: true
+  });
+  page.appendChild(simBannerWrap);
 
   // Live safe status readout elements populated from /api/public/info
   const versionVal = el('span', { class: 'mono tabular-nums', text: '2.0.0-rc.1' });
@@ -94,10 +111,22 @@ export function renderLandingPage({ navigate }) {
       ]),
 
       // Grounded Architectural Overview Card (Not a fake ticker)
-      el('aside', { id: 'system-status', class: 'card landing-status-card', 'aria-label': 'Local Server Posture' }, [
-        el('div', { class: 'card-head' }, [
-          el('h2', { class: 'card-title', text: 'Local Node Posture' }),
+      el('aside', { id: 'system-status', class: 'card landing-status-card stack-sm', 'aria-label': 'Local Server Posture' }, [
+        el('div', { class: 'row-between' }, [
+          el('div', { class: 'row-gap-sm' }, [
+            renderCategoryIconBadge('infra', 'icon-server', 'md'),
+            el('h2', { class: 'card-title', text: 'Local Node Posture' })
+          ]),
           el('div', { class: 'status-inline' }, [dbDot, dbStateVal])
+        ]),
+        el('div', { style: 'display:flex;justify-content:center;padding:4px 0' }, [
+          el('img', {
+            src: DASHBOARD_ILLUSTRATIONS.FACILITY_HUB,
+            alt: '',
+            style: 'width:100%;max-width:240px;height:auto',
+            loading: 'eager',
+            decoding: 'async'
+          })
         ]),
         el('div', { class: 'spec-list' }, [
           el('div', { class: 'spec-row' }, [
@@ -130,37 +159,43 @@ export function renderLandingPage({ navigate }) {
   ]);
   page.appendChild(hero);
 
-  // Capabilities Grid
+  // Capabilities Grid with Distinct Hardware Category Identities
   const capabilities = [
     {
-      icon: 'icon-grid',
+      cat: 'network',
+      icon: 'icon-rooms',
       title: 'Multi-Room Facility Topology',
       desc: 'Organize rooms across floors and buildings, reassign devices cleanly without losing historical telemetry, and filter alarms per room.'
     },
     {
-      icon: 'icon-network',
+      cat: 'env',
+      icon: 'icon-thermometer',
       title: 'Generic Endpoint Engine',
       desc: 'Define sensors, boolean detectors, relays, access controllers, and snapshot cameras via structured Capability and Data-Type metadata.'
     },
     {
+      cat: 'infra',
       icon: 'icon-shield',
       title: 'Quarantine & Manifest Drift',
       desc: 'Unregistered MQTT devices are quarantined for Admin review. Capability changes trigger drift alerts without mutating your schema.'
     },
     {
-      icon: 'icon-warning',
-      title: 'Deterministic Alarming',
-      desc: 'Numeric high/low thresholds and boolean rules with dwell timers, hysteresis recovery, operator acknowledgements, and full audit history.'
+      cat: 'relay',
+      icon: 'icon-bolt',
+      title: 'Deterministic Alarming & Relays',
+      desc: 'Numeric high/low thresholds and boolean rules with dwell timers, hysteresis recovery, confirmed switch actuation, and full audit history.'
     },
     {
-      icon: 'icon-lock',
-      title: 'Edge-Safe Access & Commands',
-      desc: 'Audited remote overrides and switch commands track PUBLISHED, ACKNOWLEDGED, and STATE_REPORTED states without bypassing edge safety.'
+      cat: 'access',
+      icon: 'icon-door',
+      title: 'Edge-Safe Access & Credentials',
+      desc: 'Central RFID/PIN credential lifecycle and safety-audited door overrides track PUBLISHED, ACKNOWLEDGED, and STATE_REPORTED states.'
     },
     {
-      icon: 'icon-activity',
-      title: 'Air-Gapped Deployment Platform',
-      desc: 'Guided Ubuntu Server installer, static IP helper, optional local TLS, and signed offline release bundles with automatic rollback.'
+      cat: 'camera',
+      icon: 'icon-camera',
+      title: 'Authenticated Camera & Air-Gap',
+      desc: 'Same-origin camera snapshot proxy, zero external CDNs, guided Ubuntu Server installer, and signed offline release bundles.'
     }
   ];
 
@@ -175,8 +210,8 @@ export function renderLandingPage({ navigate }) {
           'div',
           { class: 'feature-grid' },
           capabilities.map((c) =>
-            el('article', { class: 'card feature-card' }, [
-              el('div', { class: 'feature-icon' }, [svgIcon(c.icon, 20)]),
+            el('article', { class: `card feature-card cat-${c.cat}`, style: 'border-top:2px solid var(--cat-border)' }, [
+              renderCategoryIconBadge(c.cat, c.icon, 'md'),
               el('h3', { class: 'feature-title', text: c.title }),
               el('p', { class: 'feature-desc', text: c.desc })
             ])
@@ -222,9 +257,31 @@ export function renderLandingPage({ navigate }) {
   // Fetch safe /api/public/info (non-blocking)
   api.getPublicInfo()
     .then((info) => {
-      if (info?.version) versionVal.textContent = info.version;
-      if (info?.mode) modeVal.textContent = info.mode === 'simulator' ? 'Isolated Simulator' : 'On-Premises LAN';
-      if (info?.database_ok) {
+      if (typeof info?.version === 'string' && info.version.trim()) {
+        versionVal.textContent = info.version.trim();
+      }
+
+      const isSimulation = Boolean(info && info.simulation === true);
+      modeVal.replaceChildren();
+      if (isSimulation) {
+        modeVal.appendChild(statusIndicator('SIMULATION', 'Isolated Simulator', { compact: true }));
+        simBannerWrap.replaceChildren(
+          disclaimerBanner({
+            icon: 'icon-activity',
+            tone: 'info',
+            title: 'ISOLATED SIMULATOR MODE ACTIVE',
+            message:
+              'This instance is running against an isolated synthetic telemetry driver and sandboxed database. No physical facility controllers are contacted.'
+          })
+        );
+        simBannerWrap.hidden = false;
+      } else {
+        modeVal.textContent = 'On-Premises LAN';
+        simBannerWrap.replaceChildren();
+        simBannerWrap.hidden = true;
+      }
+
+      if (info?.database_ok === true) {
         dbDot.className = 'status-dot dot-ok';
         dbStateVal.textContent = 'Server Online';
       } else {
@@ -233,6 +290,9 @@ export function renderLandingPage({ navigate }) {
       }
     })
     .catch(() => {
+      simBannerWrap.replaceChildren();
+      simBannerWrap.hidden = true;
+      modeVal.textContent = 'On-Premises LAN';
       dbDot.className = 'status-dot dot-crit';
       dbStateVal.textContent = 'Unreachable';
     });

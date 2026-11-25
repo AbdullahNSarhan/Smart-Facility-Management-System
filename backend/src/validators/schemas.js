@@ -49,11 +49,14 @@ export const provisionUserSchema = z.object({
   face_linked: z.boolean().optional().default(false)
 });
 
-export const adminProfileSchema = z.object({
-  currentUsername: z.string().trim().min(1).max(64).optional(),
-  newUsername: z.string().trim().regex(SAFE_USERNAME_REGEX, 'Admin username must be 2-64 valid characters'),
-  newPassword: z.string().min(12, 'Password must be at least 12 characters').max(128)
-});
+export const adminProfileSchema = z
+  .object({
+    currentUsername: z.string().trim().min(1).max(64).optional(),
+    currentPassword: z.string().min(1, 'Current password is required').max(128),
+    newUsername: z.string().trim().regex(SAFE_USERNAME_REGEX, 'Admin username must be 2-64 valid characters'),
+    newPassword: z.string().min(12, 'Password must be at least 12 characters').max(128)
+  })
+  .strict();
 
 export const updateUserRoleSchema = z.object({
   id: z.number().int().positive(),

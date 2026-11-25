@@ -412,8 +412,79 @@ describe('Multi-room facility domain, generic endpoint engine, manifest quaranti
         scriptPath, 'list', '--passwd-file', path.join(cliDir, 'not-created-passwd')
       ], { encoding: 'utf8' });
       assert.match(listOut, /Password file not found/);
+
+      // End-to-end add / status / revoke using mock mosquitto_passwd without touching live broker
+      const mockBin = path.join(cliDir, 'bin');
+      fs.mkdirSync(mockBin, { recursive: true });
+      fs.writeFileSync(
+        path.join(mockBin, 'mosquitto_passwd'),
+        `#!/usr/bin/env bash
+set -e
+if [[ "$1" == "-b" ]]; then
+  FILE="$2"; USER="$3"; PASS="$4"
+  grep -v "^\\\${USER}:" "$FILE" 2>/dev/null > "$FILE.tmp" || true
+  printf '%s:mock_hash_%s\\n' "$USER" "\${#PASS}" >> "$FILE.tmp"
+  mv "$FILE.tmp" "$FILE"
+elif [[ "$1" == "-D" ]]; then
+  FILE="$2"; USER="$3"
+  grep -v "^\\\${USER}:" "$FILE" 2>/dev/null > "$FILE.tmp" || true
+  mv "$FILE.tmp" "$FILE"
+fi
+`,
+        { mode: 0o755 }
+      );
+
+      const envWithMock = { ...process.env, PATH: `${mockBin}:${process.env.PATH}`, LCI_SKIP_ROOT_CHECK: '1' };
+      execFileSync('bash', [
+        scriptPath, 'add', 'sensor_room2',
+        '--passwd-file', passwdFile,
+        '--acl-file', path.join(repoRoot, 'mosquitto', 'acl'),
+        '--out-dir', outDir,
+        '--no-reload'
+      ], { env: envWithMock, stdio: 'pipe' });
+
+      const credFile = path.join(outDir, 'sensor_room2.cred');
+      assert.equal(fs.existsSync(credFile), true);
+      assert.equal(fs.statSync(outDir).mode & 0o777, 0o700);
+      assert.equal(fs.statSync(credFile).mode & 0o777, 0o600);
+
+      const statusOut = execFileSync('bash', [
+        scriptPath, 'status', 'sensor_room2', '--passwd-file', passwdFile
+      ], { env: envWithMock, encoding: 'utf8' }).trim();
+      assert.equal(statusOut, 'PROVISIONED sensor_room2');
+
+      execFileSync('bash', [
+        scriptPath, 'revoke', 'sensor_room2',
+        '--passwd-file', passwdFile,
+        '--out-dir', outDir,
+        '--no-reload'
+      ], { env: envWithMock, stdio: 'pipe' });
+      assert.equal(fs.existsSync(credFile), false);
     } finally {
       fs.rmSync(cliDir, { recursive: true, force: true });
+    }
+  });
+
+  it('enforces Git/Docker ignore hygiene and Mosquitto GID 1883 / scoped safe.directory guards in operational scripts', () => {
+    const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
+    const gitignore = fs.readFileSync(path.join(repoRoot, '.gitignore'), 'utf8');
+    const dockerignore = fs.readFileSync(path.join(repoRoot, '.dockerignore'), 'utf8');
+
+    assert.match(gitignore, /^mosquitto\/provisioned-credentials\/$/m);
+    assert.match(gitignore, /^dist-release\/$/m);
+    assert.doesNotMatch(gitignore, /project-knowledge/);
+
+    assert.match(dockerignore, /^mosquitto\/provisioned-credentials$/m);
+    assert.match(dockerignore, /^dist-release$/m);
+
+    for (const rel of ['install.sh', 'update.sh', 'scripts/provision-mqtt-device.sh']) {
+      const fullPath = path.join(repoRoot, rel);
+      execFileSync('bash', ['-n', fullPath], { stdio: 'pipe' });
+      const content = fs.readFileSync(fullPath, 'utf8');
+      assert.doesNotMatch(content, /chown\s+1883:1883/, `${rel} must preserve repo owner UID with GID 1883`);
+      assert.match(content, /:1883/, `${rel} must grant group 1883 access`);
+      assert.match(content, /0640/, `${rel} must use mode 0640 for Mosquitto config/secret files`);
+      assert.doesNotMatch(content, /safe\.directory\s+['"]?\*['"]?/, `${rel} must never use wildcard safe.directory`);
     }
   });
 });

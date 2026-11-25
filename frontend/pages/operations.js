@@ -14,7 +14,7 @@ import {
   unlockNotificationAudio,
   store
 } from '../store.js';
-import { el, clear, svgIcon, formatAge, formatTimestamp, exportRowsToCsv } from '../utils.js';
+import { el, clear, svgIcon, formatAge, formatTimestamp, formatNumber, exportRowsToCsv, buildRollupChartSvg } from '../utils.js';
 import {
   pageHeader,
   statusIndicator,
@@ -27,6 +27,7 @@ import {
   renderAdaptiveCollection,
   segmentedFilter
 } from '../components/ui.js';
+import { EMPTY_ILLUSTRATIONS } from '../visuals.js';
 
 function severityWeight(sev) {
   const s = String(sev || '').toUpperCase();
@@ -134,33 +135,37 @@ function openRuleModal({ rule = null, devices = [], onSaved }) {
   let conditionType = rule?.condition_type || (isBoolEp() ? 'BOOLEAN_TRUE' : 'THRESHOLD_HIGH');
 
   const nameInput = el('input', {
+    id: 'rule-name-input',
     class: 'input',
     type: 'text',
     value: rule?.name || '',
     placeholder: 'e.g. High Rack Temperature',
     maxlength: 80
   });
-  const devSelect = el('select', { class: 'select', disabled: isEdit });
-  const epSelect = el('select', { class: 'select', disabled: isEdit });
+  const devSelect = el('select', { id: 'rule-device-select', class: 'select', disabled: isEdit });
+  const epSelect = el('select', { id: 'rule-endpoint-select', class: 'select', disabled: isEdit });
   const sevSelect = el(
     'select',
-    { class: 'select' },
+    { id: 'rule-severity-select', class: 'select' },
     ['WARNING', 'CRITICAL'].map((s) => el('option', { value: s, text: s, selected: (rule?.severity || 'WARNING') === s }))
   );
-  const condSelect = el('select', { class: 'select' });
+  const condSelect = el('select', { id: 'rule-condition-select', class: 'select' });
   const thresholdInput = el('input', {
+    id: 'rule-threshold-input',
     class: 'input mono',
     type: 'number',
     step: 'any',
     value: String(rule?.threshold ?? 30)
   });
   const clearThresholdInput = el('input', {
+    id: 'rule-clear-threshold-input',
     class: 'input mono',
     type: 'number',
     step: 'any',
     value: String(rule?.clear_threshold ?? 28)
   });
   const holdInput = el('input', {
+    id: 'rule-hold-input',
     class: 'input mono',
     type: 'number',
     min: 0,
@@ -168,15 +173,16 @@ function openRuleModal({ rule = null, devices = [], onSaved }) {
     value: String(rule?.hold_s ?? 10)
   });
   const clearHoldInput = el('input', {
+    id: 'rule-clear-hold-input',
     class: 'input mono',
     type: 'number',
     min: 0,
     max: 3600,
     value: String(rule?.clear_hold_s ?? 10)
   });
-  const enabledCb = el('input', { type: 'checkbox', checked: rule ? Boolean(rule.enabled) : true });
+  const enabledCb = el('input', { id: 'rule-enabled-cb', type: 'checkbox', checked: rule ? Boolean(rule.enabled) : true });
   const thresholdWrap = el('div', { class: 'form-grid form-field-full' });
-  const errBox = el('div', { class: 'form-error', hidden: true });
+  const errBox = el('div', { class: 'form-error', role: 'alert', hidden: true });
 
   function populateDevices() {
     clear(devSelect);
@@ -217,8 +223,8 @@ function openRuleModal({ rule = null, devices = [], onSaved }) {
           { v: 'BOOLEAN_FALSE', l: 'Trigger when FALSE (recover on TRUE)' }
         ]
       : [
-          { v: 'THRESHOLD_HIGH', l: 'Threshold High (>= trigger, <= recovery)' },
-          { v: 'THRESHOLD_LOW', l: 'Threshold Low (<= trigger, >= recovery)' }
+          { v: 'THRESHOLD_HIGH', l: 'Threshold High (>= trigger, < recovery)' },
+          { v: 'THRESHOLD_LOW', l: 'Threshold Low (<= trigger, > recovery)' }
         ];
     if (!validConds.some((c) => c.v === conditionType)) {
       conditionType = validConds[0].v;
@@ -243,15 +249,17 @@ function openRuleModal({ rule = null, devices = [], onSaved }) {
     const isLow = conditionType === 'THRESHOLD_LOW';
     thresholdWrap.append(
       el('div', { class: 'form-field' }, [
-        el('label', { class: 'form-label', text: isLow ? 'Trigger Threshold (<=) *' : 'Trigger Threshold (>=) *' }),
+        el('label', { class: 'form-label', for: 'rule-threshold-input', text: isLow ? 'Trigger Threshold (<=) *' : 'Trigger Threshold (>=) *' }),
         thresholdInput
       ]),
       el('div', { class: 'form-field' }, [
-        el('label', { class: 'form-label', text: isLow ? 'Recovery Hysteresis (>=) *' : 'Recovery Hysteresis (<=) *' }),
+        el('label', { class: 'form-label', for: 'rule-clear-threshold-input', text: isLow ? 'Recovery Hysteresis (>) *' : 'Recovery Hysteresis (<) *' }),
         clearThresholdInput,
         el('span', {
           class: 'form-hint',
-          text: isLow ? 'Must be >= trigger threshold to prevent flapping.' : 'Must be <= trigger threshold to prevent flapping.'
+          text: isLow
+            ? 'Must be strictly above (>) trigger threshold to prevent flapping.'
+            : 'Must be strictly below (<) trigger threshold to prevent flapping.'
         })
       ])
     );
@@ -277,38 +285,38 @@ function openRuleModal({ rule = null, devices = [], onSaved }) {
     errBox,
     el('div', { class: 'form-grid' }, [
       el('div', { class: 'form-field form-field-full' }, [
-        el('label', { class: 'form-label', text: 'Rule Name *' }),
+        el('label', { class: 'form-label', for: 'rule-name-input', text: 'Rule Name *' }),
         nameInput
       ]),
       el('div', { class: 'form-field' }, [
-        el('label', { class: 'form-label', text: 'Target Device (Sensors only) *' }),
+        el('label', { class: 'form-label', for: 'rule-device-select', text: 'Target Device (Sensors only) *' }),
         devSelect
       ]),
       el('div', { class: 'form-field' }, [
-        el('label', { class: 'form-label', text: 'Sensor Endpoint *' }),
+        el('label', { class: 'form-label', for: 'rule-endpoint-select', text: 'Sensor Endpoint *' }),
         epSelect
       ]),
       el('div', { class: 'form-field' }, [
-        el('label', { class: 'form-label', text: 'Severity *' }),
+        el('label', { class: 'form-label', for: 'rule-severity-select', text: 'Severity *' }),
         sevSelect
       ]),
       el('div', { class: 'form-field' }, [
-        el('label', { class: 'form-label', text: 'Condition *' }),
+        el('label', { class: 'form-label', for: 'rule-condition-select', text: 'Condition *' }),
         condSelect
       ]),
       thresholdWrap,
       el('div', { class: 'form-field' }, [
-        el('label', { class: 'form-label', text: 'Trigger Hold / Dwell (seconds)' }),
+        el('label', { class: 'form-label', for: 'rule-hold-input', text: 'Trigger Hold / Dwell (seconds)' }),
         holdInput,
-        el('span', { class: 'form-hint', text: 'Reading must remain breached for this duration before raising.' })
+        el('span', { class: 'form-hint', text: 'Reading must remain breached for this duration before raising (0–3600s).' })
       ]),
       el('div', { class: 'form-field' }, [
-        el('label', { class: 'form-label', text: 'Recovery Hold (seconds)' }),
+        el('label', { class: 'form-label', for: 'rule-clear-hold-input', text: 'Recovery Hold (seconds)' }),
         clearHoldInput,
-        el('span', { class: 'form-hint', text: 'Reading must remain recovered before auto-resolving.' })
+        el('span', { class: 'form-hint', text: 'Reading must remain recovered before auto-resolving (0–3600s).' })
       ]),
       el('div', { class: 'form-field form-field-full' }, [
-        el('label', { class: 'checkbox-row' }, [enabledCb, el('span', { text: 'Enable rule evaluation' })])
+        el('label', { class: 'checkbox-row', for: 'rule-enabled-cb' }, [enabledCb, el('span', { text: 'Enable rule evaluation' })])
       ])
     ])
   ]);
@@ -333,18 +341,26 @@ function openRuleModal({ rule = null, devices = [], onSaved }) {
         errBox.hidden = false;
         return;
       }
-      if (!boolMode && conditionType === 'THRESHOLD_HIGH' && clearThreshold > threshold) {
-        errBox.textContent = 'For THRESHOLD_HIGH, Recovery Hysteresis must be less than or equal to Trigger Threshold.';
+      if (!boolMode && conditionType === 'THRESHOLD_HIGH' && clearThreshold >= threshold) {
+        errBox.textContent = 'For THRESHOLD_HIGH, Recovery Hysteresis must be strictly below (<) Trigger Threshold.';
         errBox.hidden = false;
         return;
       }
-      if (!boolMode && conditionType === 'THRESHOLD_LOW' && clearThreshold < threshold) {
-        errBox.textContent = 'For THRESHOLD_LOW, Recovery Hysteresis must be greater than or equal to Trigger Threshold.';
+      if (!boolMode && conditionType === 'THRESHOLD_LOW' && clearThreshold <= threshold) {
+        errBox.textContent = 'For THRESHOLD_LOW, Recovery Hysteresis must be strictly above (>) Trigger Threshold.';
+        errBox.hidden = false;
+        return;
+      }
+      const holdS = Number(holdInput.value);
+      const clearHoldS = Number(clearHoldInput.value);
+      if (!Number.isInteger(holdS) || holdS < 0 || holdS > 3600 || !Number.isInteger(clearHoldS) || clearHoldS < 0 || clearHoldS > 3600) {
+        errBox.textContent = 'Hold and Recovery Hold timers must be whole integers between 0 and 3600 seconds.';
         errBox.hidden = false;
         return;
       }
 
       submitBtn.disabled = true;
+      submitBtn.textContent = 'Saving…';
       try {
         const payload = {
           name,
@@ -354,8 +370,8 @@ function openRuleModal({ rule = null, devices = [], onSaved }) {
           condition_type: conditionType,
           threshold,
           clear_threshold: clearThreshold,
-          hold_s: Math.max(0, Number(holdInput.value || 0)),
-          clear_hold_s: Math.max(0, Number(clearHoldInput.value || 0)),
+          hold_s: holdS,
+          clear_hold_s: clearHoldS,
           enabled: enabledCb.checked
         };
         if (isEdit) {
@@ -377,6 +393,7 @@ function openRuleModal({ rule = null, devices = [], onSaved }) {
         errBox.hidden = false;
       } finally {
         submitBtn.disabled = false;
+        submitBtn.textContent = isEdit ? 'Save Rule' : 'Create Rule';
       }
     }
   });
@@ -393,7 +410,13 @@ function openRuleModal({ rule = null, devices = [], onSaved }) {
   });
 }
 
-export function renderAlarmsPage({ navigate }) {
+function toIsoOrEmpty(localVal) {
+  if (!localVal) return '';
+  const parsed = new Date(localVal);
+  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString();
+}
+
+export function renderAlarmsPage({ query, navigate }) {
   const container = el('div', { class: 'stack-lg' });
   const admin = isAdmin();
   let disposed = false;
@@ -402,7 +425,14 @@ export function renderAlarmsPage({ navigate }) {
   let alarmStateFilter = '';
   let alarmSevFilter = '';
   let roomFilter = '';
+  let deviceFilter = query?.get('device_id') || '';
+  let fromFilter = '';
+  let toFilter = '';
   let searchFilter = '';
+  let page = 1;
+  const pageSize = 25;
+  let liveRefreshTimer = null;
+  let searchTimer = null;
   let cachedRooms = [];
   let cachedDevices = [];
 
@@ -583,13 +613,47 @@ export function renderAlarmsPage({ navigate }) {
     );
     roomSel.addEventListener('change', () => {
       roomFilter = roomSel.value;
+      page = 1;
+      renderFilterBar();
+      loadTab();
+    });
+
+    const devSel = el(
+      'select',
+      { class: 'select', 'aria-label': 'Filter by device' },
+      [
+        el('option', { value: '', text: 'All devices' }),
+        ...cachedDevices.map((d) =>
+          el('option', { value: d.device_id, text: `${d.name} (${d.device_id})`, selected: d.device_id === deviceFilter })
+        )
+      ]
+    );
+    devSel.addEventListener('change', () => {
+      deviceFilter = devSel.value;
+      page = 1;
+      renderFilterBar();
       loadTab();
     });
 
     if (activeTab === 'rules') {
-      filterSlot.appendChild(el('div', { class: 'card card-compact filter-bar' }, [roomSel]));
+      const clearRulesBtn = el('button', {
+        type: 'button',
+        class: 'btn btn-ghost btn-sm',
+        text: 'Clear Filters',
+        hidden: !(roomFilter || deviceFilter),
+        onClick: () => {
+          roomFilter = '';
+          deviceFilter = '';
+          renderFilterBar();
+          loadTab();
+        }
+      });
+      filterSlot.appendChild(el('div', { class: 'card card-compact filter-bar' }, [roomSel, devSel, clearRulesBtn]));
       return;
     }
+
+    const hasAlarmFilters = () =>
+      Boolean(searchFilter || alarmStateFilter || alarmSevFilter || roomFilter || deviceFilter || fromFilter || toFilter);
 
     const searchIn = el('input', {
       class: 'input',
@@ -597,12 +661,6 @@ export function renderAlarmsPage({ navigate }) {
       value: searchFilter,
       placeholder: 'Search alarm title or device...',
       'aria-label': 'Search alarms'
-    });
-    let t = null;
-    searchIn.addEventListener('input', () => {
-      searchFilter = searchIn.value.trim();
-      clearTimeout(t);
-      t = setTimeout(loadTab, 220);
     });
 
     const stateSel = el(
@@ -615,10 +673,6 @@ export function renderAlarmsPage({ navigate }) {
         { v: 'RESOLVED', l: 'Resolved' }
       ].map((o) => el('option', { value: o.v, text: o.l, selected: o.v === alarmStateFilter }))
     );
-    stateSel.addEventListener('change', () => {
-      alarmStateFilter = stateSel.value;
-      loadTab();
-    });
 
     const sevSel = el(
       'select',
@@ -630,31 +684,119 @@ export function renderAlarmsPage({ navigate }) {
         { v: 'INFO', l: 'Info' }
       ].map((o) => el('option', { value: o.v, text: o.l, selected: o.v === alarmSevFilter }))
     );
+
+    const fromIn = el('input', {
+      id: 'alarm-from-input',
+      class: 'input mono text-xs',
+      type: 'datetime-local',
+      value: fromFilter,
+      'aria-label': 'Filter alarms raised from date/time'
+    });
+    const toIn = el('input', {
+      id: 'alarm-to-input',
+      class: 'input mono text-xs',
+      type: 'datetime-local',
+      value: toFilter,
+      'aria-label': 'Filter alarms raised to date/time'
+    });
+
+    const clearAlarmsBtn = el('button', {
+      id: 'alarms-clear-filters-btn',
+      type: 'button',
+      class: 'btn btn-ghost btn-sm',
+      text: 'Clear Filters',
+      hidden: !hasAlarmFilters(),
+      onClick: () => {
+        searchFilter = '';
+        alarmStateFilter = '';
+        alarmSevFilter = '';
+        roomFilter = '';
+        deviceFilter = '';
+        fromFilter = '';
+        toFilter = '';
+        page = 1;
+        renderFilterBar();
+        loadTab();
+      }
+    });
+
+    searchIn.addEventListener('input', () => {
+      searchFilter = searchIn.value.trim();
+      page = 1;
+      clearAlarmsBtn.hidden = !hasAlarmFilters();
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(loadTab, 220);
+    });
+    stateSel.addEventListener('change', () => {
+      alarmStateFilter = stateSel.value;
+      page = 1;
+      clearAlarmsBtn.hidden = !hasAlarmFilters();
+      loadTab();
+    });
     sevSel.addEventListener('change', () => {
       alarmSevFilter = sevSel.value;
+      page = 1;
+      clearAlarmsBtn.hidden = !hasAlarmFilters();
+      loadTab();
+    });
+    fromIn.addEventListener('change', () => {
+      fromFilter = fromIn.value;
+      page = 1;
+      clearAlarmsBtn.hidden = !hasAlarmFilters();
+      loadTab();
+    });
+    toIn.addEventListener('change', () => {
+      toFilter = toIn.value;
+      page = 1;
+      clearAlarmsBtn.hidden = !hasAlarmFilters();
       loadTab();
     });
 
     filterSlot.appendChild(
-      el('div', { class: 'card card-compact filter-bar' }, [searchIn, stateSel, sevSel, roomSel])
+      el('div', { class: 'card card-compact stack-xs' }, [
+        el('div', { class: 'filter-bar' }, [searchIn, stateSel, sevSel, roomSel, devSel]),
+        el('div', { class: 'filter-bar' }, [
+          el('div', { class: 'filter-date-field' }, [
+            el('label', { class: 'text-xs text-muted', for: 'alarm-from-input', text: 'From:' }),
+            fromIn
+          ]),
+          el('div', { class: 'filter-date-field' }, [
+            el('label', { class: 'text-xs text-muted', for: 'alarm-to-input', text: 'To:' }),
+            toIn
+          ]),
+          clearAlarmsBtn
+        ])
+      ])
     );
   }
 
-  async function loadTab() {
+  async function loadTab(silent = false) {
     if (disposed) return;
-    clear(bodySlot);
-    bodySlot.appendChild(loadingSkeleton('table', 4));
+    if (!silent) {
+      clear(bodySlot);
+      bodySlot.appendChild(loadingSkeleton('table', 4));
+    }
 
     try {
       if (activeTab === 'alarms') {
-        const res = await api.listAlarms({
+        const alarmQuery = {
           state: alarmStateFilter,
           severity: alarmSevFilter,
           room_id: roomFilter,
+          device_id: deviceFilter,
           search: searchFilter,
-          limit: 100
-        });
+          page,
+          limit: pageSize
+        };
+        const fromIso = toIsoOrEmpty(fromFilter);
+        const toIso = toIsoOrEmpty(toFilter);
+        if (fromIso) alarmQuery.from = fromIso;
+        if (toIso) alarmQuery.to = toIso;
+
+        const res = await api.listAlarms(alarmQuery);
         if (disposed) return;
+        const total = Number(res.total ?? (res.alarms || []).length);
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
         const rows = (res.alarms || []).sort((a, b) => {
           const activeA = a.state === 'RESOLVED' ? 1 : 0;
           const activeB = b.state === 'RESOLVED' ? 1 : 0;
@@ -663,13 +805,48 @@ export function renderAlarmsPage({ navigate }) {
         });
 
         clear(bodySlot);
+        if (total > 0) {
+          bodySlot.appendChild(
+            el('div', { class: 'row-between' }, [
+              el('span', {
+                class: 'text-xs text-muted mono tabular-nums',
+                text: `${res.active ?? 0} active · Showing ${rows.length} of ${total} matching alarms`
+              }),
+              totalPages > 1
+                ? el('div', { class: 'btn-row' }, [
+                    el('button', {
+                      type: 'button',
+                      class: 'btn btn-secondary btn-sm',
+                      disabled: page <= 1,
+                      text: 'Prev',
+                      onClick: () => {
+                        page = Math.max(1, page - 1);
+                        loadTab();
+                      }
+                    }),
+                    el('span', { class: 'mono text-xs text-muted tabular-nums', text: `Page ${page} / ${totalPages}` }),
+                    el('button', {
+                      type: 'button',
+                      class: 'btn btn-secondary btn-sm',
+                      disabled: page >= totalPages,
+                      text: 'Next',
+                      onClick: () => {
+                        page = Math.min(totalPages, page + 1);
+                        loadTab();
+                      }
+                    })
+                  ])
+                : null
+            ])
+          );
+        }
         bodySlot.appendChild(
           renderAdaptiveCollection({
             ariaLabel: 'Facility alarms list',
             rows,
             onRowClick: (a) => openAlarmDrawer(a),
             emptyNode: emptyState({
-              icon: 'icon-check-circle',
+              illustration: EMPTY_ILLUSTRATIONS.ALARMS_OK,
               title: 'No alarms match the current filter',
               message: 'Active and historical threshold or stale-device alarms appear here.'
             }),
@@ -757,7 +934,7 @@ export function renderAlarmsPage({ navigate }) {
           })
         );
       } else {
-        const res = await api.listRules({ room_id: roomFilter });
+        const res = await api.listRules({ room_id: roomFilter, device_id: deviceFilter });
         if (disposed) return;
         const rules = res.rules || [];
 
@@ -795,7 +972,7 @@ export function renderAlarmsPage({ navigate }) {
                     return `${cond} (hold ${r.hold_s}s / clear ${r.clear_hold_s}s)`;
                   }
                   const sym = cond === 'THRESHOLD_LOW' ? '<=' : '>=';
-                  const clrSym = cond === 'THRESHOLD_LOW' ? '>=' : '<=';
+                  const clrSym = cond === 'THRESHOLD_LOW' ? '>' : '<';
                   return `${sym} ${r.threshold} (clear ${clrSym} ${r.clear_threshold}, hold ${r.hold_s}s)`;
                 }
               },
@@ -851,6 +1028,13 @@ export function renderAlarmsPage({ navigate }) {
     }
   }
 
+  const unsubLiveAlarms = onLiveEvent('notifications', () => {
+    if (!disposed && activeTab === 'alarms') {
+      clearTimeout(liveRefreshTimer);
+      liveRefreshTimer = setTimeout(() => loadTab(true), 1000);
+    }
+  });
+
   async function init() {
     const [roomsRes, devRes] = await Promise.allSettled([
       api.listRooms({ status: '' }),
@@ -862,6 +1046,17 @@ export function renderAlarmsPage({ navigate }) {
     renderTabs();
     renderFilterBar();
     await loadTab();
+
+    const deepAlarmId = query?.get('alarm_id');
+    if (deepAlarmId && !disposed) {
+      window.history.replaceState({}, '', '/app/alarms');
+      openAlarmDrawer({
+        alarm_id: deepAlarmId,
+        title: 'Loading alarm timeline…',
+        severity: 'INFO',
+        state: 'ACTIVE'
+      });
+    }
   }
 
   init();
@@ -870,6 +1065,9 @@ export function renderAlarmsPage({ navigate }) {
     node: container,
     cleanup: () => {
       disposed = true;
+      clearTimeout(liveRefreshTimer);
+      clearTimeout(searchTimer);
+      unsubLiveAlarms();
     }
   };
 }
@@ -884,6 +1082,8 @@ export function renderNotificationsPage({ navigate }) {
   let unreadOnly = false;
   let severityFilter = '';
   let categoryFilter = '';
+  let roomFilter = '';
+  let deviceFilter = '';
   let searchFilter = '';
   let page = 1;
   let latestId = 0;
@@ -898,12 +1098,6 @@ export function renderNotificationsPage({ navigate }) {
     'aria-label': 'Search notifications'
   });
   let searchTimer = null;
-  searchIn.addEventListener('input', () => {
-    searchFilter = searchIn.value.trim();
-    page = 1;
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(load, 220);
-  });
 
   const sevSel = el(
     'select',
@@ -915,11 +1109,6 @@ export function renderNotificationsPage({ navigate }) {
       { v: 'INFO', l: 'Info' }
     ].map((o) => el('option', { value: o.v, text: o.l }))
   );
-  sevSel.addEventListener('change', () => {
-    severityFilter = sevSel.value;
-    page = 1;
-    load();
-  });
 
   const catSel = el(
     'select',
@@ -934,9 +1123,72 @@ export function renderNotificationsPage({ navigate }) {
       { v: 'AUTH', l: 'Auth' }
     ].map((o) => el('option', { value: o.v, text: o.l }))
   );
+
+  const roomSel = el('select', { class: 'select', 'aria-label': 'Filter notifications by room' }, [
+    el('option', { value: '', text: 'All rooms' })
+  ]);
+  const devSel = el('select', { class: 'select', 'aria-label': 'Filter notifications by device' }, [
+    el('option', { value: '', text: 'All devices' })
+  ]);
+
+  const clearFiltersBtn = el('button', {
+    id: 'notifications-clear-filters-btn',
+    type: 'button',
+    class: 'btn btn-ghost btn-sm',
+    text: 'Clear Filters',
+    hidden: true,
+    onClick: () => {
+      unreadOnly = false;
+      severityFilter = '';
+      categoryFilter = '';
+      roomFilter = '';
+      deviceFilter = '';
+      searchFilter = '';
+      searchIn.value = '';
+      sevSel.value = '';
+      catSel.value = '';
+      roomSel.value = '';
+      devSel.value = '';
+      page = 1;
+      clearFiltersBtn.hidden = true;
+      renderUnreadToggle();
+      load();
+    }
+  });
+
+  const syncClearFiltersBtn = () => {
+    clearFiltersBtn.hidden = !(unreadOnly || severityFilter || categoryFilter || roomFilter || deviceFilter || searchFilter);
+  };
+
+  searchIn.addEventListener('input', () => {
+    searchFilter = searchIn.value.trim();
+    page = 1;
+    syncClearFiltersBtn();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(load, 220);
+  });
+  sevSel.addEventListener('change', () => {
+    severityFilter = sevSel.value;
+    page = 1;
+    syncClearFiltersBtn();
+    load();
+  });
   catSel.addEventListener('change', () => {
     categoryFilter = catSel.value;
     page = 1;
+    syncClearFiltersBtn();
+    load();
+  });
+  roomSel.addEventListener('change', () => {
+    roomFilter = roomSel.value;
+    page = 1;
+    syncClearFiltersBtn();
+    load();
+  });
+  devSel.addEventListener('change', () => {
+    deviceFilter = devSel.value;
+    page = 1;
+    syncClearFiltersBtn();
     load();
   });
 
@@ -954,6 +1206,7 @@ export function renderNotificationsPage({ navigate }) {
         onChange: (val) => {
           unreadOnly = val === 'unread';
           page = 1;
+          syncClearFiltersBtn();
           renderUnreadToggle();
           load();
         }
@@ -1000,10 +1253,36 @@ export function renderNotificationsPage({ navigate }) {
 
   container.appendChild(prefSlot);
   container.appendChild(
-    el('div', { class: 'card card-compact filter-bar' }, [unreadSegSlot, searchIn, sevSel, catSel])
+    el('div', { class: 'card card-compact filter-bar' }, [
+      unreadSegSlot,
+      searchIn,
+      sevSel,
+      catSel,
+      roomSel,
+      devSel,
+      clearFiltersBtn
+    ])
   );
   container.appendChild(listSlot);
   renderUnreadToggle();
+
+  async function loadFilterOptions() {
+    const [roomsRes, devRes] = await Promise.allSettled([
+      api.listRooms({ status: '' }),
+      api.listDevices({ include_archived: false })
+    ]);
+    if (disposed) return;
+    if (roomsRes.status === 'fulfilled') {
+      for (const r of roomsRes.value.rooms || []) {
+        roomSel.appendChild(el('option', { value: r.room_id, text: `${r.room_code} · ${r.name}` }));
+      }
+    }
+    if (devRes.status === 'fulfilled') {
+      for (const d of devRes.value.devices || []) {
+        devSel.appendChild(el('option', { value: d.device_id, text: `${d.name} (${d.device_id})` }));
+      }
+    }
+  }
 
   async function loadPrefs() {
     try {
@@ -1083,6 +1362,8 @@ export function renderNotificationsPage({ navigate }) {
         unread: unreadOnly ? 'true' : '',
         severity: severityFilter,
         category: categoryFilter,
+        room_id: roomFilter,
+        device_id: deviceFilter,
         search: searchFilter,
         page,
         limit: 25
@@ -1159,6 +1440,14 @@ export function renderNotificationsPage({ navigate }) {
                     : null
                 ]),
                 el('div', { class: 'btn-row' }, [
+                  n.alarm_id
+                    ? el('button', {
+                        type: 'button',
+                        class: 'btn btn-secondary btn-sm',
+                        text: 'Inspect Alarm',
+                        onClick: () => navigate(`/app/alarms?alarm_id=${encodeURIComponent(n.alarm_id)}`)
+                      })
+                    : null,
                   n.device_id
                     ? el('button', {
                         type: 'button',
@@ -1206,6 +1495,7 @@ export function renderNotificationsPage({ navigate }) {
     if (!disposed) load();
   });
 
+  loadFilterOptions();
   loadPrefs();
   load();
 
@@ -1226,25 +1516,81 @@ export function renderEventsPage() {
   const container = el('div', { class: 'stack-lg' });
   const admin = isAdmin();
   let disposed = false;
+  let mfaRefreshTimer = null;
+  let rowLimit = 100; // 100 | 250 | 500
 
   const sources = [
-    { id: 'access_logs', label: 'Access Logs', fetch: () => api.getLogs('access_logs', 200).then((r) => r.rows || r.logs || r) },
-    { id: 'environmental_telemetry', label: 'Env Telemetry', fetch: () => api.getLogs('environmental_telemetry', 200).then((r) => r.rows || r.logs || r) },
-    { id: 'system_errors', label: 'System Errors', fetch: () => api.getLogs('system_errors', 200).then((r) => r.rows || r.logs || r) },
-    { id: 'commands', label: 'Command Audit', fetch: () => api.getRecentCommands().then((r) => r.commands || []) }
+    { id: 'access_logs', label: 'Access Logs', bounded: false, fetch: (lim) => api.getLogs('access_logs', lim).then((r) => r.rows || r.logs || r) },
+    { id: 'camera_events', label: 'Camera Events', bounded: false, fetch: (lim) => api.getLogs('camera_events', lim).then((r) => r.rows || r.logs || r) },
+    {
+      id: 'environmental_telemetry',
+      label: 'Env Telemetry',
+      bounded: false,
+      fetch: (lim) => api.getLogs('environmental_telemetry', lim).then((r) => r.rows || r.logs || r)
+    },
+    { id: 'system_errors', label: 'System Errors', bounded: false, fetch: (lim) => api.getLogs('system_errors', lim).then((r) => r.rows || r.logs || r) },
+    { id: 'commands', label: 'Command Audit', bounded: true, fetch: (lim) => api.getRecentCommands().then((r) => (r.commands || []).slice(0, lim)) }
   ];
   if (admin) {
-    sources.push(
-      { id: 'management_audit', label: 'Management Audit', fetch: () => api.getManagementAudit().then((r) => r.events || []) }
-    );
+    sources.push({
+      id: 'management_audit',
+      label: 'Management Audit',
+      bounded: true,
+      fetch: (lim) => api.getManagementAudit().then((r) => (r.events || []).slice(0, lim))
+    });
   }
 
   let currentSource = sources[0].id;
   let searchFilter = '';
   let loadedRows = [];
+  let rollupRange = '24h'; // 1h | 24h | 7d
+  let rollupBucket = '15m'; // 5m | 15m | 1h
+  let rollupMetric = 'temperature'; // temperature | humidity
 
   const tabSlot = el('div');
+  const contextBannerSlot = el('div');
+  const rollupSlot = el('div');
+  const limitSegSlot = el('div');
+  const countSpan = el('span', { class: 'text-xs text-muted mono tabular-nums', text: 'Loading records…' });
   const tableSlot = el('div');
+
+  function renderLimitControl() {
+    clear(limitSegSlot);
+    limitSegSlot.appendChild(
+      segmentedFilter({
+        ariaLabel: 'Event log row limit',
+        value: String(rowLimit),
+        options: [
+          { value: '100', label: '100' },
+          { value: '250', label: '250' },
+          { value: '500', label: '500' }
+        ],
+        onChange: (val) => {
+          rowLimit = Number(val) || 100;
+          renderLimitControl();
+          loadSource();
+        }
+      })
+    );
+  }
+  renderLimitControl();
+
+  function renderContextBanner() {
+    clear(contextBannerSlot);
+    if (currentSource === 'camera_events') {
+      contextBannerSlot.appendChild(
+        el('div', { id: 'camera-events-boundary-banner' }, [
+          disclaimerBanner({
+            icon: 'icon-camera',
+            tone: 'info',
+            title: 'Persisted Access-Camera & MFA Verification Log',
+            message:
+              'Displays persisted SQLite camera_events recorded from MQTT lecf/access/mfa_face verification events (with live updates via /ws/mfa). On-demand live JPEG snapshots from CAMERA_JPEG endpoints are proxied in memory on Device Detail pages and are not stored here.'
+          })
+        ])
+      );
+    }
+  }
 
   const searchIn = el('input', {
     class: 'input',
@@ -1294,13 +1640,195 @@ export function renderEventsPage() {
   );
 
   container.appendChild(tabSlot);
+  container.appendChild(contextBannerSlot);
+  container.appendChild(rollupSlot);
   container.appendChild(
     el('div', { class: 'card card-compact row-between' }, [
-      searchIn,
-      el('span', { class: 'text-xs text-muted', text: 'Shows latest 200 persisted rows; CSV exports current filtered view.' })
+      el('div', { class: 'filter-bar', style: 'flex:1 1 280px' }, [
+        searchIn,
+        el('div', { class: 'row-gap-sm' }, [
+          el('span', { class: 'text-xs text-muted', text: 'Rows:' }),
+          limitSegSlot
+        ])
+      ]),
+      countSpan
     ])
   );
   container.appendChild(tableSlot);
+
+  async function loadEnvRollup() {
+    if (disposed) return;
+    clear(rollupSlot);
+    if (currentSource !== 'environmental_telemetry') return;
+
+    const panel = el('section', { class: 'card stack-md', id: 'env-telemetry-rollup-panel', 'aria-label': 'Environmental telemetry rollup' });
+    const bodyMount = el('div', { class: 'stack-md' }, [loadingSkeleton('kpi', 4)]);
+
+    panel.append(
+      el('div', { class: 'card-head' }, [
+        el('div', { class: 'stack-xs' }, [
+          el('h2', { class: 'card-title', text: 'Time-Bucketed Environmental Rollups' }),
+          el('span', {
+            class: 'text-xs text-muted',
+            text: 'Aggregated strictly from persisted legacy environmental_telemetry SQLite records (generic MQTT_V1 devices use per-device Endpoint History).'
+          })
+        ]),
+        el('div', { class: 'rollup-controls-bar' }, [
+          el('div', { class: 'rollup-control-group' }, [
+            el('span', { class: 'text-xs text-muted', text: 'Range:' }),
+            segmentedFilter({
+              ariaLabel: 'Rollup time range',
+              value: rollupRange,
+              options: [
+                { value: '1h', label: '1h' },
+                { value: '24h', label: '24h' },
+                { value: '7d', label: '7d' }
+              ],
+              onChange: (val) => {
+                rollupRange = val;
+                loadEnvRollup();
+              }
+            })
+          ]),
+          el('div', { class: 'rollup-control-group' }, [
+            el('span', { class: 'text-xs text-muted', text: 'Bucket:' }),
+            segmentedFilter({
+              ariaLabel: 'Rollup bucket interval',
+              value: rollupBucket,
+              options: [
+                { value: '5m', label: '5m' },
+                { value: '15m', label: '15m' },
+                { value: '1h', label: '1h' }
+              ],
+              onChange: (val) => {
+                rollupBucket = val;
+                loadEnvRollup();
+              }
+            })
+          ]),
+          el('div', { class: 'rollup-control-group' }, [
+            segmentedFilter({
+              ariaLabel: 'Rollup chart metric',
+              value: rollupMetric,
+              options: [
+                { value: 'temperature', label: 'Temp (°C)' },
+                { value: 'humidity', label: 'Humidity (%)' }
+              ],
+              onChange: (val) => {
+                rollupMetric = val;
+                loadEnvRollup();
+              }
+            })
+          ])
+        ])
+      ]),
+      bodyMount
+    );
+    rollupSlot.appendChild(panel);
+
+    try {
+      const res = await api.getTelemetryAggregate({ range: rollupRange, bucket: rollupBucket });
+      if (disposed || currentSource !== 'environmental_telemetry') return;
+      const series = Array.isArray(res?.series) ? res.series : [];
+      clear(bodyMount);
+
+      if (series.length === 0) {
+        bodyMount.appendChild(
+          emptyState({
+            illustration: EMPTY_ILLUSTRATIONS.TELEMETRY,
+            title: `No environmental rollup samples in ${rollupRange.toUpperCase()} window`,
+            message:
+              'No rows exist in environmental_telemetry for the selected range. Generic MQTT_V1 and simulator telemetry frames are stored in device_frames and inspected per endpoint.'
+          })
+        );
+        return;
+      }
+
+      const totalSamples = series.reduce((sum, b) => sum + Number(b.sample_count || 0), 0);
+      const weightedTempSum = series.reduce((sum, b) => sum + Number(b.temperature_avg || 0) * Number(b.sample_count || 1), 0);
+      const weightedHumSum = series.reduce((sum, b) => sum + Number(b.humidity_avg || 0) * Number(b.sample_count || 1), 0);
+      const denom = Math.max(1, totalSamples);
+      const tempMin = Math.min(...series.map((b) => Number(b.temperature_min)));
+      const tempMax = Math.max(...series.map((b) => Number(b.temperature_max)));
+      const tempAvg = weightedTempSum / denom;
+      const humMin = Math.min(...series.map((b) => Number(b.humidity_min)));
+      const humMax = Math.max(...series.map((b) => Number(b.humidity_max)));
+      const humAvg = weightedHumSum / denom;
+      const smokeMax = Math.max(...series.map((b) => Number(b.smoke_gas_max || 0)));
+
+      bodyMount.append(
+        el('div', { class: 'kpi-grid' }, [
+          el('div', { class: 'card card-compact kpi-card' }, [
+            el('div', { class: 'kpi-label', text: 'Temperature (Avg)' }),
+            el('div', { class: 'kpi-value tabular-nums', text: `${formatNumber(tempAvg, 2)} °C` }),
+            el('div', { class: 'kpi-sub mono tabular-nums', text: `Min ${formatNumber(tempMin, 2)} · Max ${formatNumber(tempMax, 2)} °C` })
+          ]),
+          el('div', { class: 'card card-compact kpi-card' }, [
+            el('div', { class: 'kpi-label', text: 'Humidity (Avg)' }),
+            el('div', { class: 'kpi-value tabular-nums', text: `${formatNumber(humAvg, 2)} %` }),
+            el('div', { class: 'kpi-sub mono tabular-nums', text: `Min ${formatNumber(humMin, 2)} · Max ${formatNumber(humMax, 2)} %` })
+          ]),
+          el('div', { class: 'card card-compact kpi-card' }, [
+            el('div', { class: 'kpi-label', text: 'Peak Smoke / Gas' }),
+            el('div', { class: 'kpi-value tabular-nums', text: `${smokeMax} raw` }),
+            el('div', { class: 'kpi-sub', text: `Maximum across ${rollupRange.toUpperCase()}` })
+          ]),
+          el('div', { class: 'card card-compact kpi-card' }, [
+            el('div', { class: 'kpi-label', text: 'Aggregated Samples' }),
+            el('div', { class: 'kpi-value tabular-nums', text: String(totalSamples) }),
+            el('div', { class: 'kpi-sub mono tabular-nums', text: `${series.length} bucket${series.length === 1 ? '' : 's'} (${rollupBucket})` })
+          ])
+        ]),
+        buildRollupChartSvg(series, {
+          metric: rollupMetric,
+          rangePreset: rollupRange,
+          label: `Environmental ${rollupMetric} rollup chart (${rollupRange}, ${rollupBucket} buckets)`
+        }),
+        el('div', { class: 'table-wrap' }, [
+          el('table', { class: 'data-table', 'aria-label': 'Environmental telemetry rollup buckets' }, [
+            el('thead', {}, [
+              el('tr', {}, [
+                el('th', { text: 'Bucket Start' }),
+                el('th', { text: 'Samples' }),
+                el('th', { text: 'Temp (Min / Avg / Max)' }),
+                el('th', { text: 'Humidity (Min / Avg / Max)' }),
+                el('th', { text: 'Smoke Peak' })
+              ])
+            ]),
+            el(
+              'tbody',
+              {},
+              [...series].reverse().slice(0, 24).map((b) =>
+                el('tr', {}, [
+                  el('td', { class: 'mono text-xs tabular-nums', text: formatTimestamp(b.timestamp) }),
+                  el('td', { class: 'mono text-xs tabular-nums', text: String(b.sample_count) }),
+                  el('td', {
+                    class: 'mono text-xs tabular-nums',
+                    text: `${formatNumber(b.temperature_min, 2)} / ${formatNumber(b.temperature_avg, 2)} / ${formatNumber(b.temperature_max, 2)} °C`
+                  }),
+                  el('td', {
+                    class: 'mono text-xs tabular-nums',
+                    text: `${formatNumber(b.humidity_min, 2)} / ${formatNumber(b.humidity_avg, 2)} / ${formatNumber(b.humidity_max, 2)} %`
+                  }),
+                  el('td', { class: 'mono text-xs tabular-nums', text: `${b.smoke_gas_max} raw` })
+                ])
+              )
+            )
+          ])
+        ])
+      );
+    } catch (err) {
+      if (disposed) return;
+      clear(bodyMount);
+      bodyMount.appendChild(
+        errorPanel({
+          title: 'Failed to load environmental rollup',
+          message: err.message,
+          onRetry: loadEnvRollup
+        })
+      );
+    }
+  }
 
   function getFilteredRows() {
     if (!searchFilter) return loadedRows;
@@ -1355,40 +1883,153 @@ export function renderEventsPage() {
     );
   }
 
+  function getCuratedColumns(sourceId) {
+    if (sourceId === 'access_logs') {
+      return [
+        { label: 'Timestamp', className: 'mono text-xs tabular-nums', render: (r) => formatTimestamp(r.timestamp) },
+        {
+          label: 'Node & Modality',
+          render: (r) =>
+            el('div', { class: 'stack-xs' }, [
+              el('span', { class: 'mono text-xs font-semibold', text: r.node_id || '—' }),
+              el('span', { class: 'text-xs text-muted', text: r.modality || '—' })
+            ])
+        },
+        { label: 'Person / Subject', render: (r) => r.username || '—' },
+        {
+          label: 'Outcome',
+          render: (r) => statusIndicator(r.status || r.event || 'INFO', r.event ? `${r.status || ''} · ${r.event}`.replace(/^ · /, '') : null, { compact: true })
+        },
+        {
+          label: 'MFA / Details',
+          className: 'text-xs text-secondary',
+          render: (r) => [r.mfa_status && r.mfa_status !== 'N/A' ? `MFA: ${r.mfa_status}` : null, r.details].filter(Boolean).join(' · ') || '—'
+        }
+      ];
+    }
+    if (sourceId === 'camera_events') {
+      return [
+        { label: 'Timestamp', className: 'mono text-xs tabular-nums', render: (r) => formatTimestamp(r.timestamp) },
+        { label: 'Camera Node', className: 'mono text-xs', render: (r) => r.node_id || '—' },
+        { label: 'Subject', render: (r) => r.user_id || 'Unknown' },
+        {
+          label: 'Verification',
+          render: (r) =>
+            statusIndicator(r.status || r.event || 'INFO', r.event ? `${r.status || ''} · ${r.event}`.replace(/^ · /, '') : null, { compact: true })
+        },
+        {
+          label: 'Confidence & Details',
+          className: 'mono text-xs text-secondary tabular-nums',
+          render: (r) => {
+            const conf = r.confidence !== null && r.confidence !== undefined ? `${formatNumber(r.confidence, 1)}%` : null;
+            return [conf, r.details].filter(Boolean).join(' · ') || '—';
+          }
+        }
+      ];
+    }
+    if (sourceId === 'environmental_telemetry') {
+      return [
+        { label: 'Timestamp', className: 'mono text-xs tabular-nums', render: (r) => formatTimestamp(r.timestamp) },
+        { label: 'Node / Seq', className: 'mono text-xs tabular-nums', render: (r) => `${r.node_id || '—'}${r.seq !== undefined ? ` #${r.seq}` : ''}` },
+        {
+          label: 'Temp / Humidity',
+          className: 'mono text-xs tabular-nums',
+          render: (r) => `${formatNumber(r.temperature, 1)} °C · ${formatNumber(r.humidity, 1)} %`
+        },
+        { label: 'Smoke / Gas', className: 'mono text-xs tabular-nums', render: (r) => `${r.smoke_gas_level ?? '—'} raw` },
+        {
+          label: 'Actuators & Door',
+          className: 'mono text-xs text-secondary',
+          render: (r) => `Fan ${r.fan_relay || '—'} · Light ${r.light_state || '—'} · Door ${r.door_state || '—'}`
+        }
+      ];
+    }
+    if (sourceId === 'system_errors') {
+      return [
+        { label: 'Timestamp', className: 'mono text-xs tabular-nums', render: (r) => formatTimestamp(r.timestamp) },
+        { label: 'Severity', render: (r) => statusIndicator(r.severity || 'ERROR', null, { compact: true }) },
+        { label: 'Source / Code', className: 'mono text-xs', render: (r) => `${r.source_node || 'system'} · ${r.error_code || 'ERR'}` },
+        { label: 'Description', className: 'text-sm', render: (r) => r.error_description || '—' }
+      ];
+    }
+    if (sourceId === 'commands') {
+      return [
+        { label: 'Issued At', className: 'mono text-xs tabular-nums', render: (r) => formatTimestamp(r.issued_at) },
+        { label: 'Target / Command', className: 'mono text-xs', render: (r) => `${r.target_node || '—'} · ${r.command || '—'}` },
+        { label: 'Requested', className: 'mono text-xs', render: (r) => String(r.requested_state ?? '—') },
+        { label: 'Operator', render: (r) => r.actor_username || '—' },
+        { label: 'Lifecycle', render: (r) => statusIndicator(r.lifecycle_state || 'PUBLISHED', null, { compact: true }) }
+      ];
+    }
+    if (sourceId === 'management_audit') {
+      return [
+        { label: 'Timestamp', className: 'mono text-xs tabular-nums', render: (r) => formatTimestamp(r.timestamp) },
+        { label: 'Actor', className: 'font-semibold', render: (r) => r.actor || 'system' },
+        { label: 'Action', render: (r) => statusIndicator('INFO', r.action || 'AUDIT', { compact: true }) },
+        { label: 'Entity', className: 'mono text-xs', render: (r) => r.entity_id || '—' },
+        {
+          label: 'Details',
+          className: 'text-xs text-secondary',
+          render: (r) => {
+            const str = typeof r.details === 'object' ? JSON.stringify(r.details) : String(r.details ?? '—');
+            return str.length > 64 ? `${str.slice(0, 64)}…` : str;
+          }
+        }
+      ];
+    }
+    return null;
+  }
+
   function renderRows() {
     clear(tableSlot);
-    const rows = getFilteredRows();
-    if (!rows.length) {
+    const srcMeta = sources.find((s) => s.id === currentSource);
+    const filtered = getFilteredRows();
+    const visibleRows = filtered.slice(0, rowLimit);
+    const boundedSuffix = srcMeta?.bounded && rowLimit > 100 ? ' (audit API returns latest 100)' : '';
+    countSpan.textContent = searchFilter
+      ? `Showing ${visibleRows.length} matching of ${loadedRows.length} fetched${boundedSuffix}`
+      : `Showing ${visibleRows.length} of ${loadedRows.length} fetched${boundedSuffix}`;
+
+    if (!visibleRows.length) {
       tableSlot.appendChild(
         el('div', { class: 'card' }, [
           emptyState({
-            icon: 'icon-list',
-            title: 'No audit records found',
-            message: searchFilter ? 'Try clearing the search query.' : 'No rows have been persisted in this table yet.'
+            illustration: EMPTY_ILLUSTRATIONS.AUDIT,
+            title: currentSource === 'camera_events' && !searchFilter ? 'No camera verification events recorded' : 'No audit records found',
+            message: searchFilter
+              ? 'Try clearing the search query.'
+              : currentSource === 'camera_events'
+                ? 'Persisted lecf/access/mfa_face camera verification events will appear here automatically.'
+                : 'No rows have been persisted in this table yet.'
           })
         ])
       );
       return;
     }
 
-    const preferredKeys = Object.keys(rows[0]).slice(0, 5);
+    const curated = getCuratedColumns(currentSource);
+    const fallbackKeys = Object.keys(visibleRows[0]).slice(0, 5);
+    const columns =
+      curated ||
+      fallbackKeys.map((k) => ({
+        label: k.replace(/_/g, ' '),
+        className: /time|at|id|ip|temp|hum|smoke/i.test(k) ? 'mono text-xs tabular-nums' : 'text-sm',
+        render: (row) => {
+          const v = row[k];
+          if (v === null || v === undefined || v === '') return '—';
+          if (/timestamp|issued_at|created_at|recorded_at/i.test(k)) return formatTimestamp(v);
+          const str = typeof v === 'object' ? JSON.stringify(v) : String(v);
+          return str.length > 54 ? `${str.slice(0, 54)}…` : str;
+        }
+      }));
+
     tableSlot.appendChild(
       renderAdaptiveCollection({
         ariaLabel: `${currentSource} records`,
-        rows: rows.slice(0, 100),
+        rows: visibleRows,
         onRowClick: (row) => openRecordDrawer(row),
         columns: [
-          ...preferredKeys.map((k) => ({
-            label: k.replace(/_/g, ' '),
-            className: /time|at|id|ip|temp|hum|smoke/i.test(k) ? 'mono text-xs tabular-nums' : 'text-sm',
-            render: (row) => {
-              const v = row[k];
-              if (v === null || v === undefined || v === '') return '—';
-              if (/timestamp|issued_at|created_at|recorded_at/i.test(k)) return formatTimestamp(v);
-              const str = typeof v === 'object' ? JSON.stringify(v) : String(v);
-              return str.length > 54 ? `${str.slice(0, 54)}…` : str;
-            }
-          })),
+          ...columns,
           {
             label: 'Details',
             align: 'right',
@@ -1404,43 +2045,51 @@ export function renderEventsPage() {
               })
           }
         ],
-        renderMobileCard: (row) =>
-          el(
+        renderMobileCard: (row) => {
+          const badgeState = row.status || row.lifecycle_state || row.severity || row.action || null;
+          const timeVal = row.timestamp || row.issued_at || null;
+          const titleVal =
+            row.event || row.command || row.error_code || row.action || (row.temperature !== undefined ? `${row.temperature} °C` : currentSource);
+          const subVal =
+            row.username || row.user_id || row.actor_username || row.actor || row.node_id || row.source_node || row.entity_id || '—';
+          return el(
             'article',
-            { class: 'card record-card', onClick: () => openRecordDrawer(row) },
+            { class: 'card record-card' },
             [
-              el('div', { class: 'record-card-grid' },
-                preferredKeys.slice(0, 4).map((k) =>
-                  el('div', { class: 'record-card-field' }, [
-                    el('span', { class: 'record-card-label', text: k.replace(/_/g, ' ') }),
-                    el('span', { class: 'mono text-xs truncate', text: String(row[k] ?? '—') })
-                  ])
-                )
-              ),
+              el('div', { class: 'record-card-head' }, [
+                el('div', { class: 'stack-xs' }, [
+                  el('div', { class: 'font-semibold', text: String(titleVal) }),
+                  el('div', { class: 'mono text-xs text-muted', text: String(subVal) })
+                ]),
+                badgeState ? statusIndicator(badgeState, currentSource === 'management_audit' ? String(badgeState) : null, { compact: true }) : null
+              ]),
+              timeVal ? el('div', { class: 'mono text-xs text-secondary tabular-nums', text: formatTimestamp(timeVal) }) : null,
               el('div', { class: 'record-card-actions' }, [
                 el('button', {
                   type: 'button',
                   class: 'btn btn-secondary btn-sm',
                   text: 'Inspect Record',
-                  onClick: (e) => {
-                    e.stopPropagation();
-                    openRecordDrawer(row);
-                  }
+                  onClick: () => openRecordDrawer(row)
                 })
               ])
             ]
-          )
+          );
+        }
       })
     );
   }
 
-  async function loadSource() {
+  async function loadSource(silent = false) {
     if (disposed) return;
-    clear(tableSlot);
-    tableSlot.appendChild(loadingSkeleton('table', 5));
+    renderContextBanner();
+    loadEnvRollup();
+    if (!silent) {
+      clear(tableSlot);
+      tableSlot.appendChild(loadingSkeleton('table', 5));
+    }
     const src = sources.find((s) => s.id === currentSource);
     try {
-      const data = await src.fetch();
+      const data = await src.fetch(rowLimit);
       if (disposed) return;
       loadedRows = Array.isArray(data) ? data : [];
       renderRows();
@@ -1451,11 +2100,18 @@ export function renderEventsPage() {
         errorPanel({
           title: `Failed to load ${src?.label || 'events'}`,
           message: err.message,
-          onRetry: loadSource
+          onRetry: () => loadSource(false)
         })
       );
     }
   }
+
+  const unsubMfa = onLiveEvent('mfa', () => {
+    if (!disposed && (currentSource === 'camera_events' || currentSource === 'access_logs')) {
+      clearTimeout(mfaRefreshTimer);
+      mfaRefreshTimer = setTimeout(() => loadSource(true), 800);
+    }
+  });
 
   renderTabs();
   loadSource();
@@ -1464,6 +2120,8 @@ export function renderEventsPage() {
     node: container,
     cleanup: () => {
       disposed = true;
+      clearTimeout(mfaRefreshTimer);
+      unsubMfa();
     }
   };
 }

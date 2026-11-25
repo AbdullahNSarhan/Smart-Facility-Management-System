@@ -126,6 +126,8 @@ export const api = {
   getDiagnostics: () => apiRequest('/api/v1/diagnostics'),
   getFacility: () => apiRequest('/api/v1/facility'),
   updateFacility: (payload) => apiRequest('/api/v1/facility', { method: 'PUT', body: payload }),
+  updateRetention: (days) => apiRequest('/api/v1/retention', { method: 'PUT', body: { days } }),
+  getTelemetryAggregate: (params = {}) => apiRequest(`/api/telemetry/aggregate${buildQuery(params)}`),
 
   // Management Settings & Audit (mounted at /api/v1 via managementRoutes)
   getManagementSettings: () => apiRequest('/api/v1/settings'),
@@ -168,6 +170,8 @@ export const api = {
     apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/commands`),
   sendLegacyCommand: (payload) =>
     apiRequest('/api/command', { method: 'POST', body: payload }),
+  getDeviceHistory: (deviceId, params = {}) =>
+    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/history${buildQuery(params)}`),
   getEndpointHistory: (deviceId, endpointKey, params = {}) =>
     apiRequest(
       `/api/v1/registry/${encodeURIComponent(deviceId)}/endpoints/${encodeURIComponent(endpointKey)}/history${buildQuery(params)}`

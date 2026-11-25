@@ -2,8 +2,8 @@
 // Adaptive desktop table + mobile stacked cards, segmented Active/Archived filtering, and safe room lifecycle.
 
 import { api } from '../api.js';
-import { isAdmin, showToast, openModal, closeModal, confirmDialog } from '../store.js';
-import { el, clear, svgIcon, formatAge, formatTimestamp } from '../utils.js';
+import { isAdmin, showToast, openModal, closeModal, confirmDialog, onLiveEvent } from '../store.js';
+import { el, clear, svgIcon, formatAge, formatTimestamp, formatNumber } from '../utils.js';
 import {
   pageHeader,
   statusIndicator,
@@ -15,10 +15,19 @@ import {
   keyValueList,
   copyableValue
 } from '../components/ui.js';
+import {
+  DASHBOARD_ILLUSTRATIONS,
+  EMPTY_ILLUSTRATIONS,
+  resolveDeviceVisual,
+  renderNodeIllustration,
+  renderCategoryChip,
+  renderCategoryIconBadge
+} from '../visuals.js';
 
 function openRoomModal({ room = null, onSaved }) {
   const isEdit = Boolean(room);
   const codeInput = el('input', {
+    id: 'room-code-input',
     class: 'input mono',
     type: 'text',
     value: room?.room_code || '',
@@ -27,6 +36,7 @@ function openRoomModal({ room = null, onSaved }) {
     maxlength: 32
   });
   const nameInput = el('input', {
+    id: 'room-name-input',
     class: 'input',
     type: 'text',
     value: room?.name || '',
@@ -35,6 +45,7 @@ function openRoomModal({ room = null, onSaved }) {
     maxlength: 80
   });
   const buildingInput = el('input', {
+    id: 'room-building-input',
     class: 'input',
     type: 'text',
     value: room?.building || '',
@@ -42,6 +53,7 @@ function openRoomModal({ room = null, onSaved }) {
     maxlength: 80
   });
   const floorInput = el('input', {
+    id: 'room-floor-input',
     class: 'input',
     type: 'text',
     value: room?.floor || '',
@@ -49,12 +61,13 @@ function openRoomModal({ room = null, onSaved }) {
     maxlength: 40
   });
   const descInput = el('textarea', {
+    id: 'room-desc-input',
     class: 'textarea',
     value: room?.description || '',
     placeholder: 'Operational notes, physical zone boundaries, or monitoring purpose...',
     maxlength: 240
   });
-  const errBox = el('div', { class: 'form-error', hidden: true });
+  const errBox = el('div', { class: 'form-error', role: 'alert', hidden: true });
 
   const form = el('form', { class: 'stack-md' }, [
     errBox,
@@ -62,12 +75,12 @@ function openRoomModal({ room = null, onSaved }) {
       el('div', { class: 'kicker', text: 'IDENTITY' }),
       el('div', { class: 'form-grid' }, [
         el('div', { class: 'form-field' }, [
-          el('label', { class: 'form-label', text: 'Room Code *' }),
+          el('label', { class: 'form-label', for: 'room-code-input', text: 'Room Code *' }),
           codeInput,
           el('span', { class: 'form-hint', text: 'Uppercase alphanumeric code (e.g. ROOM-002).' })
         ]),
         el('div', { class: 'form-field' }, [
-          el('label', { class: 'form-label', text: 'Room Name *' }),
+          el('label', { class: 'form-label', for: 'room-name-input', text: 'Room Name *' }),
           nameInput
         ])
       ])
@@ -76,11 +89,11 @@ function openRoomModal({ room = null, onSaved }) {
       el('div', { class: 'kicker', text: 'PHYSICAL LOCATION' }),
       el('div', { class: 'form-grid' }, [
         el('div', { class: 'form-field' }, [
-          el('label', { class: 'form-label', text: 'Building / Wing' }),
+          el('label', { class: 'form-label', for: 'room-building-input', text: 'Building / Wing' }),
           buildingInput
         ]),
         el('div', { class: 'form-field' }, [
-          el('label', { class: 'form-label', text: 'Floor / Level' }),
+          el('label', { class: 'form-label', for: 'room-floor-input', text: 'Floor / Level' }),
           floorInput
         ])
       ])
@@ -88,7 +101,7 @@ function openRoomModal({ room = null, onSaved }) {
     el('div', { class: 'stack-xs' }, [
       el('div', { class: 'kicker', text: 'NOTES' }),
       el('div', { class: 'form-field' }, [
-        el('label', { class: 'form-label', text: 'Operational Description' }),
+        el('label', { class: 'form-label', for: 'room-desc-input', text: 'Operational Description' }),
         descInput
       ])
     ])
@@ -155,7 +168,7 @@ function openRoomModal({ room = null, onSaved }) {
   });
 }
 
-export function renderRoomsListPage({ navigate }) {
+export function renderRoomsListPage({ query, navigate }) {
   const container = el('div', { class: 'stack-lg' });
   const admin = isAdmin();
   let statusFilter = 'ACTIVE';
@@ -262,7 +275,7 @@ export function renderRoomsListPage({ navigate }) {
           rows: rooms,
           onRowClick: (r) => navigate(`/app/rooms/${encodeURIComponent(r.room_id)}`),
           emptyNode: emptyState({
-            icon: 'icon-rooms',
+            illustration: DASHBOARD_ILLUSTRATIONS.ROOM_ZONE,
             title: searchTerm ? 'No rooms match your filter' : 'No rooms found in this category',
             message: searchTerm
               ? 'Try clearing your search query or switching between Active and Archived rooms.'
@@ -284,7 +297,11 @@ export function renderRoomsListPage({ navigate }) {
           columns: [
             {
               label: 'Code',
-              render: (r) => el('span', { class: 'meta-tag mono', text: r.room_code })
+              render: (r) =>
+                el('div', { class: 'row-gap-sm' }, [
+                  renderCategoryIconBadge('network', 'icon-rooms', 'sm'),
+                  el('span', { class: 'meta-tag mono', text: r.room_code })
+                ])
             },
             {
               label: 'Room',
@@ -403,7 +420,12 @@ export function renderRoomsListPage({ navigate }) {
     }
   }
 
-  load();
+  load().then(() => {
+    if (!disposed && admin && query?.get('action') === 'create') {
+      window.history.replaceState({}, '', '/app/rooms');
+      openRoomModal({ onSaved: load });
+    }
+  });
 
   return {
     node: container,
@@ -419,6 +441,7 @@ export function renderRoomDetailPage({ params, navigate }) {
   const container = el('div', { class: 'stack-lg' });
   const admin = isAdmin();
   let disposed = false;
+  let refreshTimer = null;
 
   const contentSlot = el('div', { class: 'stack-lg' });
   container.appendChild(contentSlot);
@@ -454,7 +477,7 @@ export function renderRoomDetailPage({ params, navigate }) {
           await api.moveDevice(device.device_id, { room_id: select.value, version: device.version });
           showToast('Device moved', `${device.name} reassigned with telemetry history preserved.`, 'success');
           closeModal();
-          load();
+          load(false);
         } catch (err) {
           showToast('Move failed', err.message, 'error');
           saveBtn.disabled = false;
@@ -472,10 +495,12 @@ export function renderRoomDetailPage({ params, navigate }) {
     });
   }
 
-  async function load() {
+  async function load(silent = false) {
     if (disposed) return;
-    clear(contentSlot);
-    contentSlot.appendChild(loadingSkeleton('table', 4));
+    if (!silent) {
+      clear(contentSlot);
+      contentSlot.appendChild(loadingSkeleton('table', 4));
+    }
 
     try {
       const [roomRes, allRoomsRes] = await Promise.all([
@@ -487,9 +512,46 @@ export function renderRoomDetailPage({ params, navigate }) {
       const allRooms = allRoomsRes.rooms || [];
       const devices = room.devices || [];
       const alarms = room.alarms || [];
+      const recentCommands = room.recent_commands || [];
+      const env = room.environmental_summary || {};
       const dc = room.device_counts || { online: 0, total: 0, stale: 0, unknown: 0 };
 
       clear(contentSlot);
+
+      const restoreBtn =
+        admin && room.status === 'ARCHIVED'
+          ? el('button', {
+              type: 'button',
+              class: 'btn btn-primary btn-sm',
+              text: 'Restore Room',
+              onClick: async () => {
+                const ok = await confirmDialog({
+                  title: `Restore ${room.name}?`,
+                  subtitle: 'Room Lifecycle',
+                  message: `Restoring "${room.name}" (${room.room_code}) returns it to active facility directories so devices can be assigned again.`,
+                  confirmLabel: 'Restore Room',
+                  specs: [
+                    ['Room Code', room.room_code],
+                    ['Current Status', 'ARCHIVED'],
+                    ['Target Status', 'ACTIVE']
+                  ]
+                });
+                if (!ok) return;
+                restoreBtn.disabled = true;
+                restoreBtn.textContent = 'Restoring…';
+                try {
+                  await api.restoreRoom(room.room_id);
+                  showToast('Room restored', room.room_code, 'success');
+                  load(false);
+                } catch (err) {
+                  showToast('Restore failed', err.message, 'error');
+                  restoreBtn.disabled = false;
+                  restoreBtn.textContent = 'Restore Room';
+                }
+              }
+            })
+          : null;
+
       contentSlot.appendChild(
         pageHeader({
           title: room.name,
@@ -506,7 +568,7 @@ export function renderRoomDetailPage({ params, navigate }) {
                   type: 'button',
                   class: 'btn btn-secondary btn-sm',
                   text: 'Edit Room',
-                  onClick: () => openRoomModal({ room, onSaved: load })
+                  onClick: () => openRoomModal({ room, onSaved: () => load(false) })
                 })
               : null,
             admin && room.status === 'ACTIVE' && room.room_id !== 'room-001'
@@ -525,31 +587,59 @@ export function renderRoomDetailPage({ params, navigate }) {
                     try {
                       await api.archiveRoom(room.room_id);
                       showToast('Room archived', room.room_code, 'success');
-                      load();
+                      load(false);
                     } catch (err) {
                       showToast('Cannot archive room', err.message, 'error');
                     }
                   }
                 })
               : null,
-            admin && room.status === 'ARCHIVED'
-              ? el('button', {
-                  type: 'button',
-                  class: 'btn btn-primary btn-sm',
-                  text: 'Restore Room',
-                  onClick: async () => {
-                    try {
-                      await api.restoreRoom(room.room_id);
-                      showToast('Room restored', room.room_code, 'success');
-                      load();
-                    } catch (err) {
-                      showToast('Restore failed', err.message, 'error');
-                    }
-                  }
-                })
-              : null
+            restoreBtn
           ]
         })
+      );
+
+      // Environmental Summary Strip (from room.environmental_summary)
+      contentSlot.appendChild(
+        el('section', { class: 'readiness-strip', id: 'room-environmental-strip', 'aria-label': 'Room environmental summary' }, [
+          el('div', { class: 'readiness-cell' }, [
+            el('div', { class: 'row-gap-sm' }, [
+              renderCategoryIconBadge('env', 'icon-thermometer', 'sm'),
+              el('span', { class: 'readiness-label', text: 'Temperature' })
+            ]),
+            el('span', {
+              class: 'mono font-semibold tabular-nums',
+              text: env.temperature ? `${formatNumber(env.temperature.value, 1)} ${env.temperature.unit || '°C'}` : 'No fresh reading'
+            })
+          ]),
+          el('div', { class: 'readiness-cell' }, [
+            el('div', { class: 'row-gap-sm' }, [
+              renderCategoryIconBadge('env', 'icon-droplet', 'sm'),
+              el('span', { class: 'readiness-label', text: 'Humidity' })
+            ]),
+            el('span', {
+              class: 'mono font-semibold tabular-nums',
+              text: env.humidity ? `${formatNumber(env.humidity.value, 1)} ${env.humidity.unit || '%'}` : 'No fresh reading'
+            })
+          ]),
+          el('div', { class: 'readiness-cell' }, [
+            el('div', { class: 'row-gap-sm' }, [
+              renderCategoryIconBadge('env', 'icon-flame', 'sm'),
+              el('span', { class: 'readiness-label', text: 'Smoke / Gas' })
+            ]),
+            el('span', {
+              class: 'mono font-semibold tabular-nums',
+              text: env.smoke_gas_level ? `${env.smoke_gas_level.value} ${env.smoke_gas_level.unit || 'raw'}` : 'No fresh reading'
+            })
+          ]),
+          el('div', { class: 'readiness-cell' }, [
+            el('div', { class: 'row-gap-sm' }, [
+              renderCategoryIconBadge('network', 'icon-cpu', 'sm'),
+              el('span', { class: 'readiness-label', text: 'Devices Online' })
+            ]),
+            el('span', { class: 'mono font-semibold tabular-nums', text: `${dc.online} / ${dc.total} online` })
+          ])
+        ])
       );
 
       // Summary spec card
@@ -584,18 +674,26 @@ export function renderRoomDetailPage({ params, navigate }) {
             rows: devices,
             onRowClick: (d) => navigate(`/app/devices/${encodeURIComponent(d.device_id)}`),
             emptyNode: emptyState({
-              icon: 'icon-cpu',
+              illustration: EMPTY_ILLUSTRATIONS.DEVICES,
               title: 'No devices assigned to this room',
               message: 'Register a new controller or move an existing device into this room.'
             }),
             columns: [
               {
-                label: 'Device',
-                render: (d) =>
-                  el('div', { class: 'stack-xs' }, [
-                    el('span', { class: 'font-semibold', text: d.name }),
-                    el('span', { class: 'mono text-xs text-muted', text: d.device_id })
-                  ])
+                label: 'Device & Category',
+                render: (d) => {
+                  const vis = resolveDeviceVisual(d);
+                  return el('div', { class: 'device-identity-cell' }, [
+                    renderNodeIllustration(vis, { size: 'sm' }),
+                    el('div', { class: 'stack-xs' }, [
+                      el('div', { class: 'row-gap-sm' }, [
+                        el('span', { class: 'font-semibold', text: d.name }),
+                        renderCategoryChip(vis.category, vis.categoryLabel)
+                      ]),
+                      el('span', { class: 'mono text-xs text-muted', text: d.device_id })
+                    ])
+                  ]);
+                }
               },
               { label: 'Transport', render: (d) => el('span', { class: 'meta-tag mono', text: d.transport }) },
               {
@@ -643,12 +741,17 @@ export function renderRoomDetailPage({ params, navigate }) {
                   ])
               }
             ],
-            renderMobileCard: (d) =>
-              el('article', { class: 'card record-card' }, [
+            renderMobileCard: (d) => {
+              const vis = resolveDeviceVisual(d);
+              return el('article', { class: 'card record-card' }, [
                 el('div', { class: 'record-card-head' }, [
-                  el('div', { class: 'stack-xs' }, [
-                    el('div', { class: 'font-semibold', text: d.name }),
-                    el('div', { class: 'mono text-xs text-muted', text: d.device_id })
+                  el('div', { class: 'device-identity-cell' }, [
+                    renderNodeIllustration(vis, { size: 'sm' }),
+                    el('div', { class: 'stack-xs' }, [
+                      el('div', { class: 'font-semibold', text: d.name }),
+                      el('div', { class: 'mono text-xs text-muted', text: d.device_id }),
+                      renderCategoryChip(vis.category, vis.categoryLabel)
+                    ])
                   ]),
                   statusIndicator(d.in_maintenance ? 'MAINTENANCE' : d.status, null, { compact: true })
                 ]),
@@ -668,7 +771,8 @@ export function renderRoomDetailPage({ params, navigate }) {
                       })
                     : null
                 ])
-              ])
+              ]);
+            }
           })
         ])
       );
@@ -676,7 +780,7 @@ export function renderRoomDetailPage({ params, navigate }) {
       // Room Alarms section
       if (alarms.length > 0) {
         contentSlot.appendChild(
-          el('section', { class: 'card stack-sm' }, [
+          el('section', { class: 'card stack-sm', id: 'room-recent-alarms' }, [
             el('div', { class: 'card-head' }, [
               el('h2', { class: 'card-title', text: 'Recent Room Alarms' }),
               el('button', {
@@ -698,13 +802,59 @@ export function renderRoomDetailPage({ params, navigate }) {
                     ]),
                     el('div', { class: 'queue-item-title', text: a.title }),
                     el('div', { class: 'queue-item-meta', text: `${a.device_name || a.device_id} · Raised ${formatAge(a.raised_at)}` })
-                  ])
+                  ]),
+                  a.alarm_id
+                    ? el('button', {
+                        type: 'button',
+                        class: 'btn btn-secondary btn-sm',
+                        text: 'Inspect',
+                        onClick: () => navigate(`/app/alarms?alarm_id=${encodeURIComponent(a.alarm_id)}`)
+                      })
+                    : null
                 ])
               )
             )
           ])
         );
       }
+
+      // Recent Room Commands section (from room.recent_commands)
+      contentSlot.appendChild(
+        el('section', { class: 'card stack-sm', id: 'room-recent-commands' }, [
+          el('div', { class: 'card-head' }, [
+            el('h2', { class: 'card-title', text: 'Recent Room Commands' }),
+            el('span', { class: 'text-xs text-muted tabular-nums', text: `${recentCommands.length} recent` })
+          ]),
+          recentCommands.length === 0
+            ? el('div', { class: 'text-sm text-muted', text: 'No actuation commands have been issued to devices in this room yet.' })
+            : el('div', { class: 'table-wrap' }, [
+                el('table', { class: 'data-table', 'aria-label': 'Recent room commands' }, [
+                  el('thead', {}, [
+                    el('tr', {}, [
+                      el('th', { text: 'Device' }),
+                      el('th', { text: 'Endpoint / Command' }),
+                      el('th', { text: 'Requested' }),
+                      el('th', { text: 'Lifecycle' }),
+                      el('th', { text: 'Issued' })
+                    ])
+                  ]),
+                  el(
+                    'tbody',
+                    {},
+                    recentCommands.slice(0, 10).map((c) =>
+                      el('tr', {}, [
+                        el('td', { class: 'text-xs font-semibold', text: c.device_name || c.device_id || c.target_node || '—' }),
+                        el('td', { class: 'mono text-xs', text: c.endpoint_key || c.command || '—' }),
+                        el('td', { class: 'mono text-xs', text: String(c.requested_value ?? c.requested_state ?? '—') }),
+                        el('td', {}, [statusIndicator(c.state || c.lifecycle_state || 'PUBLISHED', null, { compact: true })]),
+                        el('td', { class: 'mono text-xs text-muted tabular-nums', text: formatAge(c.issued_at) })
+                      ])
+                    )
+                  )
+                ])
+              ])
+        ])
+      );
     } catch (err) {
       if (disposed) return;
       clear(contentSlot);
@@ -712,18 +862,29 @@ export function renderRoomDetailPage({ params, navigate }) {
         errorPanel({
           title: 'Failed to load room details',
           message: err.message,
-          onRetry: load
+          onRetry: () => load(false)
         })
       );
     }
   }
 
-  load();
+  const scheduleSilentRefresh = () => {
+    if (disposed) return;
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => load(true), 1500);
+  };
+  const unsubTel = onLiveEvent('telemetry', scheduleSilentRefresh);
+  const unsubNotif = onLiveEvent('notifications', scheduleSilentRefresh);
+
+  load(false);
 
   return {
     node: container,
     cleanup: () => {
       disposed = true;
+      clearTimeout(refreshTimer);
+      unsubTel();
+      unsubNotif();
     }
   };
 }
