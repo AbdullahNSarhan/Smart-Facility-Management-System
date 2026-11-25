@@ -273,7 +273,20 @@ try {
   await modal.locator('input').first().fill('Reader UI Smoke Person');
   await modal.getByRole('button', { name: 'Add Person' }).click();
   await page.getByRole('table', { name: 'Facility people and physical' }).getByText('Reader UI Smoke Person').waitFor();
+  const peopleLookup = await page.request.get(`${baseUrl}/api/v1/people?search=Reader%20UI%20Smoke%20Person`);
+  assert.equal(peopleLookup.status(), 200);
+  const peoplePayload = await peopleLookup.json();
+  const smokePerson = (peoplePayload.people || []).find((person) => person.display_name === 'Reader UI Smoke Person');
+  assert.ok(smokePerson?.subject_id, `Expected the People API to expose subject_id: ${JSON.stringify(peoplePayload)}`);
+  const enrollmentStartPromise = page.waitForResponse((response) =>
+    response.request().method() === 'POST' &&
+    new URL(response.url()).pathname === `/api/v1/people/${encodeURIComponent(smokePerson.subject_id)}/cards/enrollment-sessions`
+  );
   await page.getByRole('button', { name: 'Scan on Reader' }).first().click();
+  const enrollmentStart = await enrollmentStartPromise;
+  const enrollmentError = await enrollmentStart.json().catch(() => ({}));
+  assert.equal(enrollmentStart.status(), 503, `Expected READER_OFFLINE for the real Person ID; got ${enrollmentStart.status()}: ${JSON.stringify(enrollmentError)}`);
+  assert.equal(enrollmentError.code, 'READER_OFFLINE');
   await modal.getByText(/door reader must be online/i).waitFor({ state: 'visible' });
   await modal.getByRole('button', { name: 'Close' }).click();
 
