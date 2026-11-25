@@ -150,14 +150,29 @@ try {
   await page.click('#login-submit-btn');
   await page.waitForURL(`${baseUrl}/app/rooms`);
   await page.waitForSelector('#add-room-btn');
+  await page.waitForLoadState('networkidle');
 
-  // 4. Create a dynamic room via UI modal and verify deep-link reload
+  // 4. Create a dynamic room; assert the write response and the subsequent list response separately.
   await page.click('#add-room-btn');
   const modal = page.locator('#active-modal-backdrop');
   await modal.waitFor({ state: 'visible' });
   await modal.locator('input[placeholder="e.g. LAB-102"]').fill('LAB-305');
   await modal.locator('input[placeholder="e.g. Server Rack Room"]').fill('Automation Test Lab');
+  const createRoomResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/v1/rooms'
+  );
+  const refreshRoomsResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === 'GET' && new URL(response.url()).pathname === '/api/v1/rooms'
+  );
   await modal.getByRole('button', { name: 'Create Room' }).click();
+  const createRoomResponse = await createRoomResponsePromise;
+  const createRoomBody = await createRoomResponse.json().catch(() => ({}));
+  assert.equal(createRoomResponse.status(), 201, `Expected Room creation HTTP 201; got ${createRoomResponse.status()}: ${JSON.stringify(createRoomBody)}`);
+  await modal.waitFor({ state: 'detached' });
+  const refreshRoomsResponse = await refreshRoomsResponsePromise;
+  const refreshRoomsBody = await refreshRoomsResponse.json().catch(() => ({}));
+  assert.equal(refreshRoomsResponse.status(), 200, `Expected Room refresh HTTP 200; got ${refreshRoomsResponse.status()}: ${JSON.stringify(refreshRoomsBody)}`);
+  assert.ok((refreshRoomsBody.rooms || []).some((room) => room.room_code === 'LAB-305'), `Room write succeeded but list response did not include LAB-305: ${JSON.stringify(refreshRoomsBody)}`);
   await page.waitForSelector('text=LAB-305');
 
   // Deep-link reload test on /app/rooms
