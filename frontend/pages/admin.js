@@ -1,159 +1,116 @@
-// LCI-SFM System & Administration Pages:
-// Diagnostics (/app/diagnostics), Users & Access (/app/users), Settings (/app/settings), Profile (/app/profile).
+// LCI-SFM Administration & Operator Pages (/app/diagnostics, /app/users, /app/settings, /app/profile)
+// Fixes WebSocket channel counts, separates Dashboard Operators from Facility People/Credentials (/api/v1/people),
+// and adds truthful server-side LAN destination configuration.
 
 import { api } from '../api.js';
-import { store, isAdmin, showToast, toggleTheme, signOut, openModal, closeModal, confirmDialog } from '../store.js';
-import { el, clear, formatAge, formatUptime } from '../utils.js';
+import {
+  store,
+  isAdmin,
+  showToast,
+  openModal,
+  closeModal,
+  confirmDialog,
+  toggleTheme,
+  signOut,
+  checkSession
+} from '../store.js';
+import { el, clear, svgIcon, formatAge, formatTimestamp, formatUptime } from '../utils.js';
+import {
+  pageHeader,
+  statusIndicator,
+  loadingSkeleton,
+  emptyState,
+  errorPanel,
+  disclaimerBanner,
+  keyValueList,
+  renderAdaptiveCollection
+} from '../components/ui.js';
 
 // ============================================================================
-// DIAGNOSTICS (/app/diagnostics)
+// SYSTEM DIAGNOSTICS (/app/diagnostics)
 // ============================================================================
 export function renderDiagnosticsPage({ navigate }) {
-  const root = el('div', { class: 'stack-lg' });
-  const kpiHost = el('div', { class: 'kpi-grid' });
-  const servicesHost = el('div', { class: 'overview-split' });
-  const freshnessCard = el('div', { class: 'card table-card' });
-  const simHost = el('div');
+  const container = el('div', { class: 'stack-lg' });
+  const admin = isAdmin();
+  let disposed = false;
 
-  root.appendChild(
-    el('div', { class: 'section-toolbar' }, [
-      el('div', {}, [
-        el('h2', { class: 'section-title', text: 'System Health & Diagnostics' }),
-        el('p', { class: 'text-secondary', text: 'Local SQLite storage, MQTT broker connectivity, WebSocket streams, and endpoint freshness.' })
-      ]),
-      el('button', { type: 'button', class: 'btn btn-secondary btn-sm', text: 'Refresh', onClick: () => loadDiag() })
-    ])
+  const contentSlot = el('div', { class: 'stack-lg' });
+
+  container.appendChild(
+    pageHeader({
+      title: 'Diagnostics',
+      description: 'Live backend readiness, SQLite WAL status, MQTT broker posture, WebSocket channel counts, and per-device freshness.',
+      actions: [
+        el('button', {
+          type: 'button',
+          class: 'btn btn-secondary btn-sm',
+          onClick: () => navigate('/app/network')
+        }, [svgIcon('icon-topology', 14), el('span', { text: 'Network Topology' })]),
+        el('button', {
+          type: 'button',
+          class: 'btn-icon',
+          title: 'Refresh diagnostics',
+          'aria-label': 'Refresh diagnostics',
+          onClick: () => load()
+        }, [svgIcon('icon-refresh', 15)])
+      ]
+    })
   );
-  root.appendChild(kpiHost);
-  root.appendChild(servicesHost);
-  root.appendChild(el('section', { class: 'stack-sm' }, [el('h3', { class: 'card-title', text: 'Per-Device & Endpoint Freshness' }), freshnessCard]));
-  root.appendChild(simHost);
+  container.appendChild(contentSlot);
 
-  const loadDiag = async () => {
-    try {
-      const [ready, diag, devRes] = await Promise.all([
-        api.getHealthReady(),
-        api.getDiagnostics(),
-        api.listDevices({ include_archived: false })
-      ]);
+  async function load() {
+    if (disposed) return;
+    clear(contentSlot);
+    contentSlot.appendChild(loadingSkeleton('table', 4));
 
-      clear(kpiHost);
-      const kpis = [
-        ['Release Version', diag.version || '2.0.0-rc.1', `Node ${diag.node_version || ''}`],
-        ['Server Uptime', formatUptime(diag.uptime_seconds), ready.ok ? 'Readiness OK' : 'Readiness Degraded'],
-        ['SQLite Engine', ready.sqlite?.ok ? 'HEALTHY' : 'ERROR', `Mode: ${String(ready.sqlite?.journal_mode || 'WAL').toUpperCase()} · FK: ${ready.sqlite?.foreign_keys ? 'ON' : 'OFF'}`],
-        ['MQTT Broker', !ready.mqtt?.enabled ? 'STANDBY' : ready.mqtt?.connected ? 'CONNECTED' : 'DISCONNECTED', ready.mqtt?.enabled ? `Subs ready: ${ready.mqtt?.subscriptions_ready ? 'Yes' : 'No'}` : 'Disabled by config']
+    const [readyRes, diagRes] = await Promise.allSettled([api.getHealthReady(), api.getDiagnostics()]);
+    if (disposed) return;
+
+    const ready = readyRes.status === 'fulfilled' ? readyRes.value : null;
+    const diag = diagRes.status === 'fulfilled' ? diagRes.value : null;
+
+    clear(contentSlot);
+    if (!diag && !ready) {
+      contentSlot.appendChild(
+        errorPanel({
+          title: 'Diagnostics unavailable',
+          message: diagRes.reason?.message || 'Unable to query /api/v1/diagnostics.',
+          onRetry: load
+        })
+      );
+      return;
+    }
+
+    const sqlite = diag?.sqlite || ready?.sqlite || {};
+    const mqtt = diag?.mqtt || ready?.mqtt || {};
+    const ws = diag?.websocket || { telemetry: 0, mfa: 0, notifications: 0, total: 0 };
+    const dep = diag?.deployment_summary || {};
+
+    const mqttState =
+      mqtt.state === 'standby' || mqtt.enabled === false
+        ? 'STANDBY'
+        : mqtt.connected && mqtt.subscriptions_ready !== false
+          ? 'CONNECTED'
+          : mqtt.connected
+            ? 'DEGRADED'
+            : 'DISCONNECTED';
+
+    // Simulator Control Panel (STRICTLY gated on diag.simulation && isAdmin())
+    if (diag?.simulation) {
+      const scenarios = [
+        { id: 'normal', label: 'Normal Telemetry' },
+        { id: 'alarm', label: 'Trigger Alarm Condition' },
+        { id: 'offline', label: 'Simulate Stale / Offline' },
+        { id: 'command-failure', label: 'Simulate Command Failure' }
       ];
-      for (const [lbl, val, sub] of kpis) {
-        kpiHost.appendChild(
-          el('div', { class: 'card kpi-card' }, [
-            el('div', { class: 'kpi-label', text: lbl }),
-            el('div', { class: 'kpi-value tabular-nums', text: String(val) }),
-            el('div', { class: 'kpi-detail', text: String(sub) })
-          ])
-        );
-      }
-
-      clear(servicesHost);
-      servicesHost.appendChild(
-        el('div', { class: 'card stack-sm' }, [
-          el('h3', { class: 'card-title', text: 'WebSocket & Storage Telemetry' }),
-          el('div', { class: 'spec-list' }, [
-            el('div', { class: 'spec-row' }, [el('span', { class: 'spec-key', text: 'Telemetry WS Clients' }), el('code', { class: 'mono tabular-nums', text: String(ready.websocket?.telemetry_clients ?? 0) })]),
-            el('div', { class: 'spec-row' }, [el('span', { class: 'spec-key', text: 'MFA WS Clients' }), el('code', { class: 'mono tabular-nums', text: String(ready.websocket?.mfa_clients ?? 0) })]),
-            el('div', { class: 'spec-row' }, [el('span', { class: 'spec-key', text: 'Notification WS Clients' }), el('code', { class: 'mono tabular-nums', text: String(ready.websocket?.notification_clients ?? 0) })]),
-            el('div', { class: 'spec-row' }, [el('span', { class: 'spec-key', text: 'Pending Quarantine Count' }), el('code', { class: 'mono tabular-nums', text: String(diag.pending_devices_count ?? 0) })])
-          ])
-        ])
-      );
-
-      const obsNodes = ready.mqtt?.observed_nodes || {};
-      const obsEntries = Object.entries(obsNodes);
-      servicesHost.appendChild(
-        el('div', { class: 'card stack-sm' }, [
-          el('h3', { class: 'card-title', text: 'MQTT Observed Legacy Nodes' }),
-          obsEntries.length === 0
-            ? el('p', { class: 'text-secondary', text: 'No legacy heartbeat frames observed since server start.' })
-            : el(
-                'div',
-                { class: 'spec-list' },
-                obsEntries.map(([nodeId, st]) =>
-                  el('div', { class: 'spec-row' }, [
-                    el('span', { class: 'mono', text: nodeId }),
-                    el('span', { class: 'mono tabular-nums', text: `${st.status} · ${formatAge(st.last_seen_at)}` })
-                  ])
-                )
-              )
-        ])
-      );
-
-      // Freshness table
-      clear(freshnessCard);
-      const devices = devRes.devices || devRes.items || [];
-      const rows = [];
-      for (const dev of devices) {
-        for (const ep of dev.endpoints || []) {
-          rows.push({ dev, ep });
-        }
-      }
-      if (rows.length === 0) {
-        freshnessCard.appendChild(el('div', { class: 'empty-state', text: 'No active endpoints registered.' }));
-      } else {
-        const tbody = el(
-          'tbody',
-          {},
-          rows.map(({ dev, ep }) =>
-            el('tr', {}, [
-              el('td', {}, [
-                el('button', {
-                  type: 'button',
-                  class: 'link-title',
-                  text: dev.name,
-                  onClick: () => navigate(`/app/devices/${encodeURIComponent(dev.device_id)}`)
-                })
-              ]),
-              el('td', { class: 'mono', text: ep.endpoint_key }),
-              el('td', { class: 'mono', text: `${ep.kind}/${ep.data_type || 'NUMBER'}` }),
-              el('td', { class: 'mono', text: ep.freshness || 'UNSEEN' }),
-              el('td', { class: 'mono tabular-nums', text: formatAge(ep.last_seen_at) })
-            ])
-          )
-        );
-        freshnessCard.appendChild(
-          el('div', { class: 'table-scroll' }, [
-            el('table', { class: 'data-table' }, [
-              el('thead', {}, [
-                el('tr', {}, [
-                  el('th', { text: 'Device' }),
-                  el('th', { text: 'Endpoint' }),
-                  el('th', { text: 'Type' }),
-                  el('th', { text: 'Freshness' }),
-                  el('th', { text: 'Last Observed' })
-                ])
-              ]),
-              tbody
-            ])
-          ])
-        );
-      }
-
-      // Isolated Simulator Panel (strictly hidden unless backend simulator is enabled)
-      clear(simHost);
-      if (diag.simulation && isAdmin()) {
-        const scenarios = [
-          { id: 'normal', label: 'Normal Operations' },
-          { id: 'alarm', label: 'Trigger Alarm Scenario' },
-          { id: 'offline', label: 'Simulate Node Offline' },
-          { id: 'command-failure', label: 'Simulate Command Failure' }
-        ];
-        simHost.appendChild(
-          el('section', { class: 'card stack-sm' }, [
-            el('h3', { class: 'card-title', text: 'Isolated Simulator Controls (Non-Production)' }),
-            el('p', { class: 'text-secondary', text: 'Backend is running in isolated simulator mode. No external broker or physical hardware is contacted.' }),
-            el(
-              'div',
-              { class: 'toolbar-actions' },
-              scenarios.map((sc) =>
+      contentSlot.appendChild(
+        disclaimerBanner({
+          icon: 'icon-activity',
+          tone: 'info',
+          title: 'SIMULATION MODE — Isolated Synthetic Telemetry Driver',
+          message: 'Simulator controls are available only in isolated simulation mode. No physical hardware is contacted.',
+          actions: admin
+            ? scenarios.map((sc) =>
                 el('button', {
                   type: 'button',
                   class: 'btn btn-secondary btn-sm',
@@ -161,400 +118,950 @@ export function renderDiagnosticsPage({ navigate }) {
                   onClick: async () => {
                     try {
                       await api.triggerSimulatorScenario(sc.id);
-                      showToast('Simulator scenario executed', sc.label, 'info');
-                      loadDiag();
+                      showToast('Simulator scenario active', sc.label, 'info');
+                      load();
                     } catch (err) {
-                      showToast('Simulator error', err.message, 'error');
+                      showToast('Scenario failed', err.message, 'error');
                     }
                   }
                 })
               )
-            )
+            : []
+        })
+      );
+    }
+
+    // Core Service Cards Grid
+    contentSlot.appendChild(
+      el('div', { class: 'rooms-grid' }, [
+        el('section', { class: 'card stack-sm' }, [
+          el('div', { class: 'row-between' }, [
+            el('h2', { class: 'card-title', text: 'Platform & Readiness' }),
+            statusIndicator(ready?.status === 'ready' ? 'READY' : 'DEGRADED')
+          ]),
+          keyValueList([
+            { label: 'Release Version', value: diag?.version || '2.0.0-rc.1', mono: true },
+            { label: 'Readiness HTTP', value: `${ready?.httpStatus || 200} (${ready?.status || 'unknown'})`, mono: true },
+            { label: 'Uptime', value: formatUptime(diag?.uptime_seconds), mono: true },
+            { label: 'Started At', value: formatTimestamp(diag?.started_at), mono: true },
+            { label: 'Monitor Tick', value: diag?.monitoring_error ? `Error: ${diag.monitoring_error}` : 'Nominal' }
           ])
-        );
-      }
-    } catch (err) {
-      clear(freshnessCard);
-      freshnessCard.appendChild(el('div', { class: 'alert alert-error', text: err.message }));
+        ]),
+        el('section', { class: 'card stack-sm' }, [
+          el('div', { class: 'row-between' }, [
+            el('h2', { class: 'card-title', text: 'SQLite Database' }),
+            statusIndicator(sqlite.ok ? 'HEALTHY' : 'ERROR')
+          ]),
+          keyValueList([
+            { label: 'Health Check', value: sqlite.ok ? 'Passing' : 'Failed' },
+            { label: 'Journal Mode', value: String(sqlite.journal_mode || 'wal').toUpperCase(), mono: true },
+            { label: 'Foreign Keys', value: sqlite.foreign_keys ? 'Enabled' : 'Disabled' },
+            { label: 'Retention Window', value: `${diag?.retention_days ?? 30} days`, mono: true }
+          ])
+        ]),
+        el('section', { class: 'card stack-sm' }, [
+          el('div', { class: 'row-between' }, [
+            el('h2', { class: 'card-title', text: 'MQTT Broker & WebSockets' }),
+            statusIndicator(mqttState)
+          ]),
+          keyValueList([
+            { label: 'MQTT Enabled', value: mqtt.enabled === false ? 'No (Standby)' : 'Yes' },
+            { label: 'Subscriptions', value: mqtt.subscriptions_ready ? 'Verified' : mqtt.enabled === false ? 'N/A' : 'Degraded' },
+            { label: 'WS Telemetry Clients', value: String(ws.telemetry ?? 0), mono: true },
+            { label: 'WS Notification Clients', value: String(ws.notifications ?? 0), mono: true },
+            { label: 'WS MFA Clients', value: String(ws.mfa ?? 0), mono: true }
+          ])
+        ]),
+        el('section', { class: 'card stack-sm' }, [
+          el('div', { class: 'row-between' }, [
+            el('h2', { class: 'card-title', text: 'Deployment Posture' }),
+            statusIndicator('INFO', dep.node_env || 'production')
+          ]),
+          keyValueList([
+            { label: 'Session Secure Cookie', value: dep.session_secure_cookie ? 'HTTPS Required' : 'LAN HTTP Allowed' },
+            { label: 'Bearer Compat', value: dep.allow_bearer_compat ? 'Enabled' : 'Disabled (Strict Cookie)' },
+            { label: 'Idle Session TTL', value: `${dep.session_idle_minutes ?? 30} min`, mono: true },
+            { label: 'Absolute Session TTL', value: `${dep.session_absolute_hours ?? 12} hr`, mono: true },
+            { label: 'Pending Quarantine', value: String(diag?.pending_devices_count ?? 0), mono: true }
+          ])
+        ])
+      ])
+    );
+
+    // Per-device freshness table
+    const devices = diag?.devices || [];
+    contentSlot.appendChild(
+      el('section', { class: 'stack-md' }, [
+        el('h2', { class: 'section-title', text: `Device & Endpoint Evidence (${devices.length})` }),
+        renderAdaptiveCollection({
+          ariaLabel: 'Device diagnostics freshness matrix',
+          rows: devices,
+          onRowClick: (d) => navigate(`/app/devices/${encodeURIComponent(d.device_id)}`),
+          emptyNode: emptyState({ title: 'No registered devices', message: 'Devices will appear here once registered.' }),
+          columns: [
+            {
+              label: 'Device',
+              render: (d) =>
+                el('div', { class: 'stack-xs' }, [
+                  el('span', { class: 'font-semibold', text: d.name }),
+                  el('span', { class: 'mono text-xs text-muted', text: d.device_id })
+                ])
+            },
+            { label: 'Transport', render: (d) => el('span', { class: 'meta-tag mono', text: d.transport }) },
+            { label: 'Status', render: (d) => statusIndicator(d.in_maintenance ? 'MAINTENANCE' : d.status, null, { compact: true }) },
+            { label: 'MQTT Identity', render: (d) => statusIndicator(d.mqtt_identity_status || 'NOT_APPLICABLE', null, { compact: true }) },
+            {
+              label: 'Endpoints',
+              className: 'mono text-xs tabular-nums',
+              render: (d) => `${(d.endpoints || []).filter((e) => e.fresh).length}/${(d.endpoints || []).length} fresh`
+            },
+            { label: 'Last Seen', className: 'mono text-xs text-secondary', render: (d) => formatAge(d.last_seen_at) }
+          ],
+          renderMobileCard: (d) =>
+            el('article', { class: 'card record-card', onClick: () => navigate(`/app/devices/${encodeURIComponent(d.device_id)}`) }, [
+              el('div', { class: 'record-card-head' }, [
+                el('div', { class: 'font-semibold', text: d.name }),
+                statusIndicator(d.in_maintenance ? 'MAINTENANCE' : d.status, null, { compact: true })
+              ]),
+              el('div', { class: 'mono text-xs text-muted', text: `${d.device_id} · ${d.transport} · ${formatAge(d.last_seen_at)}` })
+            ])
+        })
+      ])
+    );
+  }
+
+  load();
+
+  return {
+    node: container,
+    cleanup: () => {
+      disposed = true;
     }
   };
-
-  loadDiag();
-  return { node: root };
 }
 
 // ============================================================================
-// USERS & PHYSICAL ACCESS CREDENTIALS (/app/users) — ADMIN ONLY
+// USERS & ACCESS (/app/users) — Separated Operators vs Facility People/Credentials
 // ============================================================================
 export function renderUsersPage() {
-  const root = el('div', { class: 'stack-lg' });
+  const container = el('div', { class: 'stack-lg' });
+  let disposed = false;
 
   if (!isAdmin()) {
-    root.appendChild(
-      el('div', { class: 'card empty-state' }, [
-        el('h3', { class: 'card-title', text: 'Administrator Permission Required' }),
-        el('p', { class: 'text-secondary', text: 'Your Viewer role has read-only operational access. Operator accounts and physical credentials are restricted to Admin accounts.' })
+    container.appendChild(
+      el('div', { class: 'card' }, [
+        emptyState({
+          icon: 'icon-shield',
+          title: 'Administrator Role Required',
+          message: 'Managing dashboard operators and physical access credentials requires a server-verified Admin account.'
+        })
       ])
     );
-    return { node: root };
+    return { node: container };
   }
 
-  let activeTab = 'operators';
-  const tabBar = el('div', { class: 'tab-bar' });
-  const contentHost = el('div', { class: 'stack-md' });
+  let activeTab = 'operators'; // operators | people
+  let peopleSearch = '';
 
-  const renderTabs = () => {
-    clear(tabBar);
-    for (const [id, label] of [
-      ['operators', 'Dashboard Operators (RBAC)'],
-      ['people', 'People & RFID/PIN Credentials']
-    ]) {
-      tabBar.appendChild(
+  const tabSlot = el('div');
+  const bodySlot = el('div', { class: 'stack-md' });
+
+  function openCreateOperatorModal(onDone) {
+    const userIn = el('input', { class: 'input', type: 'text', placeholder: 'e.g. ops_engineer', required: true });
+    const passIn = el('input', { class: 'input', type: 'password', placeholder: 'Minimum 12 characters', required: true });
+    const roleSel = el('select', { class: 'select' }, [
+      el('option', { value: 'Viewer', text: 'Viewer (Read-only operations)' }),
+      el('option', { value: 'Admin', text: 'Admin (Full management & control)' })
+    ]);
+    const errBox = el('div', { class: 'form-error', hidden: true });
+
+    const body = el('div', { class: 'stack-md' }, [
+      errBox,
+      el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Username *' }), userIn]),
+      el('div', { class: 'form-field' }, [
+        el('label', { class: 'form-label', text: 'Password * (min 12 characters)' }),
+        passIn
+      ]),
+      el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Console Role *' }), roleSel]),
+      el('p', {
+        class: 'text-xs text-muted',
+        text: 'Dashboard operator accounts authenticate to the web console only. Physical RFID cards and door PINs are managed separately under Facility People.'
+      })
+    ]);
+
+    const saveBtn = el('button', {
+      type: 'button',
+      class: 'btn btn-primary',
+      text: 'Create Operator',
+      onClick: async () => {
+        errBox.hidden = true;
+        const username = userIn.value.trim();
+        const password = passIn.value;
+        if (!username || password.length < 12) {
+          errBox.textContent = 'Username is required and password must be at least 12 characters.';
+          errBox.hidden = false;
+          return;
+        }
+        saveBtn.disabled = true;
+        try {
+          await api.createOperator({ username, password, role: roleSel.value });
+          showToast('Operator created', `${username} (${roleSel.value})`, 'success');
+          closeModal();
+          onDone();
+        } catch (err) {
+          errBox.textContent = err.message;
+          errBox.hidden = false;
+        } finally {
+          saveBtn.disabled = false;
+        }
+      }
+    });
+
+    openModal({
+      title: 'Create Dashboard Operator',
+      subtitle: 'Console Account Provisioning',
+      body,
+      actions: [
+        el('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', onClick: closeModal }),
+        saveBtn
+      ]
+    });
+  }
+
+  function openCreatePersonModal(onDone) {
+    const nameIn = el('input', { class: 'input', type: 'text', placeholder: 'e.g. Dr. Nadia Mansour', required: true });
+    const refIn = el('input', { class: 'input', type: 'text', placeholder: 'Employee ID / Badge Reference (optional)' });
+    const errBox = el('div', { class: 'form-error', hidden: true });
+
+    const body = el('div', { class: 'stack-md' }, [
+      errBox,
+      el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Display Name *' }), nameIn]),
+      el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Reference / Department' }), refIn])
+    ]);
+
+    const saveBtn = el('button', {
+      type: 'button',
+      class: 'btn btn-primary',
+      text: 'Add Person',
+      onClick: async () => {
+        errBox.hidden = true;
+        const display_name = nameIn.value.trim();
+        if (!display_name) {
+          errBox.textContent = 'Display Name is required.';
+          errBox.hidden = false;
+          return;
+        }
+        saveBtn.disabled = true;
+        try {
+          await api.createPerson({ display_name, reference: refIn.value.trim() });
+          showToast('Person added', display_name, 'success');
+          closeModal();
+          onDone();
+        } catch (err) {
+          errBox.textContent = err.message;
+          errBox.hidden = false;
+        } finally {
+          saveBtn.disabled = false;
+        }
+      }
+    });
+
+    openModal({
+      title: 'Add Facility Person',
+      subtitle: 'Physical Access Directory',
+      body,
+      actions: [
+        el('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', onClick: closeModal }),
+        saveBtn
+      ]
+    });
+  }
+
+  function openAddCredentialModal(person, onDone) {
+    let modality = 'RFID';
+    const modSel = el('select', { class: 'select' }, [
+      el('option', { value: 'RFID', text: 'RFID Card UID (4, 7, or 10 hex bytes)' }),
+      el('option', { value: 'PIN', text: 'Keypad PIN (6 digits — stored as scrypt hash)' })
+    ]);
+    const valIn = el('input', { class: 'input mono', type: 'text', placeholder: 'e.g. A1:B2:C3:D4' });
+    const valLbl = el('label', { class: 'form-label', text: 'Card UID *' });
+    const errBox = el('div', { class: 'form-error', hidden: true });
+
+    modSel.addEventListener('change', () => {
+      modality = modSel.value;
+      valIn.value = '';
+      if (modality === 'PIN') {
+        valIn.type = 'password';
+        valIn.placeholder = '6 numeric digits';
+        valLbl.textContent = 'Keypad PIN *';
+      } else {
+        valIn.type = 'text';
+        valIn.placeholder = 'e.g. A1:B2:C3:D4';
+        valLbl.textContent = 'Card UID *';
+      }
+    });
+
+    const body = el('div', { class: 'stack-md' }, [
+      errBox,
+      disclaimerBanner({
+        icon: 'icon-clock',
+        tone: 'pending',
+        message: 'New credentials are saved centrally and marked Pending Device Sync until edge controller policy sync is completed.'
+      }),
+      el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Credential Modality' }), modSel]),
+      el('div', { class: 'form-field' }, [valLbl, valIn])
+    ]);
+
+    const saveBtn = el('button', {
+      type: 'button',
+      class: 'btn btn-primary',
+      text: 'Save Credential',
+      onClick: async () => {
+        errBox.hidden = true;
+        saveBtn.disabled = true;
+        try {
+          const payload =
+            modality === 'PIN'
+              ? { modality: 'PIN', pin: valIn.value.trim() }
+              : { modality: 'RFID', card_uid: valIn.value.trim().toUpperCase() };
+          await api.addCredential(person.person_id || person.id, payload);
+          showToast('Credential saved', 'Marked Pending Device Sync.', 'success');
+          closeModal();
+          onDone();
+        } catch (err) {
+          errBox.textContent = err.message;
+          errBox.hidden = false;
+        } finally {
+          saveBtn.disabled = false;
+        }
+      }
+    });
+
+    openModal({
+      title: `Add Credential · ${person.display_name}`,
+      subtitle: 'Physical Credential Registry',
+      body,
+      actions: [
+        el('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', onClick: closeModal }),
+        saveBtn
+      ]
+    });
+  }
+
+  container.appendChild(
+    pageHeader({
+      title: 'Users & Access',
+      description: 'Manage console operator accounts separately from physical facility personnel and access credentials.',
+      actions: [
         el('button', {
           type: 'button',
-          class: `tab-btn${activeTab === id ? ' active' : ''}`,
-          text: label,
+          class: 'btn btn-primary btn-sm',
+          onClick: () =>
+            activeTab === 'operators'
+              ? openCreateOperatorModal(loadTab)
+              : openCreatePersonModal(loadTab)
+        }, [svgIcon('icon-plus', 14), el('span', { text: 'Add Account / Person' })])
+      ]
+    })
+  );
+  container.append(tabSlot, bodySlot);
+
+  function renderTabs() {
+    clear(tabSlot);
+    tabSlot.appendChild(
+      el('div', { class: 'tab-bar', role: 'tablist' }, [
+        el('button', {
+          type: 'button',
+          role: 'tab',
+          'aria-selected': activeTab === 'operators' ? 'true' : 'false',
+          class: `tab-btn${activeTab === 'operators' ? ' active' : ''}`,
+          text: 'Dashboard Operators',
           onClick: () => {
-            activeTab = id;
+            activeTab = 'operators';
+            renderTabs();
+            loadTab();
+          }
+        }),
+        el('button', {
+          type: 'button',
+          role: 'tab',
+          'aria-selected': activeTab === 'people' ? 'true' : 'false',
+          class: `tab-btn${activeTab === 'people' ? ' active' : ''}`,
+          text: 'Facility People & Credentials',
+          onClick: () => {
+            activeTab = 'people';
             renderTabs();
             loadTab();
           }
         })
-      );
-    }
-  };
+      ])
+    );
+  }
 
-  root.appendChild(tabBar);
-  root.appendChild(contentHost);
+  async function loadTab() {
+    if (disposed) return;
+    clear(bodySlot);
+    bodySlot.appendChild(loadingSkeleton('table', 4));
 
-  const openOperatorModal = () => {
-    const userIn = el('input', { class: 'input', placeholder: 'operator_name' });
-    const passIn = el('input', { class: 'input', type: 'password', placeholder: 'Strong password (min 6 chars)' });
-    const roleSel = el('select', { class: 'input' }, [
-      el('option', { value: 'Viewer', text: 'Viewer (Read-Only)' }),
-      el('option', { value: 'Admin', text: 'Admin (Full Operations)' })
-    ]);
-    const errBox = el('div', { class: 'alert alert-error hidden' });
-    const saveBtn = el('button', { type: 'button', class: 'btn btn-primary', text: 'Create Operator' });
-    saveBtn.addEventListener('click', async () => {
-      errBox.classList.add('hidden');
-      saveBtn.disabled = true;
-      try {
-        await api.provisionOperator({
-          username: userIn.value.trim(),
-          password: passIn.value,
-          role: roleSel.value,
-          rfid: '00:00:00:00',
-          pin: '000000'
-        });
-        showToast('Operator provisioned', `${userIn.value.trim()} (${roleSel.value}) created.`, 'success');
-        closeModal();
-        loadTab();
-      } catch (err) {
-        errBox.textContent = err.message;
-        errBox.classList.remove('hidden');
-        saveBtn.disabled = false;
-      }
-    });
-    openModal({
-      title: 'Add Dashboard Operator',
-      subtitle: 'Server-Verified RBAC Account',
-      body: el('div', { class: 'stack-md' }, [
-        errBox,
-        el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Username' }), userIn]),
-        el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Password' }), passIn]),
-        el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Role' }), roleSel])
-      ]),
-      actions: [
-        el('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', onClick: closeModal }),
-        saveBtn
-      ]
-    });
-  };
-
-  const openPersonModal = () => {
-    const nameIn = el('input', { class: 'input', placeholder: 'Full Name' });
-    const deptIn = el('input', { class: 'input', placeholder: 'Department / Role' });
-    const errBox = el('div', { class: 'alert alert-error hidden' });
-    const saveBtn = el('button', { type: 'button', class: 'btn btn-primary', text: 'Add Person' });
-    saveBtn.addEventListener('click', async () => {
-      errBox.classList.add('hidden');
-      saveBtn.disabled = true;
-      try {
-        await api.createPerson({ full_name: nameIn.value.trim(), department: deptIn.value.trim() });
-        showToast('Person added', `${nameIn.value.trim()} created.`, 'success');
-        closeModal();
-        loadTab();
-      } catch (err) {
-        errBox.textContent = err.message;
-        errBox.classList.remove('hidden');
-        saveBtn.disabled = false;
-      }
-    });
-    openModal({
-      title: 'Add Facility Person',
-      subtitle: 'Physical Access Identity (Separated from Dashboard Login)',
-      body: el('div', { class: 'stack-md' }, [
-        errBox,
-        el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Full Name' }), nameIn]),
-        el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Department' }), deptIn])
-      ]),
-      actions: [
-        el('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', onClick: closeModal }),
-        saveBtn
-      ]
-    });
-  };
-
-  const loadTab = async () => {
-    clear(contentHost);
     try {
       if (activeTab === 'operators') {
-        const users = await api.listOperators();
-        const list = Array.isArray(users) ? users : [];
-        contentHost.appendChild(
-          el('div', { class: 'section-toolbar' }, [
-            el('p', { class: 'text-secondary', text: `${list.length} dashboard operator accounts` }),
-            el('button', { type: 'button', class: 'btn btn-primary btn-sm', text: '+ Add Operator', onClick: openOperatorModal })
-          ])
+        const res = await api.listSystemUsers();
+        if (disposed) return;
+        const users = res.rows || res.users || (Array.isArray(res) ? res : []);
+        clear(bodySlot);
+
+        bodySlot.appendChild(
+          disclaimerBanner({
+            icon: 'icon-shield',
+            tone: 'info',
+            message: 'Operators sign into this web console using HttpOnly session cookies. Passwords are hashed with scrypt and never returned by the API.'
+          })
         );
-        const tbody = el(
-          'tbody',
-          {},
-          list.map((u) =>
-            el('tr', {}, [
-              el('td', { class: 'mono', text: u.username }),
-              el('td', { text: u.role }),
-              el('td', { text: u.pin_configured ? 'Configured' : 'None' }),
-              el('td', { class: 'actions-cell' }, [
-                u.username !== store.user?.username
-                  ? el('button', {
+
+        bodySlot.appendChild(
+          renderAdaptiveCollection({
+            ariaLabel: 'Dashboard operators directory',
+            rows: users,
+            emptyNode: emptyState({ title: 'No operators found', message: 'Create an operator account to grant console access.' }),
+            columns: [
+              { label: 'Username', className: 'font-semibold', key: 'username' },
+              {
+                label: 'Role',
+                render: (u) => statusIndicator(u.role === 'Admin' ? 'ADMIN' : 'VIEWER', u.role, { compact: true })
+              },
+              {
+                label: 'Created',
+                className: 'mono text-xs text-muted',
+                render: (u) => formatTimestamp(u.created_at)
+              },
+              {
+                label: 'Actions',
+                align: 'right',
+                render: (u) => {
+                  const isSelf = store.user?.username === u.username;
+                  return el('div', { class: 'btn-row', style: 'justify-content:flex-end' }, [
+                    el('button', {
                       type: 'button',
-                      class: 'btn btn-secondary btn-xs',
+                      class: 'btn btn-secondary btn-sm',
+                      disabled: isSelf,
+                      title: isSelf ? 'Cannot change your own active role' : undefined,
+                      text: u.role === 'Admin' ? 'Demote to Viewer' : 'Promote to Admin',
+                      onClick: async () => {
+                        const nextRole = u.role === 'Admin' ? 'Viewer' : 'Admin';
+                        try {
+                          await api.updateOperatorRole({ id: u.id, role: nextRole });
+                          showToast('Role updated', `${u.username} is now ${nextRole}`, 'success');
+                          loadTab();
+                        } catch (err) {
+                          showToast('Role update failed', err.message, 'error');
+                        }
+                      }
+                    }),
+                    el('button', {
+                      type: 'button',
+                      class: 'btn btn-danger btn-sm',
+                      disabled: isSelf,
+                      title: isSelf ? 'Cannot delete your own session account' : undefined,
                       text: 'Delete',
                       onClick: async () => {
                         const ok = await confirmDialog({
-                          title: `Delete operator ${u.username}?`,
-                          message: 'This revokes dashboard access immediately. Deleting the last Admin is blocked by the server.',
-                          confirmLabel: 'Delete Account',
+                          title: `Delete operator "${u.username}"?`,
+                          message: 'Revokes all active sessions for this user. The server prevents deleting the last remaining Admin.',
+                          confirmLabel: 'Delete Operator',
                           danger: true
                         });
                         if (!ok) return;
                         try {
                           await api.deleteOperator(u.id);
-                          showToast('Operator deleted', `${u.username} removed.`, 'info');
+                          showToast('Operator deleted', u.username, 'info');
                           loadTab();
                         } catch (err) {
-                          showToast('Delete failed', err.message, 'error');
+                          showToast('Delete rejected', err.message, 'error');
                         }
                       }
                     })
-                  : el('span', { class: 'text-muted', text: 'Current Session' })
+                  ]);
+                }
+              }
+            ],
+            renderMobileCard: (u) =>
+              el('article', { class: 'card record-card' }, [
+                el('div', { class: 'record-card-head' }, [
+                  el('div', { class: 'font-semibold', text: u.username }),
+                  statusIndicator(u.role === 'Admin' ? 'ADMIN' : 'VIEWER', u.role, { compact: true })
+                ]),
+                el('div', { class: 'text-xs text-muted mono', text: `Created: ${formatTimestamp(u.created_at)}` })
               ])
-            ])
-          )
-        );
-        contentHost.appendChild(
-          el('div', { class: 'card table-card' }, [
-            el('div', { class: 'table-scroll' }, [
-              el('table', { class: 'data-table' }, [
-                el('thead', {}, [el('tr', {}, [el('th', { text: 'Username' }), el('th', { text: 'Role' }), el('th', { text: 'PIN State' }), el('th', { text: 'Actions' })])]),
-                tbody
-              ])
-            ])
-          ])
+          })
         );
       } else {
-        const res = await api.listPeople({ limit: 100 });
-        const people = res.items || [];
-        contentHost.appendChild(
-          el('div', { class: 'section-toolbar' }, [
-            el('p', { class: 'text-secondary', text: `${people.length} physical access profiles (separated from operator logins)` }),
-            el('button', { type: 'button', class: 'btn btn-primary btn-sm', text: '+ Add Person', onClick: openPersonModal })
+        const res = await api.listPeople({ search: peopleSearch, limit: 50 });
+        if (disposed) return;
+        const people = res.people || [];
+
+        clear(bodySlot);
+
+        const searchIn = el('input', {
+          class: 'input',
+          type: 'search',
+          value: peopleSearch,
+          placeholder: 'Search facility people by name or reference...',
+          'aria-label': 'Search facility people'
+        });
+        let st = null;
+        searchIn.addEventListener('input', () => {
+          peopleSearch = searchIn.value.trim();
+          clearTimeout(st);
+          st = setTimeout(loadTab, 250);
+        });
+
+        bodySlot.appendChild(
+          disclaimerBanner({
+            icon: 'icon-clock',
+            tone: 'pending',
+            title: 'Physical Credential Policy Boundary',
+            message: 'Credentials managed here are stored centrally with status Pending Device Sync. Raw PINs and secret hashes are never returned to the browser.'
+          })
+        );
+
+        bodySlot.appendChild(
+          el('div', { class: 'card card-compact row-between' }, [
+            searchIn,
+            el('button', {
+              type: 'button',
+              class: 'btn btn-primary btn-sm',
+              onClick: () => openCreatePersonModal(loadTab)
+            }, [svgIcon('icon-plus', 14), el('span', { text: 'Add Person' })])
           ])
         );
-        const tbody = el(
-          'tbody',
-          {},
-          people.map((p) =>
-            el('tr', {}, [
-              el('td', { text: p.full_name }),
-              el('td', { text: p.department || '—' }),
-              el('td', { class: 'mono', text: p.status || 'ACTIVE' }),
-              el('td', { class: 'mono tabular-nums', text: String((p.credentials || []).length) })
-            ])
-          )
-        );
-        contentHost.appendChild(
-          el('div', { class: 'card table-card' }, [
-            people.length === 0
-              ? el('div', { class: 'empty-state', text: 'No facility people enrolled yet.' })
-              : el('div', { class: 'table-scroll' }, [
-                  el('table', { class: 'data-table' }, [
-                    el('thead', {}, [el('tr', {}, [el('th', { text: 'Full Name' }), el('th', { text: 'Department' }), el('th', { text: 'Status' }), el('th', { text: 'Credentials' })])]),
-                    tbody
+
+        bodySlot.appendChild(
+          renderAdaptiveCollection({
+            ariaLabel: 'Facility people and physical credentials',
+            rows: people,
+            emptyNode: emptyState({
+              icon: 'icon-users',
+              title: 'No facility personnel registered',
+              message: 'Add people here to issue RFID card or keypad PIN credentials separately from dashboard operator logins.',
+              actionLabel: 'Add Person',
+              onAction: () => openCreatePersonModal(loadTab)
+            }),
+            columns: [
+              {
+                label: 'Person',
+                render: (p) =>
+                  el('div', { class: 'stack-xs' }, [
+                    el('span', { class: 'font-semibold', text: p.display_name }),
+                    p.reference ? el('span', { class: 'text-xs text-muted mono', text: p.reference }) : null
                   ])
+              },
+              {
+                label: 'Status',
+                render: (p) => statusIndicator(p.status || 'ACTIVE', null, { compact: true })
+              },
+              {
+                label: 'Credentials',
+                render: (p) => {
+                  const creds = p.credentials || [];
+                  if (!creds.length) return el('span', { class: 'text-xs text-muted', text: 'None issued' });
+                  return el(
+                    'div',
+                    { class: 'stack-xs' },
+                    creds.map((c) =>
+                      el('div', { class: 'row-gap-sm' }, [
+                        el('span', { class: 'meta-tag mono', text: `${c.modality}${c.masked_label ? ` · ${c.masked_label}` : ''}` }),
+                        statusIndicator(c.status || 'ACTIVE', null, { compact: true }),
+                        statusIndicator('PENDING_DEVICE_SYNC', 'Pending Sync', { compact: true }),
+                        c.status === 'ACTIVE'
+                          ? el('button', {
+                              type: 'button',
+                              class: 'btn btn-ghost btn-sm',
+                              text: 'Revoke',
+                              onClick: async () => {
+                                try {
+                                  await api.setCredentialState(c.credential_id || c.id, 'REVOKED');
+                                  showToast('Credential revoked', `${c.modality} credential revoked.`, 'info');
+                                  loadTab();
+                                } catch (err) {
+                                  showToast('Revoke failed', err.message, 'error');
+                                }
+                              }
+                            })
+                          : null
+                      ])
+                    )
+                  );
+                }
+              },
+              {
+                label: 'Actions',
+                align: 'right',
+                render: (p) =>
+                  el('div', { class: 'btn-row', style: 'justify-content:flex-end' }, [
+                    el('button', {
+                      type: 'button',
+                      class: 'btn btn-secondary btn-sm',
+                      text: '+ Credential',
+                      onClick: () => openAddCredentialModal(p, loadTab)
+                    }),
+                    el('button', {
+                      type: 'button',
+                      class: 'btn btn-ghost btn-sm',
+                      text: p.status === 'ACTIVE' ? 'Suspend' : 'Activate',
+                      onClick: async () => {
+                        try {
+                          await api.updatePerson(p.person_id || p.id, {
+                            display_name: p.display_name,
+                            reference: p.reference || '',
+                            status: p.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE',
+                            version: p.version
+                          });
+                          showToast('Person updated', p.display_name, 'success');
+                          loadTab();
+                        } catch (err) {
+                          showToast('Update failed', err.message, 'error');
+                        }
+                      }
+                    })
+                  ])
+              }
+            ],
+            renderMobileCard: (p) =>
+              el('article', { class: 'card record-card' }, [
+                el('div', { class: 'record-card-head' }, [
+                  el('div', { class: 'font-semibold', text: p.display_name }),
+                  statusIndicator(p.status || 'ACTIVE', null, { compact: true })
+                ]),
+                el('div', { class: 'text-xs text-muted', text: `${(p.credentials || []).length} credential(s)` }),
+                el('div', { class: 'record-card-actions' }, [
+                  el('button', {
+                    type: 'button',
+                    class: 'btn btn-secondary btn-sm',
+                    text: '+ Credential',
+                    onClick: () => openAddCredentialModal(p, loadTab)
+                  })
                 ])
-          ])
+              ])
+          })
         );
       }
     } catch (err) {
-      contentHost.appendChild(el('div', { class: 'alert alert-error', text: err.message }));
+      if (disposed) return;
+      clear(bodySlot);
+      bodySlot.appendChild(
+        errorPanel({
+          title: 'Failed to load directory',
+          message: err.message,
+          onRetry: loadTab
+        })
+      );
     }
-  };
+  }
 
   renderTabs();
   loadTab();
-  return { node: root };
+
+  return {
+    node: container,
+    cleanup: () => {
+      disposed = true;
+    }
+  };
 }
 
 // ============================================================================
-// FACILITY SETTINGS (/app/settings) — ADMIN ONLY
+// FACILITY SETTINGS (/app/settings)
 // ============================================================================
 export function renderSettingsPage() {
-  const root = el('div', { class: 'stack-lg' });
+  const container = el('div', { class: 'stack-lg' });
+  let disposed = false;
 
   if (!isAdmin()) {
-    root.appendChild(
-      el('div', { class: 'card empty-state' }, [
-        el('h3', { class: 'card-title', text: 'Administrator Permission Required' }),
-        el('p', { class: 'text-secondary', text: 'Only Admin operators can modify facility profile and shared node settings.' })
+    container.appendChild(
+      el('div', { class: 'card' }, [
+        emptyState({
+          icon: 'icon-shield',
+          title: 'Administrator Role Required',
+          message: 'Facility profile and registered node destination settings require an Admin account.'
+        })
       ])
     );
-    return { node: root };
+    return { node: container };
   }
 
-  const facilityCard = el('section', { class: 'card stack-md' });
-  root.appendChild(facilityCard);
+  const contentSlot = el('div', { class: 'stack-lg' });
+  container.appendChild(
+    pageHeader({
+      title: 'Facility Settings',
+      description: 'Configure facility profile metadata and centralized server-side baseline node destinations.'
+    })
+  );
+  container.appendChild(contentSlot);
 
-  const loadSettings = async () => {
-    try {
-      const res = await api.getFacility();
-      const fac = res.facility || res;
+  async function load() {
+    if (disposed) return;
+    clear(contentSlot);
+    contentSlot.appendChild(loadingSkeleton('table', 4));
 
-      const nameIn = el('input', { class: 'input', value: fac.name || '' });
-      const locIn = el('input', { class: 'input', value: fac.location || '' });
-      const tzIn = el('input', { class: 'input mono', value: fac.timezone || 'UTC' });
-      const descIn = el('textarea', { class: 'input textarea', rows: '3' }, [fac.description || '']);
-      const saveBtn = el('button', { type: 'submit', class: 'btn btn-primary', text: 'Save Facility Profile' });
+    const [facRes, mgmtRes] = await Promise.allSettled([api.getFacility(), api.getManagementSettings()]);
+    if (disposed) return;
 
-      const form = el('form', { class: 'stack-md' }, [
-        el('div', { class: 'form-grid-2' }, [
-          el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Facility Name' }), nameIn]),
-          el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Location / Site' }), locIn])
-        ]),
-        el('div', { class: 'form-grid-2' }, [
-          el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Timezone' }), tzIn]),
-          el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Revision' }), el('input', { class: 'input mono', value: String(fac.version || 1), disabled: true })])
-        ]),
-        el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Description' }), descIn]),
-        el('div', {}, [saveBtn])
-      ]);
+    clear(contentSlot);
 
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        saveBtn.disabled = true;
-        try {
-          await api.updateFacility({
-            name: nameIn.value.trim(),
-            location: locIn.value.trim(),
-            timezone: tzIn.value.trim() || 'UTC',
-            description: descIn.value.trim(),
-            version: fac.version
-          });
-          showToast('Facility profile updated', 'Changes persisted to SQLite.', 'success');
-          loadSettings();
-        } catch (err) {
-          showToast('Save failed', err.message, 'error');
-          saveBtn.disabled = false;
+    // 1. Facility Profile Card
+    if (facRes.status === 'fulfilled') {
+      const f = facRes.value.facility;
+      const nameIn = el('input', { class: 'input', type: 'text', value: f.name || '' });
+      const locIn = el('input', { class: 'input', type: 'text', value: f.location || '' });
+      const tzIn = el('input', { class: 'input mono', type: 'text', value: f.timezone || 'UTC' });
+      const descIn = el('textarea', { class: 'textarea', value: f.description || '' });
+      const errBox = el('div', { class: 'form-error', hidden: true });
+      const saveBtn = el('button', {
+        type: 'button',
+        class: 'btn btn-primary btn-sm',
+        text: 'Save Facility Profile',
+        onClick: async () => {
+          errBox.hidden = true;
+          saveBtn.disabled = true;
+          try {
+            await api.updateFacility({
+              name: nameIn.value.trim(),
+              location: locIn.value.trim(),
+              timezone: tzIn.value.trim() || 'UTC',
+              description: descIn.value.trim(),
+              version: f.version
+            });
+            showToast('Facility profile saved', nameIn.value.trim(), 'success');
+            load();
+          } catch (err) {
+            errBox.textContent =
+              err.status === 409
+                ? 'Facility settings changed in another session. Refresh before saving.'
+                : err.message;
+            errBox.hidden = false;
+          } finally {
+            saveBtn.disabled = false;
+          }
         }
       });
 
-      clear(facilityCard);
-      facilityCard.appendChild(el('h3', { class: 'card-title', text: 'Facility Profile' }));
-      facilityCard.appendChild(form);
-    } catch (err) {
-      clear(facilityCard);
-      facilityCard.appendChild(el('div', { class: 'alert alert-error', text: err.message }));
+      contentSlot.appendChild(
+        el('section', { class: 'card stack-md' }, [
+          el('div', { class: 'row-between' }, [
+            el('h2', { class: 'card-title', text: 'Facility Profile' }),
+            el('span', { class: 'mono text-xs text-muted', text: `Revision v${f.version}` })
+          ]),
+          errBox,
+          el('div', { class: 'form-grid' }, [
+            el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Facility Name *' }), nameIn]),
+            el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Timezone' }), tzIn]),
+            el('div', { class: 'form-field form-field-full' }, [el('label', { class: 'form-label', text: 'Location / Site' }), locIn]),
+            el('div', { class: 'form-field form-field-full' }, [el('label', { class: 'form-label', text: 'Description' }), descIn])
+          ]),
+          el('div', { class: 'btn-row' }, [saveBtn])
+        ])
+      );
+    } else {
+      contentSlot.appendChild(
+        errorPanel({ title: 'Facility profile unavailable', message: facRes.reason?.message, onRetry: load })
+      );
+    }
+
+    // 2. Registered Server-Side Baseline Node Destinations Card
+    if (mgmtRes.status === 'fulfilled') {
+      const s = mgmtRes.value.settings;
+      const n1Name = el('input', { class: 'input', type: 'text', value: s.nodes?.node1?.name || '' });
+      const n1Ip = el('input', { class: 'input mono', type: 'text', value: s.nodes?.node1?.ip || '' });
+      const n2Name = el('input', { class: 'input', type: 'text', value: s.nodes?.node2?.name || '' });
+      const n2Ip = el('input', { class: 'input mono', type: 'text', value: s.nodes?.node2?.ip || '' });
+      const n3Name = el('input', { class: 'input', type: 'text', value: s.nodes?.node3?.name || '' });
+      const n3Ip = el('input', { class: 'input mono', type: 'text', value: s.nodes?.node3?.ip || '' });
+      const errBox = el('div', { class: 'form-error', hidden: true });
+
+      const saveNodesBtn = el('button', {
+        type: 'button',
+        class: 'btn btn-primary btn-sm',
+        text: 'Save Registered Destinations',
+        onClick: async () => {
+          errBox.hidden = true;
+          saveNodesBtn.disabled = true;
+          try {
+            const res = await api.updateManagementSettings({
+              revision: s.revision,
+              facility_name: s.facility_name,
+              room_name: s.room_name,
+              nodes: {
+                node1: { name: n1Name.value.trim(), ip: n1Ip.value.trim() },
+                node2: { name: n2Name.value.trim(), ip: n2Ip.value.trim() },
+                node3: { name: n3Name.value.trim(), ip: n3Ip.value.trim() }
+              },
+              display_thresholds: s.display_thresholds
+            });
+            showToast('Destinations saved', res.note || 'Server-side destinations updated.', 'success');
+            load();
+          } catch (err) {
+            errBox.textContent = err.message;
+            errBox.hidden = false;
+          } finally {
+            saveNodesBtn.disabled = false;
+          }
+        }
+      });
+
+      contentSlot.appendChild(
+        el('section', { class: 'card stack-md' }, [
+          el('div', { class: 'row-between' }, [
+            el('h2', { class: 'card-title', text: 'Registered Server-Side Node Destinations' }),
+            el('span', { class: 'mono text-xs text-muted', text: `Revision ${s.revision}` })
+          ]),
+          disclaimerBanner({
+            icon: 'icon-warning',
+            tone: 'warn',
+            message:
+              'Changes server-side destination addresses only. Updating these values does NOT configure physical ESP32 network interfaces, static IPs, or edge controller firmware thresholds.'
+          }),
+          errBox,
+          el('div', { class: 'form-grid' }, [
+            el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Node 1 Name (Access)' }), n1Name]),
+            el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Node 1 Private LAN IPv4' }), n1Ip]),
+            el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Node 2 Name (Environment)' }), n2Name]),
+            el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Node 2 Private LAN IPv4' }), n2Ip]),
+            el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Node 3 Name (Camera)' }), n3Name]),
+            el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Node 3 Private LAN IPv4' }), n3Ip])
+          ]),
+          el('div', { class: 'btn-row' }, [saveNodesBtn])
+        ])
+      );
+    }
+
+    // 3. Read-only Deployment Posture Guidance
+    contentSlot.appendChild(
+      el('section', { class: 'card stack-sm' }, [
+        el('h2', { class: 'card-title', text: 'Local Deployment & Host CLI Reference' }),
+        el('p', {
+          class: 'text-sm text-secondary',
+          text: 'Network interface binding, TLS termination, SQLite backup/restore, and per-device Mosquitto ACL provisioning are managed explicitly on the Ubuntu Server host.'
+        }),
+        keyValueList([
+          { label: 'Guided Installer', value: 'sudo ./install.sh', mono: true },
+          { label: 'MQTT Device ACL Helper', value: 'sudo ./scripts/provision-mqtt-device.sh add <device_id>', mono: true },
+          { label: 'SQLite Backup', value: 'npm run db:backup', mono: true }
+        ])
+      ])
+    );
+  }
+
+  load();
+
+  return {
+    node: container,
+    cleanup: () => {
+      disposed = true;
     }
   };
-
-  loadSettings();
-  return { node: root };
 }
 
 // ============================================================================
 // OPERATOR PROFILE (/app/profile)
 // ============================================================================
 export function renderProfilePage({ navigate }) {
-  const root = el('div', { class: 'stack-lg' });
+  const container = el('div', { class: 'stack-lg' });
+  const admin = isAdmin();
 
-  const infoCard = el('section', { class: 'card stack-md' }, [
-    el('h3', { class: 'card-title', text: 'Active Operator Session' }),
-    el('div', { class: 'spec-list' }, [
-      el('div', { class: 'spec-row' }, [el('span', { class: 'spec-key', text: 'Username' }), el('code', { class: 'mono', text: store.user?.username || '—' })]),
-      el('div', { class: 'spec-row' }, [el('span', { class: 'spec-key', text: 'Role' }), el('code', { class: 'mono', text: store.user?.role || 'Viewer' })]),
-      el('div', { class: 'spec-row' }, [el('span', { class: 'spec-key', text: 'Theme Posture' }), el('code', { class: 'mono', text: store.theme === 'dark' ? 'Dark Industrial Graphite' : 'Light Neutral' })])
-    ]),
-    el('div', { class: 'toolbar-actions' }, [
-      el('button', { type: 'button', class: 'btn btn-secondary', text: 'Switch Light / Dark Theme', onClick: toggleTheme }),
-      el('button', {
-        type: 'button',
-        class: 'btn btn-danger',
-        text: 'Sign Out',
-        onClick: async () => {
-          await signOut();
-          navigate('/login', { replace: true });
-        }
-      })
-    ])
-  ]);
-  root.appendChild(infoCard);
+  container.appendChild(
+    pageHeader({
+      title: 'Operator Profile',
+      description: 'Inspect your verified local session, switch interface themes, and rotate administrator credentials.'
+    })
+  );
 
-  if (isAdmin()) {
-    const curPass = el('input', { class: 'input', type: 'password', autocomplete: 'current-password', placeholder: 'Current password' });
-    const newUser = el('input', { class: 'input', value: store.user?.username || '', placeholder: 'Username' });
-    const newPass = el('input', { class: 'input', type: 'password', autocomplete: 'new-password', placeholder: 'New strong password (min 12 chars)' });
-    const statusBox = el('div', { class: 'alert hidden' });
-    const submitBtn = el('button', { type: 'submit', class: 'btn btn-primary', text: 'Update Credentials' });
+  // Session & Theme Card
+  const themeStatus = el('span', { class: 'mono text-sm', text: store.theme === 'dark' ? 'Dark Industrial Graphite' : 'Light Technical Neutral' });
 
-    const form = el('form', { class: 'stack-md' }, [
-      statusBox,
-      el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Current Password' }), curPass]),
-      el('div', { class: 'form-grid-2' }, [
-        el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'New Username' }), newUser]),
-        el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'New Password' }), newPass])
+  container.appendChild(
+    el('section', { class: 'card stack-md' }, [
+      el('div', { class: 'row-between' }, [
+        el('h2', { class: 'card-title', text: 'Active Local Session' }),
+        statusIndicator(admin ? 'ADMIN' : 'VIEWER', store.user?.role || 'Viewer')
       ]),
-      el('div', {}, [submitBtn])
-    ]);
+      keyValueList([
+        { label: 'Username', value: store.user?.username || '—', mono: true },
+        { label: 'Verified Role', value: store.user?.role || 'Viewer' },
+        { label: 'Server Origin', value: window.location.host, mono: true },
+        { label: 'Current Theme', node: themeStatus }
+      ]),
+      el('div', { class: 'btn-row' }, [
+        el('button', {
+          id: 'profile-theme-toggle',
+          type: 'button',
+          class: 'btn btn-secondary btn-sm',
+          onClick: () => {
+            toggleTheme();
+            themeStatus.textContent = store.theme === 'dark' ? 'Dark Industrial Graphite' : 'Light Technical Neutral';
+          }
+        }, [svgIcon(store.theme === 'dark' ? 'icon-sun' : 'icon-moon', 14), el('span', { text: 'Switch Dark / Light Theme' })]),
+        el('button', {
+          type: 'button',
+          class: 'btn btn-danger btn-sm',
+          onClick: async () => {
+            await signOut();
+            navigate('/login', { replace: true });
+          }
+        }, [svgIcon('icon-logout', 14), el('span', { text: 'Sign Out' })])
+      ])
+    ])
+  );
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      statusBox.classList.add('hidden');
-      submitBtn.disabled = true;
-      try {
-        await api.updateAdminProfile({
-          current_password: curPass.value,
-          new_username: newUser.value.trim(),
-          new_password: newPass.value
-        });
-        showToast('Credentials rotated', 'Please sign in with your updated credentials.', 'success');
-        await signOut();
-        navigate('/login', { replace: true });
-      } catch (err) {
-        statusBox.className = 'alert alert-error';
-        statusBox.textContent = err.message;
-        submitBtn.disabled = false;
+  if (admin) {
+    const curPass = el('input', { class: 'input', type: 'password', autocomplete: 'current-password' });
+    const newUser = el('input', { class: 'input', type: 'text', value: store.user?.username || '' });
+    const newPass = el('input', { class: 'input', type: 'password', autocomplete: 'new-password', placeholder: 'Min 12 characters' });
+    const errBox = el('div', { class: 'form-error', hidden: true });
+
+    const saveBtn = el('button', {
+      type: 'button',
+      class: 'btn btn-primary btn-sm',
+      text: 'Update Admin Credentials',
+      onClick: async () => {
+        errBox.hidden = true;
+        if (!curPass.value || newPass.value.length < 12 || !newUser.value.trim()) {
+          errBox.textContent = 'Provide current password, valid username, and a new password of at least 12 characters.';
+          errBox.hidden = false;
+          return;
+        }
+        saveBtn.disabled = true;
+        try {
+          await api.updateAdminProfile({
+            currentPassword: curPass.value,
+            newUsername: newUser.value.trim(),
+            newPassword: newPass.value
+          });
+          showToast('Credentials rotated', 'Administrator account updated.', 'success');
+          curPass.value = '';
+          newPass.value = '';
+          await checkSession();
+        } catch (err) {
+          errBox.textContent = err.message;
+          errBox.hidden = false;
+        } finally {
+          saveBtn.disabled = false;
+        }
       }
     });
 
-    root.appendChild(
+    container.appendChild(
       el('section', { class: 'card stack-md' }, [
-        el('h3', { class: 'card-title', text: 'Rotate Administrator Credentials' }),
-        form
+        el('h2', { class: 'card-title', text: 'Rotate Administrator Credentials' }),
+        errBox,
+        el('div', { class: 'form-grid' }, [
+          el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'Current Password *' }), curPass]),
+          el('div', { class: 'form-field' }, [el('label', { class: 'form-label', text: 'New Username *' }), newUser]),
+          el('div', { class: 'form-field form-field-full' }, [el('label', { class: 'form-label', text: 'New Password *' }), newPass])
+        ]),
+        el('div', { class: 'btn-row' }, [saveBtn])
       ])
     );
   }
 
-  return { node: root };
+  return { node: container };
 }

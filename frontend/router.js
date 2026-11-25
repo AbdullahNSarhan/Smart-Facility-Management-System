@@ -1,7 +1,7 @@
 // LCI-SFM History API Multi-Page Router
-// Supports /, /login, /app/* deep-linking, server-verified auth guards, and clean lifecycle cleanup.
+// Supports /, /login, /app/* deep-linking (including /app/network), server-verified auth guards, and clean lifecycle cleanup.
 
-import { store, checkSession, setSessionExpiredHandler } from './store.js';
+import { store, checkSession, setSessionExpiredHandler, closeAllOverlays } from './store.js';
 import { clear, el } from './utils.js';
 import { renderLandingPage } from './pages/landing.js';
 import { renderLoginPage } from './pages/login.js';
@@ -9,6 +9,7 @@ import { renderAppShell } from './pages/shell.js';
 import { renderOverviewPage } from './pages/overview.js';
 import { renderRoomsListPage, renderRoomDetailPage } from './pages/rooms.js';
 import { renderDevicesListPage, renderDeviceDetailPage, renderEndpointDetailPage } from './pages/devices.js';
+import { renderNetworkPage } from './pages/network.js';
 import { renderAlarmsPage, renderNotificationsPage, renderEventsPage } from './pages/operations.js';
 import { renderDiagnosticsPage, renderUsersPage, renderSettingsPage, renderProfilePage } from './pages/admin.js';
 
@@ -63,6 +64,12 @@ const APP_ROUTES = [
       { label: decodeURIComponent(p.deviceId) }
     ],
     render: (ctx) => renderDeviceDetailPage(ctx)
+  },
+  {
+    pattern: /^\/app\/network\/?$/,
+    title: 'Network & Connectivity',
+    crumbs: () => [{ label: 'Overview', path: '/app/overview' }, { label: 'Network & Connectivity' }],
+    render: (ctx) => renderNetworkPage(ctx)
   },
   {
     pattern: /^\/app\/alarms\/?$/,
@@ -126,6 +133,7 @@ export function createRouter(rootEl) {
   let currentCleanups = [];
 
   const runCleanups = () => {
+    closeAllOverlays();
     for (const fn of currentCleanups) {
       try {
         fn();
@@ -156,7 +164,6 @@ export function createRouter(rootEl) {
     const pathname = window.location.pathname || '/';
     const query = new URLSearchParams(window.location.search || '');
 
-    // Landing page (/)
     if (pathname === '/' || pathname === '/index.html') {
       document.title = 'LCI-SFM · Smart Facility Management Platform';
       const view = renderLandingPage({ navigate, query });
@@ -166,7 +173,6 @@ export function createRouter(rootEl) {
       return;
     }
 
-    // Dedicated Login (/login)
     if (pathname === '/login' || pathname === '/login/') {
       if (store.authenticated) {
         navigate('/app/overview', { replace: true });
@@ -180,7 +186,6 @@ export function createRouter(rootEl) {
       return;
     }
 
-    // Authenticated Application Routes (/app/*)
     if (pathname === '/app' || pathname === '/app/') {
       navigate(store.authenticated ? '/app/overview' : '/login', { replace: true });
       return;
@@ -238,7 +243,6 @@ export function createRouter(rootEl) {
       return;
     }
 
-    // Unknown top-level route -> clean 404
     document.title = 'Not Found · LCI-SFM';
     clear(rootEl);
     rootEl.appendChild(

@@ -1,154 +1,166 @@
-// LCI-SFM Dedicated Operator Login Page (/login)
-// Cookie-backed server authentication, show/hide password, inline errors, safe relative redirect.
+// LCI-SFM Dedicated Operator Sign-In Page (/login)
+// Same-origin HttpOnly cookie authentication with accessible show/hide password toggle and safe redirect.
 
 import { api } from '../api.js';
-import { setSessionState, store, toggleTheme } from '../store.js';
+import { store, setSessionState, toggleTheme } from '../store.js';
 import { el, svgIcon, sanitizeRedirectPath } from '../utils.js';
 
 export function renderLoginPage({ navigate, query }) {
-  const nextPath = sanitizeRedirectPath(query.get('next') || '/app/overview');
+  const nextPath = sanitizeRedirectPath(query?.get('next') || '/app/overview');
 
   const page = el('div', { class: 'login-page' });
 
-  const topBar = el('div', { class: 'login-topbar' }, [
-    el('a', {
-      href: '/',
-      class: 'brand-lockup',
-      onClick: (e) => {
-        e.preventDefault();
-        navigate('/');
+  const themeBtn = el(
+    'button',
+    {
+      type: 'button',
+      class: 'btn-icon',
+      title: 'Toggle Dark / Light theme',
+      'aria-label': 'Toggle theme',
+      onClick: () => {
+        toggleTheme();
+        themeBtn.replaceChildren(svgIcon(store.theme === 'dark' ? 'icon-sun' : 'icon-moon', 16));
       }
-    }, [
-      el('span', { class: 'brand-mark' }, [svgIcon('icon-brand-emblem', 18)]),
-      el('span', { class: 'brand-wordmark', text: 'LCI-SFM' })
-    ]),
-    el('div', { class: 'login-topbar-right' }, [
-      el('button', {
-        type: 'button',
-        class: 'btn-icon',
-        title: 'Toggle Dark / Light theme',
-        'aria-label': 'Toggle theme',
-        onClick: toggleTheme
-      }, [svgIcon(store.theme === 'dark' ? 'icon-sun' : 'icon-moon', 17)]),
-      el('button', {
-        type: 'button',
-        class: 'btn btn-secondary btn-sm',
-        text: '← Overview',
-        onClick: () => navigate('/')
-      })
-    ])
-  ]);
-  page.appendChild(topBar);
+    },
+    [svgIcon(store.theme === 'dark' ? 'icon-sun' : 'icon-moon', 16)]
+  );
 
-  const errorBanner = el('div', { class: 'alert alert-error hidden', role: 'alert' });
-  const usernameInput = el('input', {
+  page.appendChild(
+    el('header', { class: 'login-topbar' }, [
+      el(
+        'a',
+        {
+          href: '/',
+          class: 'brand-lockup',
+          onClick: (e) => {
+            e.preventDefault();
+            navigate('/');
+          }
+        },
+        [
+          el('span', { class: 'brand-mark' }, [svgIcon('icon-brand-emblem', 18)]),
+          el('span', { class: 'brand-wordmark', text: 'LCI-SFM' })
+        ]
+      ),
+      el('div', { class: 'row-gap-sm' }, [
+        el('span', { class: 'host-origin-label mono', text: window.location.host }),
+        themeBtn
+      ])
+    ])
+  );
+
+  const userInput = el('input', {
     id: 'login-username',
+    class: 'input',
     type: 'text',
     name: 'username',
     autocomplete: 'username',
-    maxlength: '64',
-    placeholder: 'Operator username',
-    required: true,
-    class: 'input'
+    placeholder: 'Enter operator username',
+    required: true
   });
 
-  const passwordInput = el('input', {
+  const passInput = el('input', {
     id: 'login-password',
+    class: 'input',
     type: 'password',
     name: 'password',
     autocomplete: 'current-password',
-    maxlength: '128',
-    placeholder: 'Operator password',
-    required: true,
-    class: 'input'
+    placeholder: 'Enter operator password',
+    required: true
   });
 
-  let showPassword = false;
-  const togglePassBtn = el('button', {
-    type: 'button',
-    class: 'btn-ghost-inline',
-    text: 'Show',
-    'aria-label': 'Toggle password visibility',
-    onClick: () => {
-      showPassword = !showPassword;
-      passwordInput.type = showPassword ? 'text' : 'password';
-      togglePassBtn.textContent = showPassword ? 'Hide' : 'Show';
-    }
-  });
+  let passwordVisible = false;
+  const togglePassBtn = el(
+    'button',
+    {
+      type: 'button',
+      class: 'input-action-btn',
+      'aria-label': 'Show password',
+      'aria-pressed': 'false',
+      onClick: () => {
+        passwordVisible = !passwordVisible;
+        passInput.type = passwordVisible ? 'text' : 'password';
+        togglePassBtn.setAttribute('aria-label', passwordVisible ? 'Hide password' : 'Show password');
+        togglePassBtn.setAttribute('aria-pressed', passwordVisible ? 'true' : 'false');
+        togglePassBtn.replaceChildren(svgIcon(passwordVisible ? 'icon-eye-off' : 'icon-eye', 16));
+      }
+    },
+    [svgIcon('icon-eye', 16)]
+  );
 
+  const errBox = el('div', { class: 'form-error', role: 'alert', hidden: true });
   const submitBtn = el('button', {
-    type: 'submit',
     id: 'login-submit-btn',
-    class: 'btn btn-primary btn-block',
-    text: 'Sign In'
+    type: 'submit',
+    class: 'btn btn-primary btn-block btn-lg',
+    text: 'Sign In to Console'
   });
 
   const form = el('form', { class: 'stack-md', novalidate: true }, [
-    errorBanner,
-    el('div', { class: 'field' }, [
-      el('label', { for: 'login-username', class: 'field-label', text: 'Operator Username' }),
-      usernameInput
+    errBox,
+    el('div', { class: 'form-field' }, [
+      el('label', { class: 'form-label', for: 'login-username', text: 'Operator Username' }),
+      userInput
     ]),
-    el('div', { class: 'field' }, [
-      el('div', { class: 'field-label-row' }, [
-        el('label', { for: 'login-password', class: 'field-label', text: 'Password' }),
-        togglePassBtn
-      ]),
-      passwordInput
+    el('div', { class: 'form-field' }, [
+      el('label', { class: 'form-label', for: 'login-password', text: 'Password' }),
+      el('div', { class: 'input-with-action' }, [passInput, togglePassBtn])
     ]),
     submitBtn
   ]);
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    errorBanner.classList.add('hidden');
-    errorBanner.textContent = '';
-
-    const username = usernameInput.value.trim();
-    const password = passwordInput.value;
+    errBox.hidden = true;
+    const username = userInput.value.trim();
+    const password = passInput.value;
     if (!username || !password) {
-      errorBanner.textContent = 'Enter both your operator username and password.';
-      errorBanner.classList.remove('hidden');
+      errBox.textContent = 'Enter both your operator username and password.';
+      errBox.hidden = false;
       return;
     }
 
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Verifying credentials...';
+    submitBtn.textContent = 'Verifying session...';
     try {
       const res = await api.login(username, password);
-      setSessionState(res);
+      setSessionState({
+        authenticated: true,
+        user: {
+          id: res.user?.id ?? res.id ?? null,
+          username: res.user?.username ?? res.username ?? username,
+          role: res.user?.role ?? res.role ?? 'Viewer'
+        },
+        csrfToken: res.csrfToken
+      });
       navigate(nextPath, { replace: true });
     } catch (err) {
-      errorBanner.textContent =
-        err.status === 401
-          ? 'Invalid operator username or password.'
-          : err.status === 429
-            ? 'Too many authentication attempts. Please wait before trying again.'
-            : err.message || 'Unable to authenticate with the local server.';
-      errorBanner.classList.remove('hidden');
+      errBox.textContent = err.message || 'Authentication failed. Check your credentials.';
+      errBox.hidden = false;
       submitBtn.disabled = false;
-      submitBtn.textContent = 'Sign In';
+      submitBtn.textContent = 'Sign In to Console';
     }
   });
 
-  const card = el('main', { class: 'login-card card' }, [
-    el('div', { class: 'login-card-head' }, [
-      el('div', { class: 'kicker', text: 'LOCAL OPERATIONS ACCESS' }),
-      el('h1', { class: 'login-title', text: 'Operator Sign In' }),
+  const card = el('div', { class: 'card login-card stack-md' }, [
+    el('div', { class: 'stack-xs' }, [
+      el('div', { class: 'kicker', text: 'LOCAL APPLIANCE AUTHENTICATION' }),
+      el('h1', { class: 'login-title', text: 'Sign In to LCI-SFM' }),
       el('p', {
-        class: 'text-secondary',
-        text: 'Authenticate against the on-premises LCI-SFM backend. Sessions are protected by HttpOnly cookies and CSRF tokens.'
+        class: 'text-sm text-secondary',
+        text: 'Authenticate with your local server-verified Admin or Viewer account.'
       })
     ]),
     form,
-    el('div', { class: 'login-footer-meta' }, [
-      el('span', { class: 'text-muted', text: 'Gateway: ' }),
-      el('code', { class: 'mono', text: window.location.host || 'local-server' })
+    el('div', { class: 'text-xs text-muted' }, [
+      'Protected by HttpOnly SameSite=Strict session cookies, CSRF validation, and server-side RBAC on ',
+      el('span', { class: 'mono', text: window.location.host }),
+      '.'
     ])
   ]);
 
-  page.appendChild(el('div', { class: 'login-center' }, [card]));
-  setTimeout(() => usernameInput.focus(), 20);
+  page.appendChild(el('main', { class: 'login-center' }, [card]));
+  requestAnimationFrame(() => userInput.focus());
 
   return { node: page };
 }

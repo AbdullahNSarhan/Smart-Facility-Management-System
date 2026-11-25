@@ -1,644 +1,1429 @@
-// LCI-SFM Operations Pages: Alarms & Rules (/app/alarms), Notifications (/app/notifications), Events & Audit (/app/events)
+// LCI-SFM Monitoring & Operations Pages (/app/alarms, /app/notifications, /app/events)
+// Fixes ruleSchema 1:1 contract, notification through_id read-all, and adds Slide-Over Drawers for Alarm & Event details.
 
 import { api } from '../api.js';
-import { isAdmin, showToast, openModal, closeModal, refreshHeaderCounters } from '../store.js';
-import { el, clear, formatTimestamp, formatAge, exportRowsToCsv } from '../utils.js';
+import {
+  isAdmin,
+  showToast,
+  openModal,
+  closeModal,
+  openDrawer,
+  closeDrawer,
+  onLiveEvent,
+  refreshHeaderCounters
+} from '../store.js';
+import { el, clear, svgIcon, formatAge, formatTimestamp, exportRowsToCsv } from '../utils.js';
+import {
+  pageHeader,
+  statusIndicator,
+  loadingSkeleton,
+  emptyState,
+  errorPanel,
+  disclaimerBanner,
+  keyValueList,
+  timelineList,
+  renderAdaptiveCollection,
+  segmentedFilter
+} from '../components/ui.js';
 
-const CONDITION_TYPES = [
-  { value: 'THRESHOLD_HIGH', label: 'Numeric High (>= threshold)' },
-  { value: 'THRESHOLD_LOW', label: 'Numeric Low (<= threshold)' },
-  { value: 'BOOLEAN_TRUE', label: 'Boolean Active (value == true)' },
-  { value: 'BOOLEAN_FALSE', label: 'Boolean Inactive (value == false)' }
-];
+function severityWeight(sev) {
+  const s = String(sev || '').toUpperCase();
+  if (s === 'CRITICAL') return 0;
+  if (s === 'WARNING') return 1;
+  return 2;
+}
 
-function openRuleFormModal({ devices = [], existing = null, onSaved }) {
-  const isEdit = Boolean(existing);
-  const errBox = el('div', { class: 'alert alert-error hidden' });
-
-  const deviceSelect = el(
-    'select',
-    { class: 'input', disabled: isEdit },
-    devices.map((d) =>
-      el('option', {
-        value: d.device_id,
-        selected: existing ? existing.device_id === d.device_id : false,
-        text: `${d.name} (${d.device_id})`
-      })
-    )
-  );
-  const endpointSelect = el('select', { class: 'input', disabled: isEdit });
-  const conditionSelect = el(
-    'select',
-    { class: 'input' },
-    CONDITION_TYPES.map((c) =>
-      el('option', { value: c.value, selected: (existing?.condition_type || 'THRESHOLD_HIGH') === c.value, text: c.label })
-    )
-  );
-  const severitySelect = el(
-    'select',
-    { class: 'input' },
-    ['CRITICAL', 'WARNING', 'INFO'].map((s) =>
-      el('option', { value: s, selected: (existing?.severity || 'WARNING') === s, text: s })
-    )
-  );
-  const warnInput = el('input', {
-    class: 'input mono',
-    type: 'number',
-    step: '0.1',
-    value: existing?.warning_threshold !== undefined && existing?.warning_threshold !== null ? String(existing.warning_threshold) : '28'
+// ============================================================================
+// ALARMS & MONITORING RULES (/app/alarms)
+// ============================================================================
+function openAlarmActionModal({ alarm, action, onDone }) {
+  const isResolve = action === 'resolve';
+  const commentInput = el('textarea', {
+    class: 'textarea',
+    placeholder: isResolve
+      ? 'Enter verified resolution reason (minimum 3 characters)...'
+      : 'Enter acknowledgement note for the audit trail (minimum 3 characters)...',
+    required: true
   });
-  const critInput = el('input', {
-    class: 'input mono',
-    type: 'number',
-    step: '0.1',
-    value: existing?.critical_threshold !== undefined && existing?.critical_threshold !== null ? String(existing.critical_threshold) : '35'
-  });
-  const hystInput = el('input', {
-    class: 'input mono',
-    type: 'number',
-    step: '0.1',
-    value: String(existing?.hysteresis ?? 1)
-  });
-  const dwellInput = el('input', {
-    class: 'input mono',
-    type: 'number',
-    value: String(existing?.dwell_ms ?? 0)
-  });
+  const errBox = el('div', { class: 'form-error', hidden: true });
 
-  const populateEndpoints = () => {
-    clear(endpointSelect);
-    const dev = devices.find((d) => d.device_id === deviceSelect.value) || devices[0];
-    const eps = dev?.endpoints || [];
-    for (const ep of eps) {
-      endpointSelect.appendChild(
-        el('option', {
-          value: ep.endpoint_key,
-          selected: existing?.endpoint_key === ep.endpoint_key,
-          text: `${ep.label} (${ep.endpoint_key} · ${ep.data_type || ep.kind})`
-        })
-      );
-    }
-  };
-  deviceSelect.addEventListener('change', populateEndpoints);
-  populateEndpoints();
-
-  const thresholdsRow = el('div', { class: 'form-grid-2' }, [
-    el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Warning Threshold' }), warnInput]),
-    el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Critical Threshold' }), critInput])
-  ]);
-  const syncCondition = () => {
-    const isBool = conditionSelect.value.startsWith('BOOLEAN_');
-    thresholdsRow.classList.toggle('hidden', isBool);
-  };
-  conditionSelect.addEventListener('change', syncCondition);
-  syncCondition();
-
-  const form = el('form', { class: 'stack-md' }, [
+  const body = el('div', { class: 'stack-md' }, [
     errBox,
-    el('div', { class: 'form-grid-2' }, [
-      el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Device' }), deviceSelect]),
-      el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Endpoint' }), endpointSelect])
-    ]),
-    el('div', { class: 'form-grid-2' }, [
-      el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Condition Type' }), conditionSelect]),
-      el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Severity' }), severitySelect])
-    ]),
-    thresholdsRow,
-    el('div', { class: 'form-grid-2' }, [
-      el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Hysteresis' }), hystInput]),
-      el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Dwell Time (ms)' }), dwellInput])
+    el('p', {
+      class: 'text-sm text-secondary',
+      text: isResolve
+        ? `Resolve "${alarm.title}". Note: Active rule/stale alarms require fresh recovery evidence unless the rule is disabled.`
+        : `Acknowledge "${alarm.title}" to record operator ownership in the audit timeline.`
+    }),
+    el('div', { class: 'form-field' }, [
+      el('label', { class: 'form-label', text: 'Audited Operator Comment *' }),
+      commentInput
     ])
   ]);
 
-  const saveBtn = el('button', { type: 'button', class: 'btn btn-primary', text: isEdit ? 'Save Rule' : 'Create Rule' });
-  saveBtn.addEventListener('click', async () => {
-    errBox.classList.add('hidden');
-    const isBool = conditionSelect.value.startsWith('BOOLEAN_');
-    const sevVal = severitySelect.value === 'INFO' ? 'WARNING' : severitySelect.value;
-    const threshold = isBool ? 1 : Number(critInput.value);
-    const clearThreshold = isBool ? 0 : Number(warnInput.value);
-    const payload = {
-      device_id: deviceSelect.value,
-      endpoint_key: endpointSelect.value,
-      name: `${deviceSelect.value} ${endpointSelect.value} ${conditionSelect.value}`,
-      condition_type: conditionSelect.value,
-      severity: sevVal,
-      threshold,
-      clear_threshold: clearThreshold,
-      hold_s: Math.max(0, Math.round(Number(dwellInput.value || 0) / 1000)),
-      clear_hold_s: Math.max(0, Math.round(Number(hystInput.value || 5))),
-      enabled: true
-    };
-    saveBtn.disabled = true;
-    try {
-      if (isEdit) {
-        await api.updateRule(existing.rule_id, { ...payload, version: existing.version });
-        showToast('Monitoring rule updated', 'Rule saved.', 'success');
-      } else {
-        await api.createRule(payload);
-        showToast('Monitoring rule created', 'Alarm evaluation active for endpoint.', 'success');
+  const submitBtn = el('button', {
+    type: 'button',
+    class: isResolve ? 'btn btn-primary' : 'btn btn-secondary',
+    text: isResolve ? 'Resolve Alarm' : 'Acknowledge Alarm',
+    onClick: async () => {
+      errBox.hidden = true;
+      const comment = commentInput.value.trim();
+      if (comment.length < 3) {
+        errBox.textContent = 'Please provide an audited comment of at least 3 characters.';
+        errBox.hidden = false;
+        return;
       }
-      closeModal();
-      if (onSaved) onSaved();
-    } catch (err) {
-      errBox.textContent = err.message;
-      errBox.classList.remove('hidden');
-      saveBtn.disabled = false;
+      submitBtn.disabled = true;
+      try {
+        if (isResolve) {
+          await api.resolveAlarm(alarm.alarm_id, comment);
+          showToast('Alarm resolved', alarm.title, 'success');
+        } else {
+          await api.acknowledgeAlarm(alarm.alarm_id, comment);
+          showToast('Alarm acknowledged', alarm.title, 'info');
+        }
+        closeModal();
+        closeDrawer();
+        if (onDone) onDone();
+      } catch (err) {
+        errBox.textContent = err.message || 'Action could not be completed.';
+        errBox.hidden = false;
+      } finally {
+        submitBtn.disabled = false;
+      }
     }
   });
 
   openModal({
-    title: isEdit ? 'Edit Monitoring Rule' : 'Create Alarm Monitoring Rule',
-    subtitle: 'Deterministic Threshold & Boolean Engine',
-    body: form,
+    title: isResolve ? 'Resolve Alarm' : 'Acknowledge Alarm',
+    subtitle: `${alarm.severity || 'WARNING'} · ${alarm.device_name || alarm.device_id}`,
+    body,
     actions: [
-      el('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', onClick: closeModal }),
-      saveBtn
+      el('button', { type: 'button', class: 'btn btn-ghost', text: 'Cancel', onClick: closeModal }),
+      submitBtn
     ]
   });
 }
 
-export function renderAlarmsPage() {
-  const root = el('div', { class: 'stack-lg' });
-  let stateFilter = '';
-  let roomFilter = '';
-  let roomsCache = [];
-  let devicesCache = [];
-
-  const stateSelect = el(
-    'select',
-    {
-      class: 'input input-sm',
-      onChange: (e) => {
-        stateFilter = e.target.value;
-        loadAll();
-      }
-    },
-    [
-      el('option', { value: '', text: 'All Alarm States' }),
-      el('option', { value: 'ACTIVE', text: 'Active' }),
-      el('option', { value: 'ACKNOWLEDGED', text: 'Acknowledged' }),
-      el('option', { value: 'RESOLVED', text: 'Resolved' })
-    ]
+function openRuleModal({ rule = null, devices = [], onSaved }) {
+  const isEdit = Boolean(rule);
+  // Only devices with SENSOR endpoints are valid alarm rule targets
+  const sensorDevices = devices.filter(
+    (d) => !d.archived && (d.endpoints || []).some((e) => e.kind === 'SENSOR')
   );
-  const roomSelect = el('select', {
-    class: 'input input-sm',
-    onChange: (e) => {
-      roomFilter = e.target.value;
-      loadAll();
-    }
+
+  if (!isEdit && sensorDevices.length === 0) {
+    showToast('No sensor endpoints available', 'Register a device with a SENSOR endpoint first.', 'warning');
+    return;
+  }
+
+  let selectedDeviceId = rule?.device_id || sensorDevices[0]?.device_id || '';
+  const getSensorEndpoints = (devId) => {
+    const dev = devices.find((d) => d.device_id === devId);
+    return (dev?.endpoints || []).filter((e) => e.kind === 'SENSOR');
+  };
+
+  let selectedEndpointKey = rule?.endpoint_key || getSensorEndpoints(selectedDeviceId)[0]?.endpoint_key || '';
+  const getSelectedEndpoint = () =>
+    getSensorEndpoints(selectedDeviceId).find((e) => e.endpoint_key === selectedEndpointKey) || null;
+
+  const isBoolEp = () => getSelectedEndpoint()?.data_type === 'BOOLEAN';
+
+  let conditionType = rule?.condition_type || (isBoolEp() ? 'BOOLEAN_TRUE' : 'THRESHOLD_HIGH');
+
+  const nameInput = el('input', {
+    class: 'input',
+    type: 'text',
+    value: rule?.name || '',
+    placeholder: 'e.g. High Rack Temperature',
+    maxlength: 80
   });
-
-  root.appendChild(
-    el('div', { class: 'section-toolbar' }, [
-      el('div', { class: 'filter-row' }, [stateSelect, roomSelect]),
-      el('div', { class: 'toolbar-actions' }, [
-        el('button', { type: 'button', class: 'btn btn-secondary btn-sm', text: 'Refresh', onClick: () => loadAll() }),
-        isAdmin()
-          ? el('button', {
-              type: 'button',
-              class: 'btn btn-primary btn-sm',
-              text: '+ Create Rule',
-              onClick: () => openRuleFormModal({ devices: devicesCache, onSaved: loadAll })
-            })
-          : null
-      ])
-    ])
-  );
-
-  const alarmsCard = el('div', { class: 'card table-card' });
-  const rulesCard = el('div', { class: 'card table-card' });
-  root.appendChild(el('section', { class: 'stack-sm' }, [el('h3', { class: 'card-title', text: 'Facility Alarms' }), alarmsCard]));
-  root.appendChild(el('section', { class: 'stack-sm' }, [el('h3', { class: 'card-title', text: 'Monitoring Rules' }), rulesCard]));
-
-  const promptAction = (alarm, mode) => {
-    const commentInput = el('input', { class: 'input', placeholder: 'Optional operator comment...' });
-    const goBtn = el('button', {
-      type: 'button',
-      class: mode === 'resolve' ? 'btn btn-primary' : 'btn btn-secondary',
-      text: mode === 'resolve' ? 'Resolve Alarm' : 'Acknowledge Alarm'
-    });
-    goBtn.addEventListener('click', async () => {
-      goBtn.disabled = true;
-      try {
-        if (mode === 'resolve') {
-          await api.resolveAlarm(alarm.alarm_id, commentInput.value.trim());
-        } else {
-          await api.acknowledgeAlarm(alarm.alarm_id, commentInput.value.trim());
-        }
-        showToast('Alarm updated', `Alarm ${mode}d successfully.`, 'success');
-        closeModal();
-        loadAll();
-      } catch (err) {
-        showToast('Action failed', err.message, 'error');
-        goBtn.disabled = false;
-      }
-    });
-    openModal({
-      title: `${mode === 'resolve' ? 'Resolve' : 'Acknowledge'} Alarm`,
-      subtitle: `${alarm.device_id} · ${alarm.endpoint_key}`,
-      body: el('div', { class: 'field' }, [
-        el('label', { class: 'field-label', text: 'Operator Note' }),
-        commentInput
-      ]),
-      actions: [
-        el('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', onClick: closeModal }),
-        goBtn
-      ]
-    });
-  };
-
-  const loadAll = async () => {
-    try {
-      const [roomsRes, devRes, alarmsRes, rulesRes] = await Promise.all([
-        api.listRooms({ include_archived: true }),
-        api.listDevices({ include_archived: false }),
-        api.listAlarms({ state: stateFilter || undefined, room_id: roomFilter || undefined, limit: 100 }),
-        api.listRules({ room_id: roomFilter || undefined })
-      ]);
-      roomsCache = roomsRes.rooms || roomsRes.items || [];
-      devicesCache = devRes.devices || devRes.items || [];
-
-      clear(roomSelect);
-      roomSelect.appendChild(el('option', { value: '', text: 'All Rooms', selected: !roomFilter }));
-      for (const r of roomsCache) {
-        roomSelect.appendChild(
-          el('option', { value: r.room_id, text: `${r.room_code} — ${r.name}`, selected: roomFilter === r.room_id })
-        );
-      }
-
-      // Render Alarms
-      clear(alarmsCard);
-      const alarms = alarmsRes.alarms || alarmsRes.items || [];
-      if (alarms.length === 0) {
-        alarmsCard.appendChild(el('div', { class: 'empty-state', text: 'No alarms match the current filter.' }));
-      } else {
-        const tbody = el(
-          'tbody',
-          {},
-          alarms.map((a) => {
-            const dot = a.severity === 'CRITICAL' ? 'dot-crit' : a.severity === 'WARNING' ? 'dot-warn' : 'dot-info';
-            return el('tr', {}, [
-              el('td', {}, [
-                el('div', { class: 'status-inline' }, [
-                  el('span', { class: `status-dot ${dot}` }),
-                  el('strong', { text: a.severity })
-                ])
-              ]),
-              el('td', {}, [
-                el('div', { class: 'cell-primary', text: a.title || a.endpoint_key }),
-                el('div', { class: 'cell-sub', text: a.message || '' })
-              ]),
-              el('td', { class: 'mono', text: `${a.device_id} · ${a.endpoint_key}` }),
-              el('td', { class: 'mono', text: a.state }),
-              el('td', { class: 'mono tabular-nums', text: formatAge(a.opened_at) }),
-              el('td', { class: 'actions-cell' }, [
-                isAdmin() && a.state === 'ACTIVE'
-                  ? el('button', {
-                      type: 'button',
-                      class: 'btn btn-secondary btn-xs',
-                      text: 'Acknowledge',
-                      onClick: () => promptAction(a, 'acknowledge')
-                    })
-                  : null,
-                isAdmin() && a.state !== 'RESOLVED'
-                  ? el('button', {
-                      type: 'button',
-                      class: 'btn btn-primary btn-xs',
-                      text: 'Resolve',
-                      onClick: () => promptAction(a, 'resolve')
-                    })
-                  : null
-              ])
-            ]);
-          })
-        );
-        alarmsCard.appendChild(
-          el('div', { class: 'table-scroll' }, [
-            el('table', { class: 'data-table' }, [
-              el('thead', {}, [
-                el('tr', {}, [
-                  el('th', { text: 'Severity' }),
-                  el('th', { text: 'Alarm' }),
-                  el('th', { text: 'Source' }),
-                  el('th', { text: 'State' }),
-                  el('th', { text: 'Opened' }),
-                  el('th', { text: 'Actions' })
-                ])
-              ]),
-              tbody
-            ])
-          ])
-        );
-      }
-
-      // Render Rules
-      clear(rulesCard);
-      const rules = rulesRes.rules || rulesRes.items || [];
-      if (rules.length === 0) {
-        rulesCard.appendChild(el('div', { class: 'empty-state', text: 'No monitoring rules configured.' }));
-      } else {
-        const tbody = el(
-          'tbody',
-          {},
-          rules.map((r) =>
-            el('tr', {}, [
-              el('td', { class: 'mono', text: `${r.device_id} · ${r.endpoint_key}` }),
-              el('td', { class: 'mono', text: r.condition_type || 'THRESHOLD_HIGH' }),
-              el('td', {
-                class: 'mono tabular-nums',
-                text: String(r.condition_type || '').startsWith('BOOLEAN_')
-                  ? r.condition_type
-                  : `Warn: ${r.warning_threshold ?? '—'} · Crit: ${r.critical_threshold ?? '—'}`
-              }),
-              el('td', { class: 'mono tabular-nums', text: `Hyst ${r.hysteresis ?? 0} · Dwell ${r.dwell_ms ?? 0}ms` }),
-              el('td', { text: r.enabled ? 'ENABLED' : 'PAUSED' }),
-              el('td', { class: 'actions-cell' }, [
-                isAdmin()
-                  ? el('button', {
-                      type: 'button',
-                      class: 'btn btn-secondary btn-xs',
-                      text: 'Edit',
-                      onClick: () => openRuleFormModal({ devices: devicesCache, existing: r, onSaved: loadAll })
-                    })
-                  : null
-              ])
-            ])
-          )
-        );
-        rulesCard.appendChild(
-          el('div', { class: 'table-scroll' }, [
-            el('table', { class: 'data-table' }, [
-              el('thead', {}, [
-                el('tr', {}, [
-                  el('th', { text: 'Target' }),
-                  el('th', { text: 'Condition' }),
-                  el('th', { text: 'Thresholds' }),
-                  el('th', { text: 'Stability' }),
-                  el('th', { text: 'Status' }),
-                  el('th', { text: 'Actions' })
-                ])
-              ]),
-              tbody
-            ])
-          ])
-        );
-      }
-    } catch (err) {
-      clear(alarmsCard);
-      alarmsCard.appendChild(el('div', { class: 'alert alert-error', text: err.message }));
-    }
-  };
-
-  loadAll();
-  return { node: root };
-}
-
-export function renderNotificationsPage() {
-  const root = el('div', { class: 'stack-lg' });
-  let unreadOnly = false;
-  let severityFilter = '';
-
-  const unreadCheck = el('label', { class: 'checkbox-inline' }, [
-    el('input', {
-      type: 'checkbox',
-      onChange: (e) => {
-        unreadOnly = e.target.checked;
-        loadList();
-      }
-    }),
-    el('span', { text: 'Unread only' })
-  ]);
+  const devSelect = el('select', { class: 'select', disabled: isEdit });
+  const epSelect = el('select', { class: 'select', disabled: isEdit });
   const sevSelect = el(
     'select',
-    {
-      class: 'input input-sm',
-      onChange: (e) => {
-        severityFilter = e.target.value;
-        loadList();
-      }
-    },
-    [
-      el('option', { value: '', text: 'All Severities' }),
-      el('option', { value: 'CRITICAL', text: 'Critical' }),
-      el('option', { value: 'WARNING', text: 'Warning' }),
-      el('option', { value: 'INFO', text: 'Info' })
-    ]
+    { class: 'select' },
+    ['WARNING', 'CRITICAL'].map((s) => el('option', { value: s, text: s, selected: (rule?.severity || 'WARNING') === s }))
   );
-
-  root.appendChild(
-    el('div', { class: 'section-toolbar' }, [
-      el('div', { class: 'filter-row' }, [sevSelect, unreadCheck]),
-      el('div', { class: 'toolbar-actions' }, [
-        el('button', { type: 'button', class: 'btn btn-secondary btn-sm', text: 'Refresh', onClick: () => loadList() }),
-        el('button', {
-          type: 'button',
-          class: 'btn btn-primary btn-sm',
-          text: 'Mark All Read',
-          onClick: async () => {
-            try {
-              await api.markAllNotificationsRead();
-              showToast('Notifications cleared', 'All notifications marked as read.', 'info');
-              refreshHeaderCounters();
-              loadList();
-            } catch (err) {
-              showToast('Action failed', err.message, 'error');
-            }
-          }
-        })
-      ])
-    ])
-  );
-
-  const listHost = el('div', { class: 'stack-sm' });
-  root.appendChild(listHost);
-
-  const loadList = async () => {
-    try {
-      const res = await api.listNotifications({
-        unread: unreadOnly,
-        severity: severityFilter || undefined,
-        limit: 100
-      });
-      const items = res.notifications || res.items || [];
-      clear(listHost);
-      if (items.length === 0) {
-        listHost.appendChild(el('div', { class: 'card empty-state', text: 'No notifications match your filters.' }));
-        return;
-      }
-
-      for (const n of items) {
-        const isRead = Boolean(n.read_at);
-        const dot = n.severity === 'CRITICAL' ? 'dot-crit' : n.severity === 'WARNING' ? 'dot-warn' : 'dot-info';
-        listHost.appendChild(
-          el('article', { class: `card notif-card${isRead ? ' notif-read' : ''}` }, [
-            el('div', { class: 'section-toolbar' }, [
-              el('div', { class: 'status-inline' }, [
-                el('span', { class: `status-dot ${dot}` }),
-                el('strong', { text: n.title || n.category }),
-                el('span', { class: 'mono text-muted', text: `· ${n.severity}` })
-              ]),
-              el('div', { class: 'toolbar-actions' }, [
-                el('span', { class: 'mono text-muted tabular-nums', text: formatTimestamp(n.created_at) }),
-                el('button', {
-                  type: 'button',
-                  class: 'btn btn-secondary btn-xs',
-                  text: isRead ? 'Mark Unread' : 'Mark Read',
-                  onClick: async () => {
-                    try {
-                      await api.markNotificationRead(n.notification_id, !isRead);
-                      refreshHeaderCounters();
-                      loadList();
-                    } catch (err) {
-                      showToast('Update failed', err.message, 'error');
-                    }
-                  }
-                })
-              ])
-            ]),
-            el('p', { class: 'text-secondary', text: n.message || '' })
-          ])
-        );
-      }
-    } catch (err) {
-      clear(listHost);
-      listHost.appendChild(el('div', { class: 'alert alert-error', text: err.message }));
-    }
-  };
-
-  loadList();
-  return { node: root };
-}
-
-export function renderEventsPage() {
-  const root = el('div', { class: 'stack-lg' });
-  const tabs = [
-    { id: 'access_logs', label: 'Access Logs' },
-    { id: 'environmental_telemetry', label: 'Env Telemetry' },
-    { id: 'system_errors', label: 'System Errors' },
-    { id: 'command_audit', label: 'Command Audit' },
-    ...(isAdmin() ? [{ id: 'admin_audit', label: 'Admin Audit' }] : [])
-  ];
-  let activeTab = 'access_logs';
-  let searchText = '';
-  let currentRows = [];
-
-  const tabBar = el('div', { class: 'tab-bar' });
-  const searchInput = el('input', {
-    type: 'search',
-    class: 'input input-sm',
-    placeholder: 'Filter loaded records...',
-    onInput: (e) => {
-      searchText = e.target.value.trim().toLowerCase();
-      renderTable();
-    }
+  const condSelect = el('select', { class: 'select' });
+  const thresholdInput = el('input', {
+    class: 'input mono',
+    type: 'number',
+    step: 'any',
+    value: String(rule?.threshold ?? 30)
   });
-  const tableHost = el('div', { class: 'card table-card' });
+  const clearThresholdInput = el('input', {
+    class: 'input mono',
+    type: 'number',
+    step: 'any',
+    value: String(rule?.clear_threshold ?? 28)
+  });
+  const holdInput = el('input', {
+    class: 'input mono',
+    type: 'number',
+    min: 0,
+    max: 3600,
+    value: String(rule?.hold_s ?? 10)
+  });
+  const clearHoldInput = el('input', {
+    class: 'input mono',
+    type: 'number',
+    min: 0,
+    max: 3600,
+    value: String(rule?.clear_hold_s ?? 10)
+  });
+  const enabledCb = el('input', { type: 'checkbox', checked: rule ? Boolean(rule.enabled) : true });
+  const thresholdWrap = el('div', { class: 'form-grid form-field-full' });
+  const errBox = el('div', { class: 'form-error', hidden: true });
 
-  const renderTabs = () => {
-    clear(tabBar);
-    for (const t of tabs) {
-      tabBar.appendChild(
-        el('button', {
-          type: 'button',
-          class: `tab-btn${activeTab === t.id ? ' active' : ''}`,
-          text: t.label,
-          onClick: () => {
-            activeTab = t.id;
-            renderTabs();
-            loadLogs();
-          }
+  function populateDevices() {
+    clear(devSelect);
+    for (const d of sensorDevices) {
+      devSelect.appendChild(
+        el('option', {
+          value: d.device_id,
+          text: `${d.name} (${d.device_id})`,
+          selected: d.device_id === selectedDeviceId
         })
       );
     }
-  };
+  }
 
-  root.appendChild(
-    el('div', { class: 'section-toolbar' }, [
-      tabBar,
-      el('div', { class: 'toolbar-actions' }, [
-        searchInput,
-        el('button', { type: 'button', class: 'btn btn-secondary btn-sm', text: 'Refresh', onClick: () => loadLogs() }),
+  function populateEndpoints() {
+    clear(epSelect);
+    const eps = getSensorEndpoints(selectedDeviceId);
+    if (!eps.some((e) => e.endpoint_key === selectedEndpointKey)) {
+      selectedEndpointKey = eps[0]?.endpoint_key || '';
+    }
+    for (const ep of eps) {
+      epSelect.appendChild(
+        el('option', {
+          value: ep.endpoint_key,
+          text: `${ep.label} (${ep.endpoint_key} · ${ep.data_type}${ep.unit ? ` ${ep.unit}` : ''})`,
+          selected: ep.endpoint_key === selectedEndpointKey
+        })
+      );
+    }
+    populateConditions();
+  }
+
+  function populateConditions() {
+    const boolMode = isBoolEp();
+    const validConds = boolMode
+      ? [
+          { v: 'BOOLEAN_TRUE', l: 'Trigger when TRUE (recover on FALSE)' },
+          { v: 'BOOLEAN_FALSE', l: 'Trigger when FALSE (recover on TRUE)' }
+        ]
+      : [
+          { v: 'THRESHOLD_HIGH', l: 'Threshold High (>= trigger, <= recovery)' },
+          { v: 'THRESHOLD_LOW', l: 'Threshold Low (<= trigger, >= recovery)' }
+        ];
+    if (!validConds.some((c) => c.v === conditionType)) {
+      conditionType = validConds[0].v;
+    }
+    clear(condSelect);
+    for (const c of validConds) {
+      condSelect.appendChild(el('option', { value: c.v, text: c.l, selected: c.v === conditionType }));
+    }
+    renderThresholdFields();
+  }
+
+  function renderThresholdFields() {
+    clear(thresholdWrap);
+    if (isBoolEp()) {
+      thresholdWrap.appendChild(
+        el('div', { class: 'form-field form-field-full text-xs text-muted' }, [
+          'Boolean sensor rules evaluate TRUE/FALSE transitions directly using hold timers; numeric thresholds are not used.'
+        ])
+      );
+      return;
+    }
+    const isLow = conditionType === 'THRESHOLD_LOW';
+    thresholdWrap.append(
+      el('div', { class: 'form-field' }, [
+        el('label', { class: 'form-label', text: isLow ? 'Trigger Threshold (<=) *' : 'Trigger Threshold (>=) *' }),
+        thresholdInput
+      ]),
+      el('div', { class: 'form-field' }, [
+        el('label', { class: 'form-label', text: isLow ? 'Recovery Hysteresis (>=) *' : 'Recovery Hysteresis (<=) *' }),
+        clearThresholdInput,
+        el('span', {
+          class: 'form-hint',
+          text: isLow ? 'Must be >= trigger threshold to prevent flapping.' : 'Must be <= trigger threshold to prevent flapping.'
+        })
+      ])
+    );
+  }
+
+  devSelect.addEventListener('change', () => {
+    selectedDeviceId = devSelect.value;
+    populateEndpoints();
+  });
+  epSelect.addEventListener('change', () => {
+    selectedEndpointKey = epSelect.value;
+    populateConditions();
+  });
+  condSelect.addEventListener('change', () => {
+    conditionType = condSelect.value;
+    renderThresholdFields();
+  });
+
+  populateDevices();
+  populateEndpoints();
+
+  const form = el('form', { class: 'stack-md' }, [
+    errBox,
+    el('div', { class: 'form-grid' }, [
+      el('div', { class: 'form-field form-field-full' }, [
+        el('label', { class: 'form-label', text: 'Rule Name *' }),
+        nameInput
+      ]),
+      el('div', { class: 'form-field' }, [
+        el('label', { class: 'form-label', text: 'Target Device (Sensors only) *' }),
+        devSelect
+      ]),
+      el('div', { class: 'form-field' }, [
+        el('label', { class: 'form-label', text: 'Sensor Endpoint *' }),
+        epSelect
+      ]),
+      el('div', { class: 'form-field' }, [
+        el('label', { class: 'form-label', text: 'Severity *' }),
+        sevSelect
+      ]),
+      el('div', { class: 'form-field' }, [
+        el('label', { class: 'form-label', text: 'Condition *' }),
+        condSelect
+      ]),
+      thresholdWrap,
+      el('div', { class: 'form-field' }, [
+        el('label', { class: 'form-label', text: 'Trigger Hold / Dwell (seconds)' }),
+        holdInput,
+        el('span', { class: 'form-hint', text: 'Reading must remain breached for this duration before raising.' })
+      ]),
+      el('div', { class: 'form-field' }, [
+        el('label', { class: 'form-label', text: 'Recovery Hold (seconds)' }),
+        clearHoldInput,
+        el('span', { class: 'form-hint', text: 'Reading must remain recovered before auto-resolving.' })
+      ]),
+      el('div', { class: 'form-field form-field-full' }, [
+        el('label', { class: 'checkbox-row' }, [enabledCb, el('span', { text: 'Enable rule evaluation' })])
+      ])
+    ])
+  ]);
+
+  const submitBtn = el('button', {
+    type: 'button',
+    class: 'btn btn-primary',
+    text: isEdit ? 'Save Rule' : 'Create Rule',
+    onClick: async () => {
+      errBox.hidden = true;
+      const name = nameInput.value.trim();
+      if (!name) {
+        errBox.textContent = 'Rule Name is required.';
+        errBox.hidden = false;
+        return;
+      }
+      const boolMode = isBoolEp();
+      const threshold = boolMode ? 1 : Number(thresholdInput.value);
+      const clearThreshold = boolMode ? 0 : Number(clearThresholdInput.value);
+      if (!boolMode && (!Number.isFinite(threshold) || !Number.isFinite(clearThreshold))) {
+        errBox.textContent = 'Provide valid numeric threshold and recovery values.';
+        errBox.hidden = false;
+        return;
+      }
+      if (!boolMode && conditionType === 'THRESHOLD_HIGH' && clearThreshold > threshold) {
+        errBox.textContent = 'For THRESHOLD_HIGH, Recovery Hysteresis must be less than or equal to Trigger Threshold.';
+        errBox.hidden = false;
+        return;
+      }
+      if (!boolMode && conditionType === 'THRESHOLD_LOW' && clearThreshold < threshold) {
+        errBox.textContent = 'For THRESHOLD_LOW, Recovery Hysteresis must be greater than or equal to Trigger Threshold.';
+        errBox.hidden = false;
+        return;
+      }
+
+      submitBtn.disabled = true;
+      try {
+        const payload = {
+          name,
+          device_id: selectedDeviceId,
+          endpoint_key: selectedEndpointKey,
+          severity: sevSelect.value,
+          condition_type: conditionType,
+          threshold,
+          clear_threshold: clearThreshold,
+          hold_s: Math.max(0, Number(holdInput.value || 0)),
+          clear_hold_s: Math.max(0, Number(clearHoldInput.value || 0)),
+          enabled: enabledCb.checked
+        };
+        if (isEdit) {
+          payload.version = rule.version;
+          await api.updateRule(rule.rule_id, payload);
+          showToast('Rule updated', name, 'success');
+        } else {
+          await api.createRule(payload);
+          showToast('Rule created', name, 'success');
+        }
+        closeModal();
+        if (onSaved) onSaved();
+      } catch (err) {
+        if (err.status === 409 && err.code === 'VERSION_CONFLICT') {
+          errBox.textContent = 'Rule changed in another session. Close, refresh, and retry.';
+        } else {
+          errBox.textContent = err.message || 'Could not save rule.';
+        }
+        errBox.hidden = false;
+      } finally {
+        submitBtn.disabled = false;
+      }
+    }
+  });
+
+  openModal({
+    title: isEdit ? `Edit Rule · ${rule.name}` : 'Create Monitoring Rule',
+    subtitle: 'Deterministic Sensor Alarm Engine',
+    wide: true,
+    body: form,
+    actions: [
+      el('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', onClick: closeModal }),
+      submitBtn
+    ]
+  });
+}
+
+export function renderAlarmsPage({ navigate }) {
+  const container = el('div', { class: 'stack-lg' });
+  const admin = isAdmin();
+  let disposed = false;
+
+  let activeTab = 'alarms'; // alarms | rules
+  let alarmStateFilter = '';
+  let alarmSevFilter = '';
+  let roomFilter = '';
+  let searchFilter = '';
+  let cachedRooms = [];
+  let cachedDevices = [];
+
+  const tabSlot = el('div');
+  const filterSlot = el('div');
+  const bodySlot = el('div');
+
+  async function openAlarmDrawer(alarmRow) {
+    const loadingNode = loadingSkeleton('table', 3);
+    const drawer = openDrawer({
+      title: alarmRow.title,
+      subtitle: `${alarmRow.severity || 'WARNING'} · ${alarmRow.state}`,
+      body: loadingNode
+    });
+
+    try {
+      const res = await api.getAlarmDetail(alarmRow.alarm_id);
+      const a = res.alarm;
+      const evidenceEntries = Object.entries(a.evidence || {}).map(([k, v]) => ({
+        label: k.replace(/_/g, ' '),
+        value: typeof v === 'object' ? JSON.stringify(v) : String(v),
+        mono: true
+      }));
+
+      const content = el('div', { class: 'stack-md' }, [
+        el('div', { class: 'row-gap-sm' }, [
+          statusIndicator(a.severity || 'WARNING'),
+          statusIndicator(a.state || 'ACTIVE')
+        ]),
+        keyValueList([
+          { label: 'Alarm ID', value: a.alarm_id, mono: true },
+          { label: 'Device', value: a.device_name ? `${a.device_name} (${a.device_id})` : a.device_id },
+          { label: 'Room', value: a.room_name ? `${a.room_code || ''} · ${a.room_name}` : '—' },
+          { label: 'Raised At', value: formatTimestamp(a.raised_at), mono: true },
+          a.acknowledged_at
+            ? { label: 'Acknowledged', value: `${a.acknowledged_by || 'operator'} · ${formatTimestamp(a.acknowledged_at)}` }
+            : null,
+          a.resolved_at
+            ? { label: 'Resolved', value: `${a.resolved_by || 'system'} · ${formatTimestamp(a.resolved_at)}` }
+            : null,
+          a.resolution ? { label: 'Resolution Note', value: a.resolution } : null
+        ]),
+        evidenceEntries.length > 0
+          ? el('div', { class: 'card card-compact stack-xs' }, [
+              el('div', { class: 'kicker', text: 'OBSERVED EVIDENCE' }),
+              keyValueList(evidenceEntries)
+            ])
+          : null,
+        el('div', { class: 'stack-xs' }, [
+          el('div', { class: 'kicker', text: 'LIFECYCLE TIMELINE' }),
+          timelineList(
+            (a.events || []).map((ev) => ({
+              status: ev.action,
+              title: ev.action,
+              actor: ev.actor,
+              timestamp: formatTimestamp(ev.timestamp),
+              detail: ev.comment || ''
+            }))
+          )
+        ])
+      ]);
+
+      const drawerActions = [];
+      if (a.device_id) {
+        drawerActions.push(
+          el('button', {
+            type: 'button',
+            class: 'btn btn-ghost btn-sm',
+            text: 'Inspect Device',
+            onClick: () => navigate(`/app/devices/${encodeURIComponent(a.device_id)}`)
+          })
+        );
+      }
+      if (admin && a.state === 'ACTIVE') {
+        drawerActions.push(
+          el('button', {
+            type: 'button',
+            class: 'btn btn-secondary btn-sm',
+            text: 'Acknowledge',
+            onClick: () => openAlarmActionModal({ alarm: a, action: 'acknowledge', onDone: loadTab })
+          })
+        );
+      }
+      if (admin && a.state !== 'RESOLVED') {
+        drawerActions.push(
+          el('button', {
+            type: 'button',
+            class: 'btn btn-primary btn-sm',
+            text: 'Resolve',
+            onClick: () => openAlarmActionModal({ alarm: a, action: 'resolve', onDone: loadTab })
+          })
+        );
+      }
+
+      drawer.close();
+      openDrawer({
+        title: a.title,
+        subtitle: `${a.severity || 'WARNING'} · ${a.state}`,
+        body: content,
+        actions: drawerActions
+      });
+    } catch (err) {
+      drawer.close();
+      showToast('Failed to load alarm detail', err.message, 'error');
+    }
+  }
+
+  container.appendChild(
+    pageHeader({
+      title: 'Alarms & Monitoring Rules',
+      description: 'Review active and historical facility alarms with audited lifecycle timelines, and configure deterministic sensor rules.',
+      actions: [
+        admin
+          ? el('button', {
+              id: 'create-rule-btn',
+              type: 'button',
+              class: 'btn btn-primary btn-sm',
+              onClick: () => openRuleModal({ devices: cachedDevices, onSaved: loadTab })
+            }, [svgIcon('icon-plus', 14), el('span', { text: 'New Rule' })])
+          : null,
         el('button', {
           type: 'button',
-          class: 'btn btn-primary btn-sm',
-          text: 'Export CSV',
+          class: 'btn-icon',
+          title: 'Refresh',
+          'aria-label': 'Refresh alarms and rules',
+          onClick: () => loadTab()
+        }, [svgIcon('icon-refresh', 15)])
+      ]
+    })
+  );
+  container.append(tabSlot, filterSlot, bodySlot);
+
+  function renderTabs() {
+    clear(tabSlot);
+    tabSlot.appendChild(
+      el('div', { class: 'tab-bar', role: 'tablist' }, [
+        el('button', {
+          type: 'button',
+          role: 'tab',
+          'aria-selected': activeTab === 'alarms' ? 'true' : 'false',
+          class: `tab-btn${activeTab === 'alarms' ? ' active' : ''}`,
+          text: 'Active & Historical Alarms',
           onClick: () => {
-            if (!currentRows.length) return;
-            const keys = Object.keys(currentRows[0]);
-            exportRowsToCsv(
-              `lci-sfm-${activeTab}.csv`,
-              keys.map((k) => ({ label: k, key: k })),
-              currentRows
-            );
+            activeTab = 'alarms';
+            renderTabs();
+            renderFilterBar();
+            loadTab();
+          }
+        }),
+        el('button', {
+          type: 'button',
+          role: 'tab',
+          'aria-selected': activeTab === 'rules' ? 'true' : 'false',
+          class: `tab-btn${activeTab === 'rules' ? ' active' : ''}`,
+          text: 'Monitoring Rules',
+          onClick: () => {
+            activeTab = 'rules';
+            renderTabs();
+            renderFilterBar();
+            loadTab();
           }
         })
       ])
-    ])
-  );
-  root.appendChild(tableHost);
+    );
+  }
 
-  const inspectRecord = (row) => {
-    openModal({
-      title: `Audit Record · ${activeTab}`,
-      subtitle: 'Persisted SQLite Record',
-      wide: true,
-      body: el('pre', { class: 'code-block mono', text: JSON.stringify(row, null, 2) }),
-      actions: [el('button', { type: 'button', class: 'btn btn-secondary', text: 'Close', onClick: closeModal })]
+  function renderFilterBar() {
+    clear(filterSlot);
+    const roomSel = el(
+      'select',
+      { class: 'select', 'aria-label': 'Filter by room' },
+      [
+        el('option', { value: '', text: 'All rooms' }),
+        ...cachedRooms.map((r) =>
+          el('option', { value: r.room_id, text: `${r.room_code} · ${r.name}`, selected: r.room_id === roomFilter })
+        )
+      ]
+    );
+    roomSel.addEventListener('change', () => {
+      roomFilter = roomSel.value;
+      loadTab();
     });
-  };
 
-  const renderTable = () => {
-    clear(tableHost);
-    const filtered = searchText
-      ? currentRows.filter((r) => JSON.stringify(r).toLowerCase().includes(searchText))
-      : currentRows;
-
-    if (filtered.length === 0) {
-      tableHost.appendChild(el('div', { class: 'empty-state', text: 'No records found in this log table.' }));
+    if (activeTab === 'rules') {
+      filterSlot.appendChild(el('div', { class: 'card card-compact filter-bar' }, [roomSel]));
       return;
     }
 
-    const keys = Object.keys(filtered[0]).slice(0, 6);
-    const tbody = el(
-      'tbody',
-      {},
-      filtered.slice(0, 100).map((row) =>
-        el(
-          'tr',
-          { class: 'clickable-row', onClick: () => inspectRecord(row) },
-          keys.map((k) =>
-            el('td', {
-              class: /time|at|seq|temp|hum|smoke|id/i.test(k) ? 'mono tabular-nums' : '',
-              text: row[k] === null || row[k] === undefined ? '—' : String(row[k]).slice(0, 80)
+    const searchIn = el('input', {
+      class: 'input',
+      type: 'search',
+      value: searchFilter,
+      placeholder: 'Search alarm title or device...',
+      'aria-label': 'Search alarms'
+    });
+    let t = null;
+    searchIn.addEventListener('input', () => {
+      searchFilter = searchIn.value.trim();
+      clearTimeout(t);
+      t = setTimeout(loadTab, 220);
+    });
+
+    const stateSel = el(
+      'select',
+      { class: 'select', 'aria-label': 'Filter by alarm state' },
+      [
+        { v: '', l: 'All states' },
+        { v: 'ACTIVE', l: 'Active' },
+        { v: 'ACKNOWLEDGED', l: 'Acknowledged' },
+        { v: 'RESOLVED', l: 'Resolved' }
+      ].map((o) => el('option', { value: o.v, text: o.l, selected: o.v === alarmStateFilter }))
+    );
+    stateSel.addEventListener('change', () => {
+      alarmStateFilter = stateSel.value;
+      loadTab();
+    });
+
+    const sevSel = el(
+      'select',
+      { class: 'select', 'aria-label': 'Filter by severity' },
+      [
+        { v: '', l: 'All severities' },
+        { v: 'CRITICAL', l: 'Critical' },
+        { v: 'WARNING', l: 'Warning' },
+        { v: 'INFO', l: 'Info' }
+      ].map((o) => el('option', { value: o.v, text: o.l, selected: o.v === alarmSevFilter }))
+    );
+    sevSel.addEventListener('change', () => {
+      alarmSevFilter = sevSel.value;
+      loadTab();
+    });
+
+    filterSlot.appendChild(
+      el('div', { class: 'card card-compact filter-bar' }, [searchIn, stateSel, sevSel, roomSel])
+    );
+  }
+
+  async function loadTab() {
+    if (disposed) return;
+    clear(bodySlot);
+    bodySlot.appendChild(loadingSkeleton('table', 4));
+
+    try {
+      if (activeTab === 'alarms') {
+        const res = await api.listAlarms({
+          state: alarmStateFilter,
+          severity: alarmSevFilter,
+          room_id: roomFilter,
+          search: searchFilter,
+          limit: 100
+        });
+        if (disposed) return;
+        const rows = (res.alarms || []).sort((a, b) => {
+          const activeA = a.state === 'RESOLVED' ? 1 : 0;
+          const activeB = b.state === 'RESOLVED' ? 1 : 0;
+          if (activeA !== activeB) return activeA - activeB;
+          return severityWeight(a.severity) - severityWeight(b.severity);
+        });
+
+        clear(bodySlot);
+        bodySlot.appendChild(
+          renderAdaptiveCollection({
+            ariaLabel: 'Facility alarms list',
+            rows,
+            onRowClick: (a) => openAlarmDrawer(a),
+            emptyNode: emptyState({
+              icon: 'icon-check-circle',
+              title: 'No alarms match the current filter',
+              message: 'Active and historical threshold or stale-device alarms appear here.'
+            }),
+            columns: [
+              {
+                label: 'Severity',
+                render: (a) => statusIndicator(a.severity || 'WARNING', null, { compact: true })
+              },
+              {
+                label: 'State',
+                render: (a) => statusIndicator(a.state || 'ACTIVE', null, { compact: true })
+              },
+              {
+                label: 'Alarm & Target',
+                render: (a) =>
+                  el('div', { class: 'stack-xs' }, [
+                    el('span', { class: 'font-semibold', text: a.title }),
+                    el('span', {
+                      class: 'text-xs text-muted',
+                      text: `${a.device_name || a.device_id}${a.room_code ? ` · ${a.room_code}` : ''}`
+                    })
+                  ])
+              },
+              {
+                label: 'Raised',
+                className: 'mono text-xs text-secondary tabular-nums',
+                render: (a) => formatAge(a.raised_at)
+              },
+              {
+                label: 'Actions',
+                align: 'right',
+                render: (a) =>
+                  el('div', { class: 'btn-row', style: 'justify-content:flex-end' }, [
+                    el('button', {
+                      type: 'button',
+                      class: 'btn btn-secondary btn-sm',
+                      text: 'Timeline',
+                      onClick: (e) => {
+                        e.stopPropagation();
+                        openAlarmDrawer(a);
+                      }
+                    }),
+                    admin && a.state === 'ACTIVE'
+                      ? el('button', {
+                          type: 'button',
+                          class: 'btn btn-ghost btn-sm',
+                          text: 'Ack',
+                          onClick: (e) => {
+                            e.stopPropagation();
+                            openAlarmActionModal({ alarm: a, action: 'acknowledge', onDone: loadTab });
+                          }
+                        })
+                      : null
+                  ])
+              }
+            ],
+            renderMobileCard: (a) =>
+              el('article', { class: 'card record-card' }, [
+                el('div', { class: 'record-card-head' }, [
+                  statusIndicator(a.severity || 'WARNING', null, { compact: true }),
+                  statusIndicator(a.state || 'ACTIVE', null, { compact: true })
+                ]),
+                el('div', { class: 'font-semibold', text: a.title }),
+                el('div', {
+                  class: 'text-xs text-secondary',
+                  text: `${a.device_name || a.device_id} · Raised ${formatAge(a.raised_at)}`
+                }),
+                el('div', { class: 'record-card-actions' }, [
+                  el('button', {
+                    type: 'button',
+                    class: 'btn btn-secondary btn-sm',
+                    text: 'View Timeline',
+                    onClick: () => openAlarmDrawer(a)
+                  }),
+                  admin && a.state === 'ACTIVE'
+                    ? el('button', {
+                        type: 'button',
+                        class: 'btn btn-primary btn-sm',
+                        text: 'Acknowledge',
+                        onClick: () => openAlarmActionModal({ alarm: a, action: 'acknowledge', onDone: loadTab })
+                      })
+                    : null
+                ])
+              ])
+          })
+        );
+      } else {
+        const res = await api.listRules({ room_id: roomFilter });
+        if (disposed) return;
+        const rules = res.rules || [];
+
+        clear(bodySlot);
+        bodySlot.appendChild(
+          renderAdaptiveCollection({
+            ariaLabel: 'Monitoring rules directory',
+            rows: rules,
+            emptyNode: emptyState({
+              icon: 'icon-sliders',
+              title: 'No monitoring rules defined',
+              message: 'Create a deterministic threshold or boolean sensor rule to automate facility alarming.',
+              actionLabel: admin ? 'Create Rule' : '',
+              onAction: admin ? () => openRuleModal({ devices: cachedDevices, onSaved: loadTab }) : null
+            }),
+            columns: [
+              {
+                label: 'Rule Name',
+                render: (r) =>
+                  el('div', { class: 'stack-xs' }, [
+                    el('span', { class: 'font-semibold', text: r.name }),
+                    el('span', { class: 'mono text-xs text-muted', text: `${r.device_name || r.device_id} · ${r.endpoint_key}` })
+                  ])
+              },
+              {
+                label: 'Severity',
+                render: (r) => statusIndicator(r.severity || 'WARNING', null, { compact: true })
+              },
+              {
+                label: 'Condition & Hysteresis',
+                className: 'mono text-xs tabular-nums',
+                render: (r) => {
+                  const cond = r.condition_type || 'THRESHOLD_HIGH';
+                  if (cond === 'BOOLEAN_TRUE' || cond === 'BOOLEAN_FALSE') {
+                    return `${cond} (hold ${r.hold_s}s / clear ${r.clear_hold_s}s)`;
+                  }
+                  const sym = cond === 'THRESHOLD_LOW' ? '<=' : '>=';
+                  const clrSym = cond === 'THRESHOLD_LOW' ? '>=' : '<=';
+                  return `${sym} ${r.threshold} (clear ${clrSym} ${r.clear_threshold}, hold ${r.hold_s}s)`;
+                }
+              },
+              {
+                label: 'Status',
+                render: (r) => statusIndicator(r.enabled ? 'ACTIVE' : 'DISABLED', r.enabled ? 'Enabled' : 'Disabled', { compact: true })
+              },
+              {
+                label: 'Actions',
+                align: 'right',
+                render: (r) =>
+                  admin
+                    ? el('button', {
+                        type: 'button',
+                        class: 'btn btn-secondary btn-sm',
+                        text: 'Edit',
+                        onClick: () => openRuleModal({ rule: r, devices: cachedDevices, onSaved: loadTab })
+                      })
+                    : el('span', { class: 'text-xs text-muted', text: 'Read-only' })
+              }
+            ],
+            renderMobileCard: (r) =>
+              el('article', { class: 'card record-card' }, [
+                el('div', { class: 'record-card-head' }, [
+                  el('div', { class: 'font-semibold', text: r.name }),
+                  statusIndicator(r.enabled ? 'ACTIVE' : 'DISABLED', r.enabled ? 'Enabled' : 'Disabled', { compact: true })
+                ]),
+                el('div', { class: 'mono text-xs text-secondary', text: `${r.device_id}/${r.endpoint_key} · ${r.condition_type}` }),
+                admin
+                  ? el('div', { class: 'record-card-actions' }, [
+                      el('button', {
+                        type: 'button',
+                        class: 'btn btn-secondary btn-sm',
+                        text: 'Edit Rule',
+                        onClick: () => openRuleModal({ rule: r, devices: cachedDevices, onSaved: loadTab })
+                      })
+                    ])
+                  : null
+              ])
+          })
+        );
+      }
+    } catch (err) {
+      if (disposed) return;
+      clear(bodySlot);
+      bodySlot.appendChild(
+        errorPanel({
+          title: 'Failed to load monitoring data',
+          message: err.message,
+          onRetry: loadTab
+        })
+      );
+    }
+  }
+
+  async function init() {
+    const [roomsRes, devRes] = await Promise.allSettled([
+      api.listRooms({ status: '' }),
+      api.listDevices({ include_archived: false })
+    ]);
+    if (disposed) return;
+    if (roomsRes.status === 'fulfilled') cachedRooms = roomsRes.value.rooms || [];
+    if (devRes.status === 'fulfilled') cachedDevices = devRes.value.devices || [];
+    renderTabs();
+    renderFilterBar();
+    await loadTab();
+  }
+
+  init();
+
+  return {
+    node: container,
+    cleanup: () => {
+      disposed = true;
+    }
+  };
+}
+
+// ============================================================================
+// NOTIFICATIONS CENTER (/app/notifications)
+// ============================================================================
+export function renderNotificationsPage({ navigate }) {
+  const container = el('div', { class: 'stack-lg' });
+  let disposed = false;
+
+  let unreadOnly = false;
+  let severityFilter = '';
+  let categoryFilter = '';
+  let searchFilter = '';
+  let page = 1;
+  let latestId = 0;
+
+  const prefSlot = el('div');
+  const listSlot = el('div');
+
+  const searchIn = el('input', {
+    class: 'input',
+    type: 'search',
+    placeholder: 'Search notification title or message...',
+    'aria-label': 'Search notifications'
+  });
+  let searchTimer = null;
+  searchIn.addEventListener('input', () => {
+    searchFilter = searchIn.value.trim();
+    page = 1;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(load, 220);
+  });
+
+  const sevSel = el(
+    'select',
+    { class: 'select', 'aria-label': 'Filter by severity' },
+    [
+      { v: '', l: 'All severities' },
+      { v: 'CRITICAL', l: 'Critical' },
+      { v: 'WARNING', l: 'Warning' },
+      { v: 'INFO', l: 'Info' }
+    ].map((o) => el('option', { value: o.v, text: o.l }))
+  );
+  sevSel.addEventListener('change', () => {
+    severityFilter = sevSel.value;
+    page = 1;
+    load();
+  });
+
+  const catSel = el(
+    'select',
+    { class: 'select', 'aria-label': 'Filter by category' },
+    [
+      { v: '', l: 'All categories' },
+      { v: 'ALARM', l: 'Alarm' },
+      { v: 'DEVICE', l: 'Device' },
+      { v: 'COMMAND', l: 'Command' },
+      { v: 'SYSTEM', l: 'System' },
+      { v: 'ADMIN', l: 'Admin' },
+      { v: 'AUTH', l: 'Auth' }
+    ].map((o) => el('option', { value: o.v, text: o.l }))
+  );
+  catSel.addEventListener('change', () => {
+    categoryFilter = catSel.value;
+    page = 1;
+    load();
+  });
+
+  const unreadSegSlot = el('div');
+  function renderUnreadToggle() {
+    clear(unreadSegSlot);
+    unreadSegSlot.appendChild(
+      segmentedFilter({
+        ariaLabel: 'Notification read filter',
+        value: unreadOnly ? 'unread' : 'all',
+        options: [
+          { value: 'all', label: 'All' },
+          { value: 'unread', label: 'Unread' }
+        ],
+        onChange: (val) => {
+          unreadOnly = val === 'unread';
+          page = 1;
+          renderUnreadToggle();
+          load();
+        }
+      })
+    );
+  }
+
+  const markAllBtn = el('button', {
+    type: 'button',
+    class: 'btn btn-secondary btn-sm',
+    text: 'Mark All Read',
+    onClick: async () => {
+      if (!latestId) {
+        showToast('Nothing to mark', 'No notifications available.', 'info');
+        return;
+      }
+      try {
+        await api.markAllNotificationsRead(latestId);
+        showToast('Notifications updated', 'All visible notifications marked as read.', 'success');
+        await refreshHeaderCounters();
+        load();
+      } catch (err) {
+        showToast('Update failed', err.message, 'error');
+      }
+    }
+  });
+
+  container.appendChild(
+    pageHeader({
+      title: 'Notifications',
+      description: 'Personal operator alert inbox scoped to your role with persistent read tracking.',
+      actions: [
+        markAllBtn,
+        el('button', {
+          type: 'button',
+          class: 'btn-icon',
+          title: 'Refresh notifications',
+          'aria-label': 'Refresh notifications',
+          onClick: () => load()
+        }, [svgIcon('icon-refresh', 15)])
+      ]
+    })
+  );
+
+  container.appendChild(prefSlot);
+  container.appendChild(
+    el('div', { class: 'card card-compact filter-bar' }, [unreadSegSlot, searchIn, sevSel, catSel])
+  );
+  container.appendChild(listSlot);
+  renderUnreadToggle();
+
+  async function loadPrefs() {
+    try {
+      const p = await api.getNotificationPrefs();
+      if (disposed) return;
+      clear(prefSlot);
+      const soundCb = el('input', { type: 'checkbox', checked: Boolean(p.critical_sound) });
+      soundCb.addEventListener('change', async () => {
+        try {
+          await api.updateNotificationPrefs({ critical_sound: soundCb.checked });
+          showToast('Preference saved', `Critical alert sound ${soundCb.checked ? 'enabled' : 'disabled'}.`, 'success');
+        } catch (err) {
+          soundCb.checked = !soundCb.checked;
+          showToast('Save failed', err.message, 'error');
+        }
+      });
+      prefSlot.appendChild(
+        el('div', { class: 'card card-compact row-between' }, [
+          el('label', { class: 'checkbox-row text-sm' }, [
+            soundCb,
+            el('span', { text: 'Play audio cue for incoming CRITICAL alerts (per-operator preference)' })
+          ]),
+          el('span', { class: 'text-xs text-muted', text: 'Saved in SQLite' })
+        ])
+      );
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  async function load() {
+    if (disposed) return;
+    clear(listSlot);
+    listSlot.appendChild(loadingSkeleton('table', 4));
+
+    try {
+      const res = await api.listNotifications({
+        unread: unreadOnly ? 'true' : '',
+        severity: severityFilter,
+        category: categoryFilter,
+        search: searchFilter,
+        page,
+        limit: 25
+      });
+      if (disposed) return;
+
+      const items = res.notifications || [];
+      latestId = Number(res.latest_id || items[0]?.id || 0);
+      const total = Number(res.total || items.length);
+      const totalPages = Math.max(1, Math.ceil(total / 25));
+
+      clear(listSlot);
+      if (items.length === 0) {
+        listSlot.appendChild(
+          el('div', { class: 'card' }, [
+            emptyState({
+              icon: 'icon-bell',
+              title: unreadOnly ? 'No unread notifications' : 'No notifications found',
+              message: unreadOnly
+                ? 'You are caught up on all facility alerts.'
+                : 'Adjust your filters or wait for facility events.'
+            })
+          ])
+        );
+        return;
+      }
+
+      const listCard = el(
+        'div',
+        { class: 'card stack-sm' },
+        [
+          el('div', { class: 'row-between' }, [
+            el('span', { class: 'text-xs text-muted tabular-nums', text: `${res.unread ?? 0} unread · ${total} matching notifications` }),
+            el('div', { class: 'btn-row' }, [
+              el('button', {
+                type: 'button',
+                class: 'btn btn-secondary btn-sm',
+                disabled: page <= 1,
+                text: 'Prev',
+                onClick: () => {
+                  page = Math.max(1, page - 1);
+                  load();
+                }
+              }),
+              el('span', { class: 'mono text-xs text-muted tabular-nums', text: `Page ${page} / ${totalPages}` }),
+              el('button', {
+                type: 'button',
+                class: 'btn btn-secondary btn-sm',
+                disabled: page >= totalPages,
+                text: 'Next',
+                onClick: () => {
+                  page = Math.min(totalPages, page + 1);
+                  load();
+                }
+              })
+            ])
+          ]),
+          el(
+            'div',
+            { class: 'queue-list' },
+            items.map((n) => {
+              const isRead = Boolean(n.read_at);
+              return el('div', { class: 'queue-item' }, [
+                el('div', { class: 'queue-item-main' }, [
+                  el('div', { class: 'row-gap-sm' }, [
+                    statusIndicator(n.severity || 'INFO', n.category || 'SYSTEM', { compact: true }),
+                    !isRead ? el('span', { class: 'meta-tag', text: 'UNREAD' }) : null,
+                    el('span', { class: 'mono text-xs text-muted tabular-nums', text: formatTimestamp(n.timestamp) })
+                  ]),
+                  el('div', { class: 'queue-item-title', text: n.title }),
+                  n.message ? el('div', { class: 'queue-item-meta', text: n.message }) : null,
+                  n.device_id
+                    ? el('div', { class: 'text-xs text-muted mono', text: `Device: ${n.device_id}${n.room_code ? ` · ${n.room_code}` : ''}` })
+                    : null
+                ]),
+                el('div', { class: 'btn-row' }, [
+                  n.device_id
+                    ? el('button', {
+                        type: 'button',
+                        class: 'btn btn-ghost btn-sm',
+                        text: 'Device',
+                        onClick: () => navigate(`/app/devices/${encodeURIComponent(n.device_id)}`)
+                      })
+                    : null,
+                  el('button', {
+                    type: 'button',
+                    class: 'btn btn-secondary btn-sm',
+                    text: isRead ? 'Mark Unread' : 'Mark Read',
+                    onClick: async () => {
+                      try {
+                        await api.markNotificationRead(n.id, !isRead);
+                        await refreshHeaderCounters();
+                        load();
+                      } catch (err) {
+                        showToast('Update failed', err.message, 'error');
+                      }
+                    }
+                  })
+                ])
+              ]);
             })
           )
+        ]
+      );
+
+      listSlot.appendChild(listCard);
+    } catch (err) {
+      if (disposed) return;
+      clear(listSlot);
+      listSlot.appendChild(
+        errorPanel({
+          title: 'Failed to load notifications',
+          message: err.message,
+          onRetry: load
+        })
+      );
+    }
+  }
+
+  const unsub = onLiveEvent('notifications', () => {
+    if (!disposed) load();
+  });
+
+  loadPrefs();
+  load();
+
+  return {
+    node: container,
+    cleanup: () => {
+      disposed = true;
+      clearTimeout(searchTimer);
+      unsub();
+    }
+  };
+}
+
+// ============================================================================
+// EVENTS & AUDIT LOGS (/app/events) — With Slide-Over Record Detail Drawer
+// ============================================================================
+export function renderEventsPage() {
+  const container = el('div', { class: 'stack-lg' });
+  const admin = isAdmin();
+  let disposed = false;
+
+  const sources = [
+    { id: 'access_logs', label: 'Access Logs', fetch: () => api.getLogs('access_logs', 200).then((r) => r.rows || r.logs || r) },
+    { id: 'environmental_telemetry', label: 'Env Telemetry', fetch: () => api.getLogs('environmental_telemetry', 200).then((r) => r.rows || r.logs || r) },
+    { id: 'system_errors', label: 'System Errors', fetch: () => api.getLogs('system_errors', 200).then((r) => r.rows || r.logs || r) },
+    { id: 'commands', label: 'Command Audit', fetch: () => api.getRecentCommands().then((r) => r.commands || []) }
+  ];
+  if (admin) {
+    sources.push(
+      { id: 'management_audit', label: 'Management Audit', fetch: () => api.getManagementAudit().then((r) => r.events || []) },
+      { id: 'admin_audit', label: 'Admin Audit', fetch: () => api.getLogs('admin_audit', 200).then((r) => r.rows || r.logs || r) }
+    );
+  }
+
+  let currentSource = sources[0].id;
+  let searchFilter = '';
+  let loadedRows = [];
+
+  const tabSlot = el('div');
+  const tableSlot = el('div');
+
+  const searchIn = el('input', {
+    class: 'input',
+    type: 'search',
+    placeholder: 'Filter loaded rows by keyword, actor, device, or status...',
+    'aria-label': 'Filter audit rows'
+  });
+  searchIn.addEventListener('input', () => {
+    searchFilter = searchIn.value.trim().toLowerCase();
+    renderRows();
+  });
+
+  const exportBtn = el('button', {
+    type: 'button',
+    class: 'btn btn-secondary btn-sm',
+    onClick: () => {
+      const filtered = getFilteredRows();
+      if (!filtered.length) {
+        showToast('Nothing to export', 'No rows match the current filter.', 'info');
+        return;
+      }
+      const keys = Object.keys(filtered[0]);
+      exportRowsToCsv(
+        `lci-sfm-${currentSource}-${new Date().toISOString().slice(0, 10)}.csv`,
+        keys.map((k) => ({ label: k, key: k })),
+        filtered
+      );
+      showToast('CSV exported', `Exported ${filtered.length} filtered rows from ${currentSource}.`, 'success');
+    }
+  }, [svgIcon('icon-download', 14), el('span', { text: 'Export Filtered CSV' })]);
+
+  container.appendChild(
+    pageHeader({
+      title: 'Events & Audit Logs',
+      description: 'Inspect persisted SQLite access, telemetry, error, command, and administrative audit trails. Click any row to open the detail drawer.',
+      actions: [
+        exportBtn,
+        el('button', {
+          type: 'button',
+          class: 'btn-icon',
+          title: 'Refresh log table',
+          'aria-label': 'Refresh log table',
+          onClick: () => loadSource()
+        }, [svgIcon('icon-refresh', 15)])
+      ]
+    })
+  );
+
+  container.appendChild(tabSlot);
+  container.appendChild(
+    el('div', { class: 'card card-compact row-between' }, [
+      searchIn,
+      el('span', { class: 'text-xs text-muted', text: 'Shows latest 200 persisted rows; CSV exports current filtered view.' })
+    ])
+  );
+  container.appendChild(tableSlot);
+
+  function getFilteredRows() {
+    if (!searchFilter) return loadedRows;
+    return loadedRows.filter((row) => JSON.stringify(row).toLowerCase().includes(searchFilter));
+  }
+
+  function openRecordDrawer(row) {
+    const entries = Object.entries(row).map(([k, v]) => ({
+      label: k.replace(/_/g, ' '),
+      value: v === null || v === undefined ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v),
+      mono: /id|at|time|ip|state|status|code|temp|hum|smoke|seq/i.test(k)
+    }));
+
+    openDrawer({
+      title: `Audit Record · ${currentSource.replace(/_/g, ' ')}`,
+      subtitle: 'Persisted SQLite Entry',
+      body: el('div', { class: 'stack-md' }, [
+        keyValueList(entries),
+        disclaimerBanner({
+          icon: 'icon-shield',
+          tone: 'info',
+          message: 'Sensitive credentials (password hashes, PIN hashes, and session verifiers) are excluded at the SQLite query layer.'
+        })
+      ]),
+      actions: [
+        el('button', { type: 'button', class: 'btn btn-secondary btn-sm', text: 'Close', onClick: closeDrawer })
+      ]
+    });
+  }
+
+  function renderTabs() {
+    clear(tabSlot);
+    tabSlot.appendChild(
+      el(
+        'div',
+        { class: 'tab-bar', role: 'tablist' },
+        sources.map((s) =>
+          el('button', {
+            type: 'button',
+            role: 'tab',
+            'aria-selected': currentSource === s.id ? 'true' : 'false',
+            class: `tab-btn${currentSource === s.id ? ' active' : ''}`,
+            text: s.label,
+            onClick: () => {
+              currentSource = s.id;
+              renderTabs();
+              loadSource();
+            }
+          })
         )
       )
     );
+  }
 
-    tableHost.appendChild(
-      el('div', { class: 'table-scroll' }, [
-        el('table', { class: 'data-table' }, [
-          el('thead', {}, [el('tr', {}, keys.map((k) => el('th', { text: k })))]),
-          tbody
+  function renderRows() {
+    clear(tableSlot);
+    const rows = getFilteredRows();
+    if (!rows.length) {
+      tableSlot.appendChild(
+        el('div', { class: 'card' }, [
+          emptyState({
+            icon: 'icon-list',
+            title: 'No audit records found',
+            message: searchFilter ? 'Try clearing the search query.' : 'No rows have been persisted in this table yet.'
+          })
         ])
-      ])
-    );
-  };
-
-  const loadLogs = async () => {
-    try {
-      const res = await api.getLogs(activeTab, 120);
-      currentRows = Array.isArray(res) ? res : res.items || [];
-      renderTable();
-    } catch (err) {
-      clear(tableHost);
-      tableHost.appendChild(el('div', { class: 'alert alert-error', text: err.message }));
+      );
+      return;
     }
-  };
+
+    const preferredKeys = Object.keys(rows[0]).slice(0, 5);
+    tableSlot.appendChild(
+      renderAdaptiveCollection({
+        ariaLabel: `${currentSource} records`,
+        rows: rows.slice(0, 100),
+        onRowClick: (row) => openRecordDrawer(row),
+        columns: [
+          ...preferredKeys.map((k) => ({
+            label: k.replace(/_/g, ' '),
+            className: /time|at|id|ip|temp|hum|smoke/i.test(k) ? 'mono text-xs tabular-nums' : 'text-sm',
+            render: (row) => {
+              const v = row[k];
+              if (v === null || v === undefined || v === '') return '—';
+              if (/timestamp|issued_at|created_at|recorded_at/i.test(k)) return formatTimestamp(v);
+              const str = typeof v === 'object' ? JSON.stringify(v) : String(v);
+              return str.length > 54 ? `${str.slice(0, 54)}…` : str;
+            }
+          })),
+          {
+            label: 'Details',
+            align: 'right',
+            render: (row) =>
+              el('button', {
+                type: 'button',
+                class: 'btn btn-ghost btn-sm',
+                text: 'Inspect',
+                onClick: (e) => {
+                  e.stopPropagation();
+                  openRecordDrawer(row);
+                }
+              })
+          }
+        ],
+        renderMobileCard: (row) =>
+          el(
+            'article',
+            { class: 'card record-card', onClick: () => openRecordDrawer(row) },
+            [
+              el('div', { class: 'record-card-grid' },
+                preferredKeys.slice(0, 4).map((k) =>
+                  el('div', { class: 'record-card-field' }, [
+                    el('span', { class: 'record-card-label', text: k.replace(/_/g, ' ') }),
+                    el('span', { class: 'mono text-xs truncate', text: String(row[k] ?? '—') })
+                  ])
+                )
+              ),
+              el('div', { class: 'record-card-actions' }, [
+                el('button', {
+                  type: 'button',
+                  class: 'btn btn-secondary btn-sm',
+                  text: 'Inspect Record',
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    openRecordDrawer(row);
+                  }
+                })
+              ])
+            ]
+          )
+      })
+    );
+  }
+
+  async function loadSource() {
+    if (disposed) return;
+    clear(tableSlot);
+    tableSlot.appendChild(loadingSkeleton('table', 5));
+    const src = sources.find((s) => s.id === currentSource);
+    try {
+      const data = await src.fetch();
+      if (disposed) return;
+      loadedRows = Array.isArray(data) ? data : [];
+      renderRows();
+    } catch (err) {
+      if (disposed) return;
+      clear(tableSlot);
+      tableSlot.appendChild(
+        errorPanel({
+          title: `Failed to load ${src?.label || 'events'}`,
+          message: err.message,
+          onRetry: loadSource
+        })
+      );
+    }
+  }
 
   renderTabs();
-  loadLogs();
-  return { node: root };
+  loadSource();
+
+  return {
+    node: container,
+    cleanup: () => {
+      disposed = true;
+    }
+  };
 }

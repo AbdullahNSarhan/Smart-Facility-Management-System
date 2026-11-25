@@ -1,249 +1,526 @@
-// LCI-SFM Executive Overview Page (/app/overview)
-// 4-col KPI strip, multi-room grid, recent active alarms, and local service readiness.
+// LCI-SFM Facility Overview (/app/overview)
+// Operational landing screen: KPI summary, Central Service Readiness Strip, Managed Rooms grid,
+// Priority Attention Queue, and Compact Activity Feed with Slide-Over detail inspection.
 
 import { api } from '../api.js';
-import { onLiveEvent, isAdmin } from '../store.js';
-import { el, clear, formatAge } from '../utils.js';
+import { store, isAdmin, onLiveEvent, notify, openDrawer } from '../store.js';
+import { el, clear, svgIcon, formatAge, formatTimestamp } from '../utils.js';
+import {
+  pageHeader,
+  kpiCard,
+  statusIndicator,
+  loadingSkeleton,
+  emptyState,
+  errorPanel,
+  disclaimerBanner,
+  keyValueList
+} from '../components/ui.js';
+
+function severityRank(sev) {
+  const s = String(sev || '').toUpperCase();
+  if (s === 'CRITICAL') return 0;
+  if (s === 'WARNING') return 1;
+  return 2;
+}
+
+function getMqttReadinessDisplay(mqtt) {
+  if (!mqtt) return { state: 'UNKNOWN', label: 'Unknown' };
+  if (mqtt.state === 'standby' || mqtt.enabled === false) {
+    return { state: 'STANDBY', label: 'Standby (Disabled)' };
+  }
+  if (mqtt.connected && mqtt.subscriptions_ready !== false) {
+    return { state: 'CONNECTED', label: 'Connected' };
+  }
+  if (mqtt.connected && mqtt.subscriptions_ready === false) {
+    return { state: 'DEGRADED', label: 'Subs Degraded' };
+  }
+  return { state: 'DISCONNECTED', label: 'Disconnected' };
+}
 
 export function renderOverviewPage({ navigate }) {
-  const root = el('div', { class: 'stack-lg' });
+  const container = el('div', { class: 'stack-lg' });
+  let disposed = false;
+  let refreshTimer = null;
 
-  const kpiGrid = el('div', { class: 'kpi-grid' });
-  const roomsContainer = el('div', { class: 'rooms-grid' });
-  const alarmsContainer = el('div', { class: 'stack-sm' });
-  const healthBar = el('div', { class: 'card service-health-strip' });
-  const facilitySubtitle = el('p', { class: 'text-secondary', text: 'Loading facility summary...' });
+  const headerSlot = el('div');
+  const bannerSlot = el('div');
+  const kpiSlot = el('div');
+  const readinessSlot = el('div');
+  const bodySlot = el('div');
 
-  const headerRow = el('div', { class: 'section-toolbar' }, [
-    el('div', {}, [
-      el('h2', { class: 'section-title', text: 'Facility Operations Summary' }),
-      facilitySubtitle
-    ]),
-    el('div', { class: 'toolbar-actions' }, [
-      el('button', {
-        type: 'button',
-        class: 'btn btn-secondary btn-sm',
-        text: 'Refresh',
-        onClick: () => loadData()
-      }),
-      isAdmin()
-        ? el('button', {
-            type: 'button',
-            class: 'btn btn-primary btn-sm',
-            text: '+ Manage Rooms',
-            onClick: () => navigate('/app/rooms')
-          })
+  container.append(headerSlot, bannerSlot, kpiSlot, readinessSlot, bodySlot);
+
+  kpiSlot.appendChild(loadingSkeleton('kpi', 4));
+  bodySlot.appendChild(loadingSkeleton('cards', 3));
+
+  function openActivityDrawer(item) {
+    const body = el('div', { class: 'stack-md' }, [
+      statusIndicator(item.severity || 'INFO'),
+      keyValueList([
+        { label: 'Title', value: item.title || '—' },
+        { label: 'Category', value: item.category || 'SYSTEM' },
+        { label: 'Timestamp', value: formatTimestamp(item.timestamp), mono: true },
+        { label: 'Device', value: item.device_id || 'Facility-wide', mono: Boolean(item.device_id) },
+        { label: 'Room', value: item.room_name ? `${item.room_code || ''} · ${item.room_name}` : '—' },
+        { label: 'Read Status', value: item.read_at ? `Read (${formatAge(item.read_at)})` : 'Unread' }
+      ]),
+      item.message
+        ? el('div', { class: 'card card-compact stack-xs' }, [
+            el('div', { class: 'text-xs text-muted', text: 'MESSAGE' }),
+            el('p', { class: 'text-sm text-secondary', text: item.message })
+          ])
         : null
-    ])
-  ]);
+    ]);
 
-  root.appendChild(headerRow);
-  root.appendChild(kpiGrid);
-  root.appendChild(healthBar);
-
-  // Two-column operational grid: Rooms Grid (Left 2fr) + Active Alarms & Pending (Right 1fr)
-  const mainGrid = el('div', { class: 'overview-split' }, [
-    el('section', { class: 'stack-md' }, [
-      el('div', { class: 'section-toolbar' }, [
-        el('h3', { class: 'card-title', text: 'Managed Rooms' }),
+    const actions = [];
+    if (item.device_id) {
+      actions.push(
         el('button', {
           type: 'button',
-          class: 'btn-link',
+          class: 'btn btn-secondary btn-sm',
+          text: 'Inspect Device',
+          onClick: () => navigate(`/app/devices/${encodeURIComponent(item.device_id)}`)
+        })
+      );
+    }
+    actions.push(
+      el('button', {
+        type: 'button',
+        class: 'btn btn-primary btn-sm',
+        text: 'Open Notifications',
+        onClick: () => navigate('/app/notifications')
+      })
+    );
+
+    openDrawer({
+      title: item.title || 'Activity Event',
+      subtitle: `${item.category || 'SYSTEM'} NOTIFICATION`,
+      body,
+      actions
+    });
+  }
+
+  async function load(silent = false) {
+    if (disposed) return;
+    if (!silent) {
+      clear(kpiSlot);
+      kpiSlot.appendChild(loadingSkeleton('kpi', 4));
+    }
+
+    const admin = isAdmin();
+    const [overviewRes, readyRes, pendingRes, devicesRes] = await Promise.allSettled([
+      api.getOverview(),
+      api.getHealthReady(),
+      admin ? api.listPendingDevices('PENDING') : Promise.resolve({ pending_devices: [] }),
+      api.listDevices({ include_archived: false })
+    ]);
+
+    if (disposed) return;
+
+    const overview = overviewRes.status === 'fulfilled' ? overviewRes.value : null;
+    const ready = readyRes.status === 'fulfilled' ? readyRes.value : null;
+    const pendingList = pendingRes.status === 'fulfilled' ? pendingRes.value?.pending_devices || [] : [];
+    const devices = devicesRes.status === 'fulfilled' ? devicesRes.value?.devices || [] : [];
+
+    // Update global header counters
+    if (overview) {
+      store.activeAlarmCount = Number(overview.active_alarms || 0);
+      store.unreadCount = Number(overview.unread_notifications ?? store.unreadCount);
+      notify();
+    }
+
+    // 1. Page Header
+    clear(headerSlot);
+    const fac = overview?.facility;
+    const subtitleParts = [];
+    if (fac?.location) subtitleParts.push(fac.location);
+    if (fac?.timezone) subtitleParts.push(`TZ: ${fac.timezone}`);
+    subtitleParts.push(`Updated ${formatAge(new Date().toISOString())}`);
+
+    headerSlot.appendChild(
+      pageHeader({
+        title: fac?.name || 'Facility Overview',
+        description: fac?.description || 'Real-time operational overview across facility rooms, wired controllers, and central services.',
+        meta: overview?.simulation ? statusIndicator('SIMULATION', 'Isolated Simulator') : null,
+        actions: [
+          el('button', {
+            type: 'button',
+            class: 'btn btn-secondary btn-sm',
+            onClick: () => navigate('/app/network')
+          }, [svgIcon('icon-topology', 14), el('span', { text: 'Network Map' })]),
+          admin
+            ? el('button', {
+                type: 'button',
+                class: 'btn btn-secondary btn-sm',
+                onClick: () => navigate('/app/rooms')
+              }, [svgIcon('icon-plus', 14), el('span', { text: 'Add Room' })])
+            : null,
+          admin
+            ? el('button', {
+                type: 'button',
+                class: 'btn btn-primary btn-sm',
+                onClick: () => navigate('/app/devices?action=register')
+              }, [svgIcon('icon-plus', 14), el('span', { text: 'Register Device' })])
+            : null,
+          el('button', {
+            type: 'button',
+            class: 'btn-icon',
+            title: 'Refresh overview',
+            'aria-label': 'Refresh overview',
+            onClick: () => load(false)
+          }, [svgIcon('icon-refresh', 15)])
+        ]
+      })
+    );
+
+    // Optional Simulation Banner
+    clear(bannerSlot);
+    if (overview?.simulation) {
+      bannerSlot.appendChild(
+        disclaimerBanner({
+          icon: 'icon-activity',
+          tone: 'info',
+          title: 'Isolated Simulator Mode Active',
+          message: 'Telemetry and actuator responses are generated locally for software validation. No physical controllers or hardware relays are contacted.'
+        })
+      );
+    }
+
+    // 2. KPI Row (preserve section error state without fabricating zeroes)
+    clear(kpiSlot);
+    if (!overview) {
+      kpiSlot.appendChild(
+        errorPanel({
+          title: 'Overview summary unavailable',
+          message: overviewRes.reason?.message || 'Could not load facility summary from /api/v1/overview.',
+          onRetry: () => load(false)
+        })
+      );
+    } else {
+      const ds = overview.device_summary || { registered: 0, online: 0, stale: 0, unknown: 0, disabled: 0, maintenance: 0 };
+      const rooms = overview.rooms || [];
+      const activeAlarms = Number(overview.active_alarms || 0);
+      const pendingCount = Number(overview.pending_devices || 0);
+      const critAlarms = (overview.recent_alarms || []).filter(
+        (a) => a.state !== 'RESOLVED' && a.severity === 'CRITICAL'
+      ).length;
+
+      kpiSlot.appendChild(
+        el('div', { class: 'kpi-grid' }, [
+          kpiCard({
+            label: 'Active Rooms',
+            value: rooms.length,
+            sub: `${fac?.archived_rooms || 0} archived · ${subtitleParts[0] || 'On-premises'}`,
+            onClick: () => navigate('/app/rooms')
+          }),
+          kpiCard({
+            label: 'Devices Online',
+            value: `${ds.online} / ${ds.registered}`,
+            sub: `${ds.stale} stale · ${ds.unknown} unseen · ${ds.maintenance} maint.`,
+            tone: ds.registered > 0 && ds.online === ds.registered ? 'ok' : ds.stale > 0 ? 'warn' : 'default',
+            onClick: () => navigate('/app/devices')
+          }),
+          kpiCard({
+            label: 'Active Alarms',
+            value: activeAlarms,
+            sub: activeAlarms === 0 ? 'No active alarm conditions' : `${critAlarms} critical in recent window`,
+            tone: critAlarms > 0 ? 'crit' : activeAlarms > 0 ? 'warn' : 'ok',
+            onClick: () => navigate('/app/alarms')
+          }),
+          kpiCard({
+            label: 'Pending Reviews',
+            value: pendingCount,
+            sub: pendingCount > 0 ? 'Quarantined devices awaiting Admin approval' : 'No unapproved device announcements',
+            tone: pendingCount > 0 ? 'pending' : 'default',
+            onClick: () => navigate('/app/devices')
+          })
+        ])
+      );
+    }
+
+    // 3. Central Service Readiness Strip
+    clear(readinessSlot);
+    if (!ready && !overview?.health) {
+      readinessSlot.appendChild(
+        errorPanel({
+          title: 'Service readiness probe unavailable',
+          message: 'Could not read /api/health/ready.',
+          onRetry: () => load(false)
+        })
+      );
+    } else {
+      const h = ready || { status: overview?.health?.sqlite?.ok ? 'ready' : 'degraded', ...overview?.health };
+      const sqliteOk = Boolean(h.sqlite?.ok);
+      const mqttInfo = getMqttReadinessDisplay(h.mqtt);
+      const wsHealthy = store.wsTelemetry === 'CONNECTED' && store.wsNotifications === 'CONNECTED';
+      const wsState = wsHealthy ? 'CONNECTED' : store.wsTelemetry === 'CONNECTED' || store.wsNotifications === 'CONNECTED' ? 'DEGRADED' : 'OFFLINE';
+
+      readinessSlot.appendChild(
+        el('section', { class: 'readiness-strip', 'aria-label': 'Central Service Readiness' }, [
+          el('div', { class: 'readiness-cell' }, [
+            el('span', { class: 'readiness-label', text: 'HTTP Readiness' }),
+            statusIndicator(h.status === 'ready' ? 'READY' : 'DEGRADED', h.status === 'ready' ? 'Ready (200)' : 'Degraded (503)')
+          ]),
+          el('div', { class: 'readiness-cell' }, [
+            el('span', { class: 'readiness-label', text: 'SQLite WAL Store' }),
+            statusIndicator(
+              sqliteOk ? 'HEALTHY' : 'ERROR',
+              sqliteOk ? `WAL · FK ${h.sqlite?.foreign_keys ? 'On' : 'Off'}` : 'Error'
+            )
+          ]),
+          el('div', { class: 'readiness-cell' }, [
+            el('span', { class: 'readiness-label', text: 'MQTT Broker' }),
+            statusIndicator(mqttInfo.state, mqttInfo.label)
+          ]),
+          el('div', { class: 'readiness-cell' }, [
+            el('span', { class: 'readiness-label', text: 'Browser Live Streams' }),
+            statusIndicator(wsState, wsHealthy ? 'Telemetry + Alerts' : wsState === 'DEGRADED' ? 'Partial WS' : 'Disconnected')
+          ])
+        ])
+      );
+    }
+
+    // 4. Main Operational Grid: Left (Managed Rooms) | Right (Attention Queue + Compact Activity Feed)
+    clear(bodySlot);
+    if (!overview) return;
+
+    // Left: Managed Rooms Grid
+    const rooms = overview.rooms || [];
+    const roomsSection = el('section', { class: 'stack-md', 'aria-label': 'Managed Rooms' }, [
+      el('div', { class: 'row-between' }, [
+        el('div', { class: 'stack-xs' }, [
+          el('h2', { class: 'section-title', text: 'Managed Rooms' }),
+          el('span', { class: 'text-xs text-muted', text: `${rooms.length} active room${rooms.length === 1 ? '' : 's'} registered in this facility` })
+        ]),
+        el('button', {
+          type: 'button',
+          class: 'btn btn-ghost btn-sm',
           text: 'View all rooms →',
           onClick: () => navigate('/app/rooms')
         })
       ]),
-      roomsContainer
-    ]),
-    el('section', { class: 'stack-md' }, [
-      el('div', { class: 'section-toolbar' }, [
-        el('h3', { class: 'card-title', text: 'Active Alarms' }),
-        el('button', {
-          type: 'button',
-          class: 'btn-link',
-          text: 'Open Alarms →',
-          onClick: () => navigate('/app/alarms')
-        })
-      ]),
-      alarmsContainer
-    ])
-  ]);
-  root.appendChild(mainGrid);
+      rooms.length === 0
+        ? el('div', { class: 'card' }, [
+            emptyState({
+              icon: 'icon-rooms',
+              title: 'No active rooms configured',
+              message: 'Create your first facility room to assign wired controllers and endpoints.',
+              actionLabel: admin ? 'Add Room' : '',
+              onAction: admin ? () => navigate('/app/rooms') : null
+            })
+          ])
+        : el(
+            'div',
+            { class: 'rooms-grid' },
+            rooms.map((room) => {
+              const dc = room.device_counts || { total: 0, online: 0, stale: 0, unknown: 0 };
+              const alarms = Number(room.active_alarms || 0);
+              const roomState =
+                alarms > 0
+                  ? 'ATTENTION'
+                  : dc.total === 0
+                    ? 'UNKNOWN'
+                    : dc.online === dc.total
+                      ? 'ONLINE'
+                      : dc.stale > 0
+                        ? 'STALE'
+                        : 'UNKNOWN';
+              const env = room.environmental_summary || {};
+              const envLine = [
+                env.temperature ? `${Number(env.temperature.value).toFixed(1)} ${env.temperature.unit}` : null,
+                env.humidity ? `${Number(env.humidity.value).toFixed(0)} ${env.humidity.unit}` : null
+              ]
+                .filter(Boolean)
+                .join(' · ');
 
-  let disposed = false;
-
-  const renderKpi = (label, value, detail, tone = '') =>
-    el('div', { class: 'card kpi-card' }, [
-      el('div', { class: 'kpi-label', text: label }),
-      el('div', { class: `kpi-value tabular-nums${tone ? ` text-${tone}` : ''}`, text: String(value) }),
-      el('div', { class: 'kpi-detail tabular-nums', text: detail })
+              return el(
+                'article',
+                {
+                  class: 'card room-card',
+                  tabindex: '0',
+                  role: 'button',
+                  'aria-label': `Open room ${room.name}`,
+                  onClick: () => navigate(`/app/rooms/${encodeURIComponent(room.room_id)}`),
+                  onKeydown: (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      navigate(`/app/rooms/${encodeURIComponent(room.room_id)}`);
+                    }
+                  }
+                },
+                [
+                  el('div', { class: 'row-between' }, [
+                    el('span', { class: 'meta-tag mono', text: room.room_code }),
+                    statusIndicator(
+                      roomState,
+                      alarms > 0 ? `${alarms} Active Alarm${alarms > 1 ? 's' : ''}` : undefined,
+                      { compact: true }
+                    )
+                  ]),
+                  el('div', { class: 'stack-xs' }, [
+                    el('div', { class: 'font-semibold', text: room.name }),
+                    el('div', {
+                      class: 'text-xs text-muted',
+                      text: [room.building, room.floor].filter(Boolean).join(' · ') || 'No building/floor tag'
+                    })
+                  ]),
+                  el('div', { class: 'room-metrics-row' }, [
+                    el('div', {}, [
+                      el('div', { class: 'room-metric-label', text: 'Online' }),
+                      el('div', { class: 'room-metric-val tabular-nums', text: `${dc.online}/${dc.total}` })
+                    ]),
+                    el('div', {}, [
+                      el('div', { class: 'room-metric-label', text: 'Alarms' }),
+                      el('div', {
+                        class: `room-metric-val tabular-nums${alarms > 0 ? ' text-warn' : ''}`,
+                        text: String(alarms)
+                      })
+                    ]),
+                    el('div', {}, [
+                      el('div', { class: 'room-metric-label', text: 'Env' }),
+                      el('div', { class: 'room-metric-val mono text-xs tabular-nums', text: envLine || '—' })
+                    ])
+                  ])
+                ]
+              );
+            })
+          )
     ]);
 
-  const loadData = async () => {
-    try {
-      const [overview, health] = await Promise.all([api.getOverview(), api.getHealthReady()]);
-      if (disposed) return;
+    // Right Column: Priority Attention Queue + Compact Recent Activity Feed
+    const attentionItems = [];
 
-      const fac = overview.facility || {};
-      const devSummary = overview.device_summary || {};
-      const rooms = overview.rooms || [];
-      const activeAlarmsCount = Number(overview.active_alarms ?? 0);
-      const pendingCount = Number(overview.pending_devices ?? 0);
-      facilitySubtitle.textContent = `${fac.name || 'LCI Smart Facility'}${fac.location ? ` · ${fac.location}` : ''} · Timezone ${fac.timezone || 'UTC'}`;
+    const activeAlarmsList = (overview.recent_alarms || [])
+      .filter((a) => a.state !== 'RESOLVED')
+      .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 
-      clear(kpiGrid);
-      kpiGrid.appendChild(
-        renderKpi('Active Rooms', rooms.length, `${rooms.length} operational spaces`)
-      );
-      kpiGrid.appendChild(
-        renderKpi(
-          'Devices Online',
-          `${devSummary.online ?? 0} / ${devSummary.registered ?? 0}`,
-          `${pendingCount} pending review · ${devSummary.stale ?? 0} stale`,
-          (devSummary.online ?? 0) > 0 ? 'ok' : ''
-        )
-      );
-      kpiGrid.appendChild(
-        renderKpi(
-          'Active Alarms',
-          activeAlarmsCount,
-          `${overview.unread_notifications ?? 0} unread notifications`,
-          activeAlarmsCount > 0 ? 'warn' : 'ok'
-        )
-      );
-      kpiGrid.appendChild(
-        renderKpi(
-          'Readiness',
-          health.ok ? 'READY' : 'DEGRADED',
-          health.mqtt?.enabled
-            ? `SQLite ${String(health.sqlite?.journal_mode || 'WAL').toUpperCase()} · MQTT ${health.mqtt?.connected ? 'Connected' : 'Disconnected'}`
-            : `SQLite ${String(health.sqlite?.journal_mode || 'WAL').toUpperCase()} · MQTT Standby`,
-          health.ok ? 'ok' : 'warn'
-        )
-      );
-
-      // Service Health Strip
-      clear(healthBar);
-      const mqttText = !health.mqtt?.enabled
-        ? 'Standby (Disabled)'
-        : health.mqtt?.connected && health.mqtt?.subscriptions_ready
-          ? 'Connected & Subscribed'
-          : 'Disconnected / Degraded';
-      const mqttTone = !health.mqtt?.enabled ? 'muted' : health.mqtt?.connected ? 'ok' : 'crit';
-
-      healthBar.appendChild(
-        el('div', { class: 'health-strip-grid' }, [
-          el('div', { class: 'health-strip-item' }, [
-            el('span', { class: `status-dot ${health.sqlite?.ok ? 'dot-ok' : 'dot-crit'}` }),
-            el('span', { class: 'text-muted', text: 'SQLite:' }),
-            el('strong', { class: 'mono', text: health.sqlite?.ok ? `OK (${String(health.sqlite?.journal_mode || 'WAL').toUpperCase()})` : 'ERROR' })
-          ]),
-          el('div', { class: 'health-strip-item' }, [
-            el('span', { class: `status-dot dot-${mqttTone}` }),
-            el('span', { class: 'text-muted', text: 'MQTT Broker:' }),
-            el('strong', { class: 'mono', text: mqttText })
-          ]),
-          el('div', { class: 'health-strip-item' }, [
-            el('span', { class: 'text-muted', text: 'Pending Quarantine:' }),
-            el('strong', { class: 'mono tabular-nums', text: String(pendingCount) })
-          ]),
-          el('button', {
-            type: 'button',
-            class: 'btn-link',
-            text: 'Full Diagnostics →',
-            onClick: () => navigate('/app/diagnostics')
-          })
-        ])
-      );
-
-      // Rooms Grid
-      clear(roomsContainer);
-      if (rooms.length === 0) {
-        roomsContainer.appendChild(
-          el('div', { class: 'card empty-state' }, [
-            el('p', { class: 'text-secondary', text: 'No rooms configured yet.' })
-          ])
-        );
-      } else {
-        for (const room of rooms) {
-          const alarmCount = Number(room.active_alarm_count || 0);
-          const tone = alarmCount > 0 ? 'dot-warn' : Number(room.online_device_count || 0) > 0 ? 'dot-ok' : 'dot-muted';
-          roomsContainer.appendChild(
-            el('article', {
-              class: 'card room-card clickable-card',
-              onClick: () => navigate(`/app/rooms/${encodeURIComponent(room.room_id)}`)
-            }, [
-              el('div', { class: 'card-head' }, [
-                el('div', {}, [
-                  el('div', { class: 'mono text-muted', text: room.room_code }),
-                  el('h4', { class: 'room-card-name', text: room.name })
-                ]),
-                el('div', { class: 'status-inline' }, [
-                  el('span', { class: `status-dot ${tone}` }),
-                  el('span', { class: 'status-label', text: alarmCount > 0 ? `${alarmCount} Alarm${alarmCount > 1 ? 's' : ''}` : 'Nominal' })
-                ])
-              ]),
-              el('div', { class: 'room-card-meta' }, [
-                el('span', { class: 'tabular-nums', text: `${room.device_count ?? 0} devices (${room.online_device_count ?? 0} online)` }),
-                room.building || room.floor
-                  ? el('span', { class: 'text-muted', text: [room.building, room.floor].filter(Boolean).join(' · ') })
-                  : null
-              ])
-            ])
-          );
-        }
-      }
-
-      // Active Alarms list
-      clear(alarmsContainer);
-      const alarms = overview.recent_alarms || [];
-      if (alarms.length === 0) {
-        alarmsContainer.appendChild(
-          el('div', { class: 'card empty-state' }, [
-            el('p', { class: 'text-secondary', text: 'No active alarms across managed rooms.' })
-          ])
-        );
-      } else {
-        for (const alarm of alarms.slice(0, 6)) {
-          const dot = alarm.severity === 'CRITICAL' ? 'dot-crit' : alarm.severity === 'WARNING' ? 'dot-warn' : 'dot-info';
-          alarmsContainer.appendChild(
-            el('article', {
-              class: 'card alarm-mini-card clickable-card',
-              onClick: () => navigate('/app/alarms')
-            }, [
-              el('div', { class: 'card-head' }, [
-                el('div', { class: 'status-inline' }, [
-                  el('span', { class: `status-dot ${dot}` }),
-                  el('strong', { text: alarm.title || alarm.rule_id })
-                ]),
-                el('span', { class: 'mono text-muted tabular-nums', text: formatAge(alarm.opened_at) })
-              ]),
-              el('div', { class: 'text-secondary', text: alarm.message || `${alarm.device_id} · ${alarm.endpoint_key}` }),
-              el('div', { class: 'mono text-muted', text: `${alarm.state} · ${alarm.device_id}` })
-            ])
-          );
-        }
-      }
-    } catch (err) {
-      if (disposed) return;
-      facilitySubtitle.textContent = `Failed to load overview: ${err.message}`;
+    for (const alarm of activeAlarmsList.slice(0, 4)) {
+      attentionItems.push({
+        state: alarm.severity || 'WARNING',
+        label: alarm.state === 'ACKNOWLEDGED' ? `${alarm.severity} · Ack` : alarm.severity,
+        title: alarm.title,
+        meta: `${alarm.device_name || alarm.device_id} · ${formatAge(alarm.raised_at)}`,
+        actionLabel: 'Inspect',
+        onAction: () => navigate('/app/alarms')
+      });
     }
+
+    for (const p of pendingList.slice(0, 3)) {
+      attentionItems.push({
+        state: 'PENDING_REVIEW',
+        label: 'Quarantined',
+        title: `Unapproved device: ${p.device_id}`,
+        meta: `Last announced ${formatAge(p.last_seen_at)} · Requires Admin review`,
+        actionLabel: 'Review',
+        onAction: () => navigate('/app/devices')
+      });
+    }
+
+    const driftDevices = devices.filter((d) => d.manifest_drift?.has_drift);
+    for (const d of driftDevices.slice(0, 3)) {
+      attentionItems.push({
+        state: 'DRIFT',
+        label: 'Manifest Drift',
+        title: `${d.name} (${d.device_id})`,
+        meta: `Announced schema differs from registered endpoints`,
+        actionLabel: 'Inspect',
+        onAction: () => navigate(`/app/devices/${encodeURIComponent(d.device_id)}`)
+      });
+    }
+
+    const attentionCard = el('section', { class: 'card stack-sm', 'aria-label': 'Priority Attention Queue' }, [
+      el('div', { class: 'card-head' }, [
+        el('h2', { class: 'card-title', text: 'Attention Queue' }),
+        el('span', { class: 'text-xs text-muted tabular-nums', text: `${attentionItems.length} item${attentionItems.length === 1 ? '' : 's'}` })
+      ]),
+      attentionItems.length === 0
+        ? el('div', { class: 'row-gap-sm text-sm text-secondary' }, [
+            statusIndicator('HEALTHY', 'No active alarms, quarantined devices, or manifest drift.')
+          ])
+        : el(
+            'div',
+            { class: 'queue-list' },
+            attentionItems.map((item) =>
+              el('div', { class: 'queue-item' }, [
+                el('div', { class: 'queue-item-main' }, [
+                  statusIndicator(item.state, item.label, { compact: true }),
+                  el('div', { class: 'queue-item-title', text: item.title }),
+                  el('div', { class: 'queue-item-meta', text: item.meta })
+                ]),
+                el('button', {
+                  type: 'button',
+                  class: 'btn btn-secondary btn-sm',
+                  text: item.actionLabel,
+                  onClick: item.onAction
+                })
+              ])
+            )
+          )
+    ]);
+
+    const recentNotifs = overview.recent_notifications || [];
+    const activityCard = el('section', { class: 'card stack-sm', 'aria-label': 'Recent Activity Feed' }, [
+      el('div', { class: 'card-head' }, [
+        el('h2', { class: 'card-title', text: 'Recent Activity' }),
+        el('button', {
+          type: 'button',
+          class: 'btn btn-ghost btn-sm',
+          text: 'All notifications →',
+          onClick: () => navigate('/app/notifications')
+        })
+      ]),
+      recentNotifs.length === 0
+        ? el('div', { class: 'text-sm text-muted', text: 'No recent facility notifications recorded.' })
+        : el(
+            'div',
+            { class: 'queue-list' },
+            recentNotifs.slice(0, 6).map((n) =>
+              el('div', { class: 'queue-item' }, [
+                el('div', { class: 'queue-item-main' }, [
+                  el('div', { class: 'row-between' }, [
+                    statusIndicator(n.severity || 'INFO', n.category || 'SYSTEM', { compact: true }),
+                    el('span', { class: 'text-xs text-muted mono tabular-nums', text: formatAge(n.timestamp) })
+                  ]),
+                  el('div', { class: 'queue-item-title', text: n.title }),
+                  n.message ? el('div', { class: 'queue-item-meta truncate', text: n.message }) : null
+                ]),
+                el('button', {
+                  type: 'button',
+                  class: 'btn btn-ghost btn-sm',
+                  text: 'Details',
+                  onClick: () => openActivityDrawer(n)
+                })
+              ])
+            )
+          )
+    ]);
+
+    bodySlot.appendChild(
+      el('div', { class: 'overview-grid' }, [
+        roomsSection,
+        el('div', { class: 'stack-md' }, [attentionCard, activityCard])
+      ])
+    );
+  }
+
+  const scheduleRefresh = () => {
+    if (disposed) return;
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => load(true), 1500);
   };
 
-  loadData();
-  const unsubTel = onLiveEvent('telemetry', () => {
-    // Throttle live refreshes cleanly
-  });
-  const unsubNotif = onLiveEvent('notifications', () => loadData());
-  const poll = setInterval(loadData, 15000);
+  const unsubTel = onLiveEvent('telemetry', scheduleRefresh);
+  const unsubNotif = onLiveEvent('notifications', scheduleRefresh);
+
+  load(false);
 
   return {
-    node: root,
+    node: container,
     cleanup: () => {
       disposed = true;
+      clearTimeout(refreshTimer);
       unsubTel();
       unsubNotif();
-      clearInterval(poll);
     }
   };
 }

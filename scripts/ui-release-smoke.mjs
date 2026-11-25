@@ -46,7 +46,7 @@ try {
   assert.equal(adminLoginRes.status, 200);
   const adminLoginJson = await adminLoginRes.json();
   const adminCookie = adminLoginRes.headers.get('set-cookie').split(';')[0];
-  const provRes = await fetch(`${baseUrl}/api/provision/user`, {
+  const provRes = await fetch(`${baseUrl}/api/v1/operators`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -56,10 +56,7 @@ try {
     body: JSON.stringify({
       username: 'viewer_ui',
       password: 'Viewer-Smoke-Pass#2026',
-      role: 'Viewer',
-      rfid: 'AA:BB:CC:DD',
-      pin: '123456',
-      face_linked: false
+      role: 'Viewer'
     })
   });
   assert.equal(provRes.status, 201);
@@ -79,7 +76,7 @@ try {
   }
 
   browser = await chromium.launch(launchOpts);
-  const context = await browser.newContext({ viewport: { width: 1366, height: 860 } });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
 
   const consoleErrors = [];
@@ -121,19 +118,26 @@ try {
   assert.equal(new URL(page.url()).pathname, '/login');
   assert.equal(new URL(page.url()).searchParams.get('next'), '/app/rooms');
 
+  // Verify accessible show/hide password toggle on login
+  await page.fill('#login-password', 'test');
+  await page.getByRole('button', { name: 'Show password' }).click();
+  assert.equal(await page.locator('#login-password').getAttribute('type'), 'text');
+  await page.getByRole('button', { name: 'Hide password' }).click();
+  assert.equal(await page.locator('#login-password').getAttribute('type'), 'password');
+
   // 3. Sign in as Admin -> lands on redirected /app/rooms
   await page.fill('#login-username', 'admin');
   await page.fill('#login-password', adminPass);
   await page.click('#login-submit-btn');
   await page.waitForURL(`${baseUrl}/app/rooms`);
-  await page.waitForSelector('#create-room-btn');
+  await page.waitForSelector('#add-room-btn');
 
   // 4. Create a dynamic room via UI modal and verify deep-link reload
-  await page.click('#create-room-btn');
+  await page.click('#add-room-btn');
   const modal = page.locator('#active-modal-backdrop');
   await modal.waitFor({ state: 'visible' });
-  await modal.locator('input[placeholder="e.g. LAB-201"]').fill('LAB-305');
-  await modal.locator('input[placeholder="e.g. Server Room West"]').fill('Automation Test Lab');
+  await modal.locator('input[placeholder="e.g. LAB-102"]').fill('LAB-305');
+  await modal.locator('input[placeholder="e.g. Server Rack Room"]').fill('Automation Test Lab');
   await modal.getByRole('button', { name: 'Create Room' }).click();
   await page.waitForSelector('text=LAB-305');
 
@@ -142,57 +146,114 @@ try {
   await page.waitForSelector('text=LAB-305');
 
   // Open Room Detail page (/app/rooms/:roomId)
-  await page.getByRole('button', { name: 'LAB-305' }).click();
+  await page.locator('table tbody tr', { hasText: 'LAB-305' }).getByRole('button', { name: 'Open' }).click();
   await page.waitForURL(/\/app\/rooms\/.+/);
   await page.waitForSelector('text=Automation Test Lab');
 
-  // 5. Navigate to Devices (/app/devices) and register an MQTT_V1 device WITHOUT an IP
+  // 5. Navigate to Devices (/app/devices) and complete the 4-Step Wizard for an MQTT_V1 device WITHOUT IP
   await page.getByRole('link', { name: 'Devices' }).click();
   await page.waitForURL(`${baseUrl}/app/devices`);
   await page.click('#register-device-btn');
   await modal.waitFor({ state: 'visible' });
-  await modal.locator('input[placeholder="e.g. env-lab-201"]').fill('mqtt-ui-sensor');
-  await modal.locator('input[placeholder="e.g. Lab 201 Environmental Sensor"]').fill('UI MQTT Sensor');
+
+  // Step 1: Identity
+  await modal.locator('#wiz-device-id').fill('mqtt-ui-sensor');
+  await modal.locator('#wiz-device-name').fill('UI MQTT Sensor');
+  await modal.getByRole('button', { name: 'Continue' }).click();
+
+  // Step 2: Transport (defaults to MQTT_V1 without IP)
+  await modal.locator('#wiz-device-transport').waitFor({ state: 'visible' });
+  await modal.getByRole('button', { name: 'Continue' }).click();
+
+  // Step 3: Endpoints (defaults to valid temperature SENSOR/NUMBER)
+  await modal.getByRole('button', { name: 'Continue' }).click();
+
+  // Step 4: Review & Register
+  await modal.locator('text=Broker-mediated (no direct IP)').waitFor({ state: 'visible' });
   await modal.getByRole('button', { name: 'Register Device' }).click();
   await page.waitForSelector('text=UI MQTT Sensor');
 
-  // Inspect Device Detail (/app/devices/mqtt-ui-sensor) -> verify Generic Endpoint Widget renders
-  await page.getByRole('button', { name: 'UI MQTT Sensor' }).click();
+  // Inspect Device Detail (/app/devices/mqtt-ui-sensor) -> verify Generic Endpoint Widget & MQTT CLI
+  await page.locator('table tbody tr', { hasText: 'UI MQTT Sensor' }).getByRole('button', { name: 'Inspect' }).click();
   await page.waitForURL(`${baseUrl}/app/devices/mqtt-ui-sensor`);
-  await page.waitForSelector('.endpoint-widget');
+  await page.waitForSelector('.widget-card');
   await page.waitForSelector('text=provision-mqtt-device.sh add mqtt-ui-sensor');
 
-  // 6. Visit remaining core routes & verify zero errors
-  for (const route of [
-    '/app/overview',
-    '/app/alarms',
-    '/app/notifications',
-    '/app/events',
-    '/app/diagnostics',
-    '/app/users',
-    '/app/settings',
-    '/app/profile'
-  ]) {
+  // Navigate to Endpoint History and switch time preset
+  await page.getByRole('button', { name: 'History →' }).first().click();
+  await page.waitForURL(`${baseUrl}/app/devices/mqtt-ui-sensor/endpoints/temperature`);
+  await page.getByRole('button', { name: '24h' }).click();
+  await page.waitForSelector('.history-chart-svg');
+
+  // 6. Interactive Network & Connectivity Topology (/app/network)
+  await page.getByRole('link', { name: 'Network' }).click();
+  await page.waitForURL(`${baseUrl}/app/network`);
+  await page.waitForSelector('.topology-svg');
+  await page.locator('[data-topo-node-id="dev:mqtt-ui-sensor"]').click();
+  await page.waitForSelector('#network-node-inspector >> text=UI MQTT Sensor');
+
+  // 7. Alarms & Rules — create a deterministic sensor rule matching ruleSchema
+  await page.getByRole('link', { name: 'Alarms & Rules' }).click();
+  await page.waitForURL(`${baseUrl}/app/alarms`);
+  await page.click('#create-rule-btn');
+  await modal.waitFor({ state: 'visible' });
+  await modal.locator('input[placeholder="e.g. High Rack Temperature"]').fill('UI Smoke Temp Alert');
+  await modal.getByRole('button', { name: 'Create Rule' }).click();
+  await page.getByRole('tab', { name: 'Monitoring Rules' }).click();
+  await page.waitForSelector('text=UI Smoke Temp Alert');
+
+  // 8. Events & Audit Logs + Slide-Over Detail Drawer
+  await page.getByRole('link', { name: 'Events & Audit' }).click();
+  await page.waitForURL(`${baseUrl}/app/events`);
+  await page.getByRole('tab', { name: 'Management Audit' }).click();
+  await page.waitForSelector('table tbody tr');
+  await page.locator('table tbody tr').first().getByRole('button', { name: 'Inspect' }).click();
+  await page.waitForSelector('#active-drawer-backdrop');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('#active-drawer-backdrop', { state: 'detached' });
+
+  // 9. Separated Users & Access Tabs (Operators + Facility People via /api/v1/people)
+  await page.getByRole('link', { name: 'Users & Access' }).click();
+  await page.waitForURL(`${baseUrl}/app/users`);
+  await page.waitForSelector('text=viewer_ui');
+  await page.getByRole('tab', { name: 'Facility People & Credentials' }).click();
+  await page.waitForSelector('text=Physical Credential Policy Boundary');
+
+  // 10. Visit remaining core routes & verify zero errors
+  for (const route of ['/app/overview', '/app/notifications', '/app/diagnostics', '/app/settings', '/app/profile']) {
     await page.goto(`${baseUrl}${route}`, { waitUntil: 'networkidle' });
     await page.waitForSelector('.app-content');
   }
 
-  // 7. Toggle Dark -> Light -> Dark theme
-  await page.getByRole('button', { name: 'Switch Light / Dark Theme' }).click();
+  // 11. Toggle Dark -> Light -> Dark theme
+  await page.click('#profile-theme-toggle');
   assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-theme')), 'light');
-  await page.getByRole('button', { name: 'Switch Light / Dark Theme' }).click();
+  await page.click('#profile-theme-toggle');
   assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-theme')), 'dark');
 
-  // 8. Mobile 390px responsiveness check (no horizontal overflow)
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${baseUrl}/app/overview`, { waitUntil: 'networkidle' });
-  const mobileOverflow = await page.evaluate(
-    () => document.documentElement.scrollWidth - document.documentElement.clientWidth
-  );
-  assert.ok(mobileOverflow <= 2, `Expected zero horizontal overflow at 390px, got ${mobileOverflow}px`);
+  // 12. Responsive matrix checks (1440, 768, 390, 360px) — zero horizontal overflow + mobile cards visible
+  const overflowByViewport = {};
+  for (const vp of [
+    { width: 1440, height: 900, label: '1440x900' },
+    { width: 768, height: 1024, label: '768x1024' },
+    { width: 390, height: 844, label: '390x844' },
+    { width: 360, height: 800, label: '360x800' }
+  ]) {
+    await page.setViewportSize({ width: vp.width, height: vp.height });
+    await page.goto(`${baseUrl}/app/devices`, { waitUntil: 'networkidle' });
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+    );
+    overflowByViewport[vp.label] = overflow;
+    assert.ok(overflow <= 2, `Expected zero horizontal overflow at ${vp.label}, got ${overflow}px`);
+    if (vp.width <= 768) {
+      const cardsVisible = await page.locator('.adaptive-mobile-cards').isVisible();
+      assert.equal(cardsVisible, true, `Expected stacked mobile cards at ${vp.label}`);
+    }
+  }
 
-  // 9. Sign out & verify Viewer RBAC UI gating
-  await page.setViewportSize({ width: 1366, height: 860 });
+  // 13. Sign out & verify Viewer RBAC UI gating
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${baseUrl}/app/profile`, { waitUntil: 'networkidle' });
   await page.locator('.app-content').getByRole('button', { name: 'Sign Out' }).click();
   await page.waitForURL(`${baseUrl}/login`);
@@ -205,23 +266,50 @@ try {
   // Viewer must not see Users & Access or Settings in sidebar
   assert.equal(await page.getByRole('link', { name: 'Users & Access' }).count(), 0);
   assert.equal(await page.getByRole('link', { name: 'Settings' }).count(), 0);
-  // Viewer must not see Create Room button on /app/rooms
+  // Viewer must not see Add Room button on /app/rooms
   await page.getByRole('link', { name: 'Rooms' }).click();
   await page.waitForURL(`${baseUrl}/app/rooms`);
-  assert.equal(await page.locator('#create-room-btn').count(), 0);
+  assert.equal(await page.locator('#add-room-btn').count(), 0);
 
-  // 10. Strict Air-Gap & Error Assertions
-  assert.deepEqual(externalRequests, [], `External network requests detected (violates air-gap): ${externalRequests.join(', ')}`);
+  // 14. Strict Air-Gap & Error Assertions
+  assert.deepEqual(
+    externalRequests,
+    [],
+    `External network requests detected (violates air-gap): ${externalRequests.join(', ')}`
+  );
   assert.deepEqual(pageErrors, [], `Unhandled page errors: ${pageErrors.join(' | ')}`);
   assert.deepEqual(consoleErrors, [], `Console errors: ${consoleErrors.join(' | ')}`);
 
-  console.log(JSON.stringify({
-    ok: true,
-    verified_routes: ['/', '/login', '/app/overview', '/app/rooms', '/app/rooms/:id', '/app/devices', '/app/devices/:id', '/app/alarms', '/app/notifications', '/app/events', '/app/diagnostics', '/app/users', '/app/settings', '/app/profile'],
-    external_requests: 0,
-    mobile_overflow_px: mobileOverflow,
-    rbac_viewer_gated: true
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        verified_routes: [
+          '/',
+          '/login',
+          '/app/overview',
+          '/app/rooms',
+          '/app/rooms/:id',
+          '/app/devices',
+          '/app/devices/:id',
+          '/app/devices/:id/endpoints/:key',
+          '/app/network',
+          '/app/alarms',
+          '/app/notifications',
+          '/app/events',
+          '/app/diagnostics',
+          '/app/users',
+          '/app/settings',
+          '/app/profile'
+        ],
+        external_requests: 0,
+        overflow_by_viewport: overflowByViewport,
+        rbac_viewer_gated: true
+      },
+      null,
+      2
+    )
+  );
 } finally {
   if (browser) await browser.close();
   await ctx.stop();

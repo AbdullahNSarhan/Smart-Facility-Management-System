@@ -1,6 +1,6 @@
-// LCI-SFM Reactive Client Store — Auth Session, Theme, Live WebSockets, Toasts & Modals
+// LCI-SFM Reactive Client Store — Auth Session, Theme, Live WebSockets, Toasts, Modals & Slide-Over Drawer
 import { api, configureApiClient } from './api.js';
-import { el, clear } from './utils.js';
+import { el, clear, svgIcon } from './utils.js';
 
 const THEME_KEY = 'lci_sfm_theme_v2';
 const SIDEBAR_KEY = 'lci_sfm_sidebar_collapsed';
@@ -109,6 +109,50 @@ export function isAdmin() {
 }
 
 // ============================================================================
+// FOCUS TRAP HELPER FOR ACCESSIBLE DIALOGS & DRAWERS
+// ============================================================================
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function createFocusTrapHandler(container, onEscape) {
+  return (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onEscape();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const focusables = Array.from(container.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
+      (node) => node.offsetParent !== null
+    );
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first || !container.contains(document.activeElement)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else if (document.activeElement === last || !container.contains(document.activeElement)) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+}
+
+function focusInitialElement(container) {
+  requestAnimationFrame(() => {
+    const focusables = Array.from(container.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
+      (node) => node.offsetParent !== null
+    );
+    const preferred = focusables.find((n) => n.tagName === 'INPUT' || n.tagName === 'SELECT' || n.tagName === 'TEXTAREA') || focusables[0];
+    if (preferred && typeof preferred.focus === 'function') {
+      preferred.focus();
+    }
+  });
+}
+
+// ============================================================================
 // TOAST NOTIFICATIONS
 // ============================================================================
 let toastSeq = 0;
@@ -136,9 +180,16 @@ function renderToastHost() {
     document.body.appendChild(host);
   }
   clear(host);
+  const iconMap = {
+    success: 'icon-check-circle',
+    warning: 'icon-warning',
+    error: 'icon-x-circle',
+    info: 'icon-info'
+  };
   for (const t of store.toasts) {
     host.appendChild(
       el('div', { class: `toast-item toast-${t.variant}`, role: 'status' }, [
+        el('span', { class: `toast-icon toast-icon-${t.variant}` }, [svgIcon(iconMap[t.variant] || 'icon-info', 16)]),
         el('div', { class: 'toast-body' }, [
           el('div', { class: 'toast-title', text: t.title }),
           t.message ? el('div', { class: 'toast-msg', text: t.message }) : null
@@ -147,39 +198,43 @@ function renderToastHost() {
           type: 'button',
           class: 'toast-close',
           'aria-label': 'Dismiss notification',
-          text: '×',
           onClick: () => dismissToast(t.id)
-        })
+        }, [svgIcon('icon-close', 14)])
       ])
     );
   }
 }
 
 // ============================================================================
-// MODAL DIALOG HELPER (Accessible, Esc-to-close, Zero window.alert/confirm)
+// MODAL DIALOG HELPER (Accessible, Focus Trap, Esc-to-close, Zero window.alert)
 // ============================================================================
-export function openModal({ title, subtitle = '', body, actions = [], wide = false }) {
+let modalOpener = null;
+
+export function openModal({ title, subtitle = '', body, actions = [], wide = false, onClose = null }) {
   closeModal();
+  modalOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const titleId = `modal-title-${Date.now()}`;
+
   const backdrop = el('div', {
     id: 'active-modal-backdrop',
     class: 'modal-backdrop',
     role: 'dialog',
-    'aria-modal': 'true'
+    'aria-modal': 'true',
+    'aria-labelledby': titleId
   });
 
   const panel = el('div', { class: `modal-panel${wide ? ' modal-panel-wide' : ''}` }, [
     el('div', { class: 'modal-header' }, [
-      el('div', {}, [
+      el('div', { class: 'modal-header-text' }, [
         subtitle ? el('div', { class: 'modal-kicker', text: subtitle }) : null,
-        el('h2', { class: 'modal-title', text: title })
+        el('h2', { id: titleId, class: 'modal-title', text: title })
       ]),
       el('button', {
         type: 'button',
         class: 'btn-icon',
         'aria-label': 'Close dialog',
-        text: '×',
         onClick: closeModal
-      })
+      }, [svgIcon('icon-close', 16)])
     ]),
     el('div', { class: 'modal-body' }, [body]),
     actions.length > 0 ? el('div', { class: 'modal-footer' }, actions) : null
@@ -190,23 +245,95 @@ export function openModal({ title, subtitle = '', body, actions = [], wide = fal
     if (e.target === backdrop) closeModal();
   });
 
-  const onKeyDown = (e) => {
-    if (e.key === 'Escape') {
-      closeModal();
-    }
-  };
-  backdrop._escHandler = onKeyDown;
+  const onKeyDown = createFocusTrapHandler(panel, closeModal);
+  backdrop._keyHandler = onKeyDown;
+  backdrop._onClose = onClose;
   document.addEventListener('keydown', onKeyDown);
   document.body.appendChild(backdrop);
+  focusInitialElement(panel);
   return { close: closeModal, panel };
 }
 
 export function closeModal() {
   const existing = document.getElementById('active-modal-backdrop');
   if (existing) {
-    if (existing._escHandler) document.removeEventListener('keydown', existing._escHandler);
+    if (existing._keyHandler) document.removeEventListener('keydown', existing._keyHandler);
+    const cb = existing._onClose;
     existing.remove();
+    if (typeof cb === 'function') cb();
+    if (modalOpener && document.contains(modalOpener)) {
+      modalOpener.focus();
+    }
+    modalOpener = null;
   }
+}
+
+// ============================================================================
+// SLIDE-OVER DETAIL DRAWER (Accessible, Focus Trap, Esc-to-close)
+// ============================================================================
+let drawerOpener = null;
+
+export function openDrawer({ title, subtitle = '', body, actions = [], onClose = null }) {
+  closeDrawer();
+  drawerOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const titleId = `drawer-title-${Date.now()}`;
+
+  const backdrop = el('div', {
+    id: 'active-drawer-backdrop',
+    class: 'drawer-backdrop',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-labelledby': titleId
+  });
+
+  const panel = el('aside', { class: 'drawer-panel' }, [
+    el('div', { class: 'drawer-header' }, [
+      el('div', { class: 'drawer-header-text' }, [
+        subtitle ? el('div', { class: 'modal-kicker', text: subtitle }) : null,
+        el('h2', { id: titleId, class: 'drawer-title', text: title })
+      ]),
+      el('button', {
+        type: 'button',
+        class: 'btn-icon',
+        'aria-label': 'Close detail drawer',
+        onClick: closeDrawer
+      }, [svgIcon('icon-close', 16)])
+    ]),
+    el('div', { class: 'drawer-body' }, [body]),
+    actions.length > 0 ? el('div', { class: 'drawer-footer' }, actions) : null
+  ]);
+
+  backdrop.appendChild(panel);
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) closeDrawer();
+  });
+
+  const onKeyDown = createFocusTrapHandler(panel, closeDrawer);
+  backdrop._keyHandler = onKeyDown;
+  backdrop._onClose = onClose;
+  document.addEventListener('keydown', onKeyDown);
+  document.body.appendChild(backdrop);
+  focusInitialElement(panel);
+  return { close: closeDrawer, panel };
+}
+
+export function closeDrawer() {
+  const existing = document.getElementById('active-drawer-backdrop');
+  if (existing) {
+    if (existing._keyHandler) document.removeEventListener('keydown', existing._keyHandler);
+    const cb = existing._onClose;
+    existing.remove();
+    if (typeof cb === 'function') cb();
+    if (drawerOpener && document.contains(drawerOpener)) {
+      drawerOpener.focus();
+    }
+    drawerOpener = null;
+  }
+}
+
+export function closeAllOverlays() {
+  closeModal();
+  closeDrawer();
 }
 
 export function confirmDialog({
@@ -246,6 +373,12 @@ export function confirmDialog({
       title,
       subtitle,
       body,
+      onClose: () => {
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+      },
       actions: [
         el('button', {
           type: 'button',
@@ -339,7 +472,7 @@ export async function refreshHeaderCounters() {
   if (!store.authenticated) return;
   try {
     const [notifRes, healthRes] = await Promise.allSettled([
-      api.listNotifications({ unread: true, limit: 1 }),
+      api.listNotifications({ unread: 'true', limit: 1 }),
       api.getHealthReady()
     ]);
     if (notifRes.status === 'fulfilled') {
@@ -454,7 +587,6 @@ export function startLiveStreams() {
       }
       emitLiveEvent('telemetry', msg);
     } else if (msg.node_id) {
-      // Legacy environmental / access telemetry frame
       const devId = msg.node_id;
       const prev = store.latestTelemetryByDevice.get(devId) || { endpoints: {} };
       const merged = { ...prev.endpoints };

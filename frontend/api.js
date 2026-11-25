@@ -1,22 +1,22 @@
-// LCI-SFM Centralized Same-Origin API Client
-// Aligned 1:1 with backend /api/* and /api/v1/* strict Zod contracts.
-
-export class ApiError extends Error {
-  constructor(message, status, code, details = null) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-    this.code = code || 'REQUEST_FAILED';
-    this.details = details;
-  }
-}
+// LCI-SFM Frontend API Client — Same-Origin Cookie Session + X-CSRF-Token Support
+// Aligned 1:1 with backend/src/routes/apiRoutes.js, operationsRoutes.js, and managementRoutes.js.
 
 let csrfTokenGetter = () => null;
-let onUnauthorizedHandler = () => {};
+let unauthorizedHandler = () => {};
 
 export function configureApiClient({ getCsrfToken, onUnauthorized }) {
   if (typeof getCsrfToken === 'function') csrfTokenGetter = getCsrfToken;
-  if (typeof onUnauthorized === 'function') onUnauthorizedHandler = onUnauthorized;
+  if (typeof onUnauthorized === 'function') unauthorizedHandler = onUnauthorized;
+}
+
+export class ApiError extends Error {
+  constructor(message, status = 0, code = 'REQUEST_FAILED', payload = null) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+    this.payload = payload;
+  }
 }
 
 export async function apiRequest(path, options = {}) {
@@ -32,62 +32,69 @@ export async function apiRequest(path, options = {}) {
     body = JSON.stringify(body);
   }
 
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+  if (method !== 'GET' && method !== 'HEAD') {
     const csrf = csrfTokenGetter();
-    if (csrf) {
-      headers['X-CSRF-Token'] = csrf;
-    }
+    if (csrf) headers['X-CSRF-Token'] = csrf;
   }
 
-  const controller = new AbortController();
-  const timeoutMs = options.timeoutMs || 15000;
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  let response;
+  let res;
   try {
-    response = await fetch(path, {
+    res = await fetch(path, {
       method,
       headers,
       body,
       credentials: 'same-origin',
-      signal: options.signal || controller.signal
+      signal: options.signal
     });
   } catch (err) {
-    clearTimeout(timer);
-    if (err?.name === 'AbortError') {
-      throw new ApiError('Request timed out waiting for the local server', 504, 'REQUEST_TIMEOUT');
-    }
-    throw new ApiError('Unable to reach the local LCI-SFM server', 0, 'NETWORK_UNREACHABLE');
+    throw new ApiError('Unable to reach the local LCI-SFM server', 0, 'NETWORK_ERROR', { cause: err?.message });
   }
-  clearTimeout(timer);
 
-  const contentType = response.headers.get('content-type') || '';
-  let data = null;
+  const contentType = res.headers.get('content-type') || '';
+  if (options.responseType === 'blob') {
+    if (!res.ok) {
+      let errPayload = null;
+      if (contentType.includes('application/json')) {
+        errPayload = await res.json().catch(() => null);
+      }
+      throw new ApiError(
+        errPayload?.error || errPayload?.message || `Request failed (${res.status})`,
+        res.status,
+        errPayload?.code || 'HTTP_ERROR',
+        errPayload
+      );
+    }
+    return res.blob();
+  }
+
+  let payload = null;
   if (contentType.includes('application/json')) {
-    try {
-      data = await response.json();
-    } catch {
-      data = null;
-    }
-  } else if (options.responseType === 'blob') {
-    data = await response.blob();
+    payload = await res.json().catch(() => null);
   } else {
-    data = await response.text();
+    const text = await res.text().catch(() => '');
+    payload = text ? { message: text } : null;
   }
 
-  if (!response.ok) {
-    if (response.status === 401 && !options.skipAuthRedirect) {
-      onUnauthorizedHandler();
+  if (!res.ok) {
+    if (res.status === 401 && !options.skipAuthRedirect) {
+      unauthorizedHandler();
     }
-    const msg =
-      (data && typeof data === 'object' && (data.error || data.message)) ||
-      `Server returned HTTP ${response.status}`;
-    const code = (data && typeof data === 'object' && data.code) || `HTTP_${response.status}`;
-    const details = (data && typeof data === 'object' && data.details) || null;
-    throw new ApiError(msg, response.status, code, details);
+    const message = payload?.error || payload?.message || `Request failed (HTTP ${res.status})`;
+    throw new ApiError(message, res.status, payload?.code || 'HTTP_ERROR', payload);
   }
 
-  return data;
+  return payload;
+}
+
+function buildQuery(params = {}) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') {
+      q.set(k, String(v));
+    }
+  }
+  const s = q.toString();
+  return s ? `?${s}` : '';
 }
 
 export const api = {
@@ -96,11 +103,11 @@ export const api = {
   getHealthLive: () => apiRequest('/api/health/live', { skipAuthRedirect: true }),
   getHealthReady: async () => {
     const res = await fetch('/api/health/ready', { credentials: 'same-origin' });
-    const json = await res.json().catch(() => ({ ok: false, status: 'error' }));
-    return { httpStatus: res.status, ...json };
+    const data = await res.json().catch(() => ({ ok: false, status: 'degraded' }));
+    return { ...data, httpStatus: res.status };
   },
 
-  // Auth
+  // Authentication
   getSession: () => apiRequest('/api/auth/session', { skipAuthRedirect: true }),
   login: (username, password) =>
     apiRequest('/api/auth/login', {
@@ -112,168 +119,121 @@ export const api = {
   updateAdminProfile: (payload) =>
     apiRequest('/api/auth/admin-profile', { method: 'POST', body: payload }),
 
-  // Overview, Diagnostics & Capabilities
+  // Overview, Facility & Diagnostics
   getOverview: () => apiRequest('/api/v1/overview'),
-  getDiagnostics: () => apiRequest('/api/v1/diagnostics'),
+  getReleaseInfo: () => apiRequest('/api/v1/release'),
   getCapabilities: () => apiRequest('/api/v1/capabilities'),
-
-  // Facility & Rooms
+  getDiagnostics: () => apiRequest('/api/v1/diagnostics'),
   getFacility: () => apiRequest('/api/v1/facility'),
   updateFacility: (payload) => apiRequest('/api/v1/facility', { method: 'PUT', body: payload }),
-  listRooms: (params = {}) => {
-    const q = new URLSearchParams();
-    if (!params.include_archived) q.set('status', 'ACTIVE');
-    if (params.search) q.set('search', params.search);
-    const qs = q.toString();
-    return apiRequest(`/api/v1/rooms${qs ? `?${qs}` : ''}`);
-  },
+
+  // Management Settings & Audit (mounted at /api/v1 via managementRoutes)
+  getManagementSettings: () => apiRequest('/api/v1/settings'),
+  updateManagementSettings: (payload) => apiRequest('/api/v1/settings', { method: 'PUT', body: payload }),
+  getManagementAudit: () => apiRequest('/api/v1/management-audit'),
+  getRecentCommands: () => apiRequest('/api/v1/commands'),
+
+  // Rooms
+  listRooms: (params = {}) => apiRequest(`/api/v1/rooms${buildQuery(params)}`),
   getRoom: (roomId) => apiRequest(`/api/v1/rooms/${encodeURIComponent(roomId)}`),
   createRoom: (payload) => apiRequest('/api/v1/rooms', { method: 'POST', body: payload }),
   updateRoom: (roomId, payload) =>
     apiRequest(`/api/v1/rooms/${encodeURIComponent(roomId)}`, { method: 'PUT', body: payload }),
   archiveRoom: (roomId) =>
-    apiRequest(`/api/v1/rooms/${encodeURIComponent(roomId)}/archive`, {
-      method: 'POST',
-      body: {}
-    }),
+    apiRequest(`/api/v1/rooms/${encodeURIComponent(roomId)}/archive`, { method: 'POST', body: {} }),
   restoreRoom: (roomId) =>
-    apiRequest(`/api/v1/rooms/${encodeURIComponent(roomId)}/restore`, {
-      method: 'POST',
-      body: {}
-    }),
+    apiRequest(`/api/v1/rooms/${encodeURIComponent(roomId)}/restore`, { method: 'POST', body: {} }),
 
-  // Device Registry, Pending Quarantine & Endpoints
-  listDevices: (params = {}) => {
-    const q = new URLSearchParams();
-    if (params.room_id) q.set('room_id', params.room_id);
-    if (params.transport) q.set('transport', params.transport);
-    if (params.include_archived) q.set('include_archived', 'true');
-    if (params.search) q.set('search', params.search);
-    const qs = q.toString();
-    return apiRequest(`/api/v1/registry${qs ? `?${qs}` : ''}`);
-  },
+  // Devices & Endpoints
+  listDevices: (params = {}) => apiRequest(`/api/v1/registry${buildQuery(params)}`),
   getDevice: (deviceId) => apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}`),
   createDevice: (payload) => apiRequest('/api/v1/registry', { method: 'POST', body: payload }),
   updateDevice: (deviceId, payload) =>
     apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}`, { method: 'PUT', body: payload }),
-  moveDevice: (deviceId, room_id, version) =>
-    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/move`, {
-      method: 'POST',
-      body: { room_id, version }
-    }),
+  moveDevice: (deviceId, payload) =>
+    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/move`, { method: 'POST', body: payload }),
   archiveDevice: (deviceId) =>
-    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/archive`, {
-      method: 'POST',
-      body: {}
-    }),
+    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/archive`, { method: 'POST', body: {} }),
   restoreDevice: (deviceId) =>
-    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/restore`, {
-      method: 'POST',
-      body: {}
-    }),
-  setMqttIdentityStatus: (deviceId, status, version) =>
-    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/mqtt-identity`, {
-      method: 'PUT',
-      body: { mqtt_identity_status: status, version }
-    }),
+    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/restore`, { method: 'POST', body: {} }),
+  setMqttIdentityStatus: (deviceId, payload) =>
+    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/mqtt-identity`, { method: 'PUT', body: payload }),
+  setMaintenance: (deviceId, payload) =>
+    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/maintenance`, { method: 'POST', body: payload }),
   probeDevice: (deviceId) =>
     apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/probe`, { method: 'POST', body: {} }),
-  setMaintenance: (deviceId, payload) =>
-    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/maintenance`, {
-      method: 'POST',
-      body: payload
-    }),
   sendDeviceCommand: (deviceId, payload) =>
-    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/commands`, {
-      method: 'POST',
-      body: payload
-    }),
-  getEndpointHistory: (deviceId, endpointKey, limit = 120) =>
+    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/commands`, { method: 'POST', body: payload }),
+  getDeviceCommands: (deviceId) =>
+    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/commands`),
+  sendLegacyCommand: (payload) =>
+    apiRequest('/api/command', { method: 'POST', body: payload }),
+  getEndpointHistory: (deviceId, endpointKey, params = {}) =>
     apiRequest(
-      `/api/v1/registry/${encodeURIComponent(deviceId)}/endpoints/${encodeURIComponent(endpointKey)}/history?limit=${limit}`
+      `/api/v1/registry/${encodeURIComponent(deviceId)}/endpoints/${encodeURIComponent(endpointKey)}/history${buildQuery(params)}`
     ),
-  listPendingDevices: () => apiRequest('/api/v1/pending-devices'),
+  getCameraSnapshotBlob: (deviceId) =>
+    apiRequest(`/api/v1/registry/${encodeURIComponent(deviceId)}/snapshot`, { responseType: 'blob' }),
+
+  // Pending / Quarantined Devices
+  listPendingDevices: (status = 'PENDING') =>
+    apiRequest(`/api/v1/pending-devices${buildQuery({ status })}`),
   dismissPendingDevice: (deviceId) =>
-    apiRequest(`/api/v1/pending-devices/${encodeURIComponent(deviceId)}/dismiss`, {
-      method: 'POST',
-      body: {}
-    }),
+    apiRequest(`/api/v1/pending-devices/${encodeURIComponent(deviceId)}/dismiss`, { method: 'POST', body: {} }),
 
-  // Legacy emergency/door command
-  sendLegacyCommand: (payload) => apiRequest('/api/command', { method: 'POST', body: payload }),
-
-  // Rules & Alarms
-  listRules: (params = {}) => {
-    const q = new URLSearchParams();
-    if (params.room_id) q.set('room_id', params.room_id);
-    if (params.device_id) q.set('device_id', params.device_id);
-    const qs = q.toString();
-    return apiRequest(`/api/v1/rules${qs ? `?${qs}` : ''}`);
-  },
+  // Alarms & Rules
+  listAlarms: (params = {}) => apiRequest(`/api/v1/alarms${buildQuery(params)}`),
+  getAlarmDetail: (alarmId) => apiRequest(`/api/v1/alarms/${encodeURIComponent(alarmId)}`),
+  acknowledgeAlarm: (alarmId, comment) =>
+    apiRequest(`/api/v1/alarms/${encodeURIComponent(alarmId)}/acknowledge`, { method: 'POST', body: { comment } }),
+  resolveAlarm: (alarmId, comment) =>
+    apiRequest(`/api/v1/alarms/${encodeURIComponent(alarmId)}/resolve`, { method: 'POST', body: { comment } }),
+  listRules: (params = {}) => apiRequest(`/api/v1/rules${buildQuery(params)}`),
   createRule: (payload) => apiRequest('/api/v1/rules', { method: 'POST', body: payload }),
   updateRule: (ruleId, payload) =>
     apiRequest(`/api/v1/rules/${encodeURIComponent(ruleId)}`, { method: 'PUT', body: payload }),
-  listAlarms: (params = {}) => {
-    const q = new URLSearchParams();
-    if (params.state) q.set('state', params.state);
-    if (params.severity) q.set('severity', params.severity);
-    if (params.room_id) q.set('room_id', params.room_id);
-    if (params.device_id) q.set('device_id', params.device_id);
-    if (params.limit) q.set('limit', String(params.limit));
-    const qs = q.toString();
-    return apiRequest(`/api/v1/alarms${qs ? `?${qs}` : ''}`);
-  },
-  acknowledgeAlarm: (alarmId, comment = 'Acknowledged by operator') =>
-    apiRequest(`/api/v1/alarms/${encodeURIComponent(alarmId)}/acknowledge`, {
-      method: 'POST',
-      body: { comment: comment.length >= 3 ? comment : 'Acknowledged by operator' }
-    }),
-  resolveAlarm: (alarmId, comment = 'Resolved by operator') =>
-    apiRequest(`/api/v1/alarms/${encodeURIComponent(alarmId)}/resolve`, {
-      method: 'POST',
-      body: { comment: comment.length >= 3 ? comment : 'Resolved by operator' }
-    }),
 
   // Notifications
-  listNotifications: (params = {}) => {
-    const q = new URLSearchParams();
-    if (params.unread) q.set('unread', 'true');
-    if (params.severity) q.set('severity', params.severity);
-    if (params.limit) q.set('limit', String(params.limit));
-    const qs = q.toString();
-    return apiRequest(`/api/v1/notifications${qs ? `?${qs}` : ''}`);
-  },
+  listNotifications: (params = {}) => apiRequest(`/api/v1/notifications${buildQuery(params)}`),
   markNotificationRead: (id, read = true) =>
-    apiRequest(`/api/v1/notifications/${encodeURIComponent(id)}/read`, {
-      method: 'PUT',
-      body: { read }
-    }),
+    apiRequest(`/api/v1/notifications/${encodeURIComponent(id)}/read`, { method: 'PUT', body: { read } }),
   markAllNotificationsRead: (through_id = 0) =>
     apiRequest('/api/v1/notifications/read-all', { method: 'PUT', body: { through_id } }),
-  getNotificationPreferences: () => apiRequest('/api/v1/notification-preferences'),
-  updateNotificationPreferences: (payload) =>
+  getNotificationPrefs: () => apiRequest('/api/v1/notification-preferences'),
+  updateNotificationPrefs: (payload) =>
     apiRequest('/api/v1/notification-preferences', { method: 'PUT', body: payload }),
 
   // Logs & Audit
-  getLogs: (table, limit = 150) =>
-    apiRequest(`/api/logs/${encodeURIComponent(table)}?limit=${limit}`),
-  getTelemetryAggregate: (minutes = 60) =>
-    apiRequest(`/api/telemetry/aggregate?minutes=${minutes}`),
+  getLogs: (table, limit = 100) =>
+    apiRequest(`/api/logs/${encodeURIComponent(table)}${buildQuery({ limit })}`),
+  listSystemUsers: () => apiRequest('/api/logs/system_users'),
 
-  // Operators & People
-  listOperators: () => apiRequest('/api/logs/system_users?limit=200'),
+  // Dashboard Operators
+  createOperator: (payload) => apiRequest('/api/v1/operators', { method: 'POST', body: payload }),
   provisionOperator: (payload) => apiRequest('/api/provision/user', { method: 'POST', body: payload }),
-  deleteOperator: (id) => apiRequest(`/api/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  listPeople: (params = {}) => {
-    const q = new URLSearchParams();
-    if (params.search) q.set('search', params.search);
-    if (params.limit) q.set('limit', String(params.limit));
-    const qs = q.toString();
-    return apiRequest(`/api/people${qs ? `?${qs}` : ''}`);
-  },
-  createPerson: (payload) => apiRequest('/api/people', { method: 'POST', body: payload }),
+  updateOperatorRole: (payload) => apiRequest('/api/users/role', { method: 'POST', body: payload }),
+  deleteOperator: (id) => apiRequest(`/api/users/${encodeURIComponent(id)}`, { method: 'DELETE', body: {} }),
 
-  // Simulator (only active when backend simulator mode is enabled)
+  // Facility People & Physical Credentials (/api/v1/people)
+  listPeople: (params = {}) => apiRequest(`/api/v1/people${buildQuery(params)}`),
+  createPerson: (payload) => apiRequest('/api/v1/people', { method: 'POST', body: payload }),
+  updatePerson: (personId, payload) =>
+    apiRequest(`/api/v1/people/${encodeURIComponent(personId)}`, { method: 'PUT', body: payload }),
+  addCredential: (personId, payload) =>
+    apiRequest(`/api/v1/people/${encodeURIComponent(personId)}/credentials`, { method: 'POST', body: payload }),
+  setCredentialState: (credentialId, status) =>
+    apiRequest(`/api/v1/credentials/${encodeURIComponent(credentialId)}`, { method: 'PUT', body: { status } }),
+  startEnrollment: (personId) =>
+    apiRequest(`/api/v1/people/${encodeURIComponent(personId)}/cards/enrollment-sessions`, { method: 'POST', body: {} }),
+  getEnrollment: (sessionId) =>
+    apiRequest(`/api/v1/enrollment-sessions/${encodeURIComponent(sessionId)}`),
+  finishEnrollment: (sessionId, action) =>
+    apiRequest(`/api/v1/enrollment-sessions/${encodeURIComponent(sessionId)}/${encodeURIComponent(action)}`, {
+      method: 'POST',
+      body: {}
+    }),
+
+  // Simulator (only available when backend runs in simulator mode)
   triggerSimulatorScenario: (scenario) =>
     apiRequest('/api/v1/simulator', { method: 'POST', body: { scenario } })
 };

@@ -1,264 +1,287 @@
 // LCI-SFM Generic Endpoint Widget Engine
-// Renders any registered endpoint purely from Capability + DataType metadata with zero sensor-specific page code.
+// Renders SENSOR (NUMBER/BOOLEAN), SWITCH, ACCESS, CAMERA, and UNSUPPORTED widgets strictly from metadata.
 
 import { api } from './api.js';
 import { store, isAdmin, showToast, confirmDialog } from './store.js';
-import { el, formatAge, formatEndpointValue, buildSparklineSvg } from './utils.js';
+import { el, clear, formatAge, formatEndpointValue, buildSparklineSvg, svgIcon } from './utils.js';
+import { statusIndicator } from './components/ui.js';
 
-export function resolveWidgetType(endpoint) {
-  const kind = String(endpoint.kind || '').toUpperCase();
-  const dataType = String(endpoint.data_type || '').toUpperCase();
-  if (kind === 'CAMERA' || dataType === 'MEDIA') return 'CAMERA_SNAPSHOT';
-  if (kind === 'ACCESS') return 'ACCESS_STATE';
-  if (kind === 'SWITCH' || (endpoint.writable && dataType === 'ENUM')) return 'SWITCH_CONTROL';
-  if (dataType === 'BOOLEAN') return 'BOOLEAN_STATE';
-  if (dataType === 'NUMBER' || kind === 'SENSOR') return 'METRIC_TREND';
-  return 'UNSUPPORTED';
+function getLiveValue(device, ep) {
+  const live = store.latestTelemetryByDevice.get(device.device_id);
+  if (live && live.endpoints && Object.prototype.hasOwnProperty.call(live.endpoints, ep.endpoint_key)) {
+    return { value: live.endpoints[ep.endpoint_key], observedAt: live.ts };
+  }
+  return { value: ep.last_value, observedAt: ep.last_seen_at };
 }
 
-export function renderEndpointWidget(device, endpoint, options = {}) {
-  const widgetType = resolveWidgetType(endpoint);
-  const navigate = options.navigate || (() => {});
-  const onRefresh = options.onRefresh || (() => {});
+function getEndpointFreshnessState(device, ep) {
+  if (!device.enabled || device.archived) return 'DISABLED';
+  if (device.in_maintenance) return 'MAINTENANCE';
+  if (ep.status === 'ONLINE' || ep.fresh) return 'FRESH';
+  if (ep.status === 'STALE') return 'STALE';
+  return 'UNKNOWN';
+}
 
-  // Combine latest server-persisted endpoint state with live WS telemetry overlay
-  const liveMap = store.latestTelemetryByDevice.get(device.device_id);
-  const liveVal = liveMap?.endpoints?.[endpoint.endpoint_key];
-  const hasLive = liveVal !== undefined;
-  const value = hasLive ? liveVal : endpoint.last_value;
-  const lastSeenAt = hasLive ? liveMap.ts : endpoint.last_seen_at;
-  const freshness = hasLive
-    ? 'LIVE'
-    : endpoint.freshness || (lastSeenAt ? 'STALE' : 'UNSEEN');
+export function renderEndpointWidget(device, ep, { navigate, onMutated }) {
+  const widgetType = ep.widget_type || 'UNSUPPORTED';
+  const admin = isAdmin();
+  const { value, observedAt } = getLiveValue(device, ep);
+  const freshness = getEndpointFreshnessState(device, ep);
 
-  const card = el('article', {
-    class: `card endpoint-widget widget-${widgetType.toLowerCase()}`,
-    dataset: { endpointKey: endpoint.endpoint_key, widgetType }
-  });
+  const card = el('article', { class: 'card widget-card' });
 
-  // Top Header: Label + Freshness Indicator (Zero static pill badges)
-  const freshnessDotClass =
-    freshness === 'LIVE' || freshness === 'FRESH'
-      ? 'dot-ok'
-      : freshness === 'STALE'
-        ? 'dot-warn'
-        : 'dot-muted';
-
-  const header = el('div', { class: 'endpoint-widget-head' }, [
-    el('div', { class: 'endpoint-widget-title-wrap' }, [
-      el('button', {
-        type: 'button',
-        class: 'link-title',
-        text: endpoint.label || endpoint.endpoint_key,
-        onClick: () =>
-          navigate(
-            `/app/devices/${encodeURIComponent(device.device_id)}/endpoints/${encodeURIComponent(endpoint.endpoint_key)}`
-          )
-      }),
-      el('div', {
-        class: 'endpoint-meta-line mono',
-        text: `${endpoint.endpoint_key} · ${endpoint.kind} · ${endpoint.data_type || 'NUMBER'}`
-      })
-    ]),
-    el('div', { class: 'status-inline' }, [
-      el('span', { class: `status-dot ${freshnessDotClass}`, 'aria-hidden': 'true' }),
-      el('span', { class: 'status-label tabular-nums', text: freshness === 'LIVE' || freshness === 'FRESH' ? formatAge(lastSeenAt) : freshness })
+  // Header
+  card.appendChild(
+    el('div', { class: 'row-between' }, [
+      el('div', { class: 'stack-xs' }, [
+        el('div', { class: 'font-semibold', text: ep.label || ep.endpoint_key }),
+        el('div', { class: 'mono text-xs text-muted', text: `${ep.endpoint_key} · ${ep.kind}/${ep.data_type}` })
+      ]),
+      statusIndicator(freshness, freshness === 'UNKNOWN' ? 'Unseen' : undefined, { compact: true })
     ])
-  ]);
-  card.appendChild(header);
+  );
 
   // Body by resolved widget type
   if (widgetType === 'METRIC_TREND') {
-    const series = store.telemetrySeries.get(`${device.device_id}:${endpoint.endpoint_key}`) || [];
-    const displayVal = formatEndpointValue(value, endpoint);
+    const series = store.telemetrySeries.get(`${device.device_id}:${ep.endpoint_key}`) || [];
     card.appendChild(
-      el('div', { class: 'metric-widget-body' }, [
-        el('div', { class: 'metric-value tabular-nums', text: displayVal }),
-        buildSparklineSvg(series, { width: 120, height: 32, className: 'sparkline-svg text-accent' })
-      ])
+      el('div', { class: 'widget-reading tabular-nums', text: formatEndpointValue(value, ep) })
     );
-    if (endpoint.min_value !== null && endpoint.min_value !== undefined || endpoint.max_value !== null && endpoint.max_value !== undefined) {
-      card.appendChild(
-        el('div', {
-          class: 'endpoint-footnote tabular-nums',
-          text: `Range: ${endpoint.min_value ?? '—'} to ${endpoint.max_value ?? '—'} ${endpoint.unit || ''}`.trim()
-        })
-      );
-    }
+    card.appendChild(buildSparklineSvg(series));
   } else if (widgetType === 'BOOLEAN_STATE') {
-    const isTrue = value === true || value === 1 || String(value).toUpperCase() === 'TRUE';
-    const isKnown = value !== null && value !== undefined;
-    const stateLabel = !isKnown ? 'NO DATA' : isTrue ? 'ACTIVE / TRUE' : 'NORMAL / FALSE';
+    const hasVal = typeof value === 'boolean';
+    const label = !hasVal ? 'Awaiting state' : value ? 'ACTIVE (TRUE)' : 'NORMAL (FALSE)';
     card.appendChild(
-      el('div', { class: 'boolean-widget-body' }, [
-        el('span', {
-          class: `state-readout ${!isKnown ? 'text-muted' : isTrue ? 'text-warn' : 'text-ok'}`,
-          text: stateLabel
-        })
+      el('div', { class: 'stack-xs' }, [
+        hasVal
+          ? statusIndicator(value ? 'WARNING' : 'OK', label)
+          : statusIndicator('UNKNOWN', label),
+        el('div', { class: 'text-xs text-muted', text: 'Binary detector reading (no synthetic numeric unit).' })
       ])
     );
   } else if (widgetType === 'SWITCH_CONTROL') {
-    const stateStr = value !== null && value !== undefined ? String(value).toUpperCase() : 'UNKNOWN';
-    const allowed = Array.isArray(endpoint.allowed_values) && endpoint.allowed_values.length >= 2
-      ? endpoint.allowed_values
-      : ['ON', 'OFF'];
-    const canWrite = isAdmin() && endpoint.writable && device.enabled && !device.archived_at;
-    const statusNote = el('div', { class: 'endpoint-footnote tabular-nums', text: `Observed state: ${stateStr}` });
-
-    const dispatchSwitch = async (targetVal, btn) => {
-      if (!canWrite) return;
-      btn.disabled = true;
-      statusNote.textContent = `Dispatching ${targetVal}...`;
-      try {
-        const res = await api.sendDeviceCommand(device.device_id, {
-          endpoint_key: endpoint.endpoint_key,
-          value: targetVal
-        });
-        const st = res?.command?.lifecycle_state || res?.status || 'PUBLISHED';
-        statusNote.textContent = `Command ${String(st).toUpperCase()}`;
-        showToast('Command dispatched', `${device.name} · ${endpoint.label} -> ${targetVal} (${st})`, 'success');
-        onRefresh();
-      } catch (err) {
-        statusNote.textContent = `Failed: ${err.message}`;
-        showToast('Command failed', err.message, 'error');
-      } finally {
-        btn.disabled = false;
-      }
-    };
-
-    const controls = el(
-      'div',
-      { class: 'switch-controls' },
-      allowed.slice(0, 4).map((opt) => {
-        const valStr = String(opt);
-        const isActive = stateStr === valStr.toUpperCase();
-        const btn = el('button', {
-          type: 'button',
-          class: isActive ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm',
-          text: valStr,
-          disabled: !canWrite,
-          title: canWrite ? `Set ${endpoint.label} to ${valStr}` : 'Admin access & enabled device required'
-        });
-        btn.addEventListener('click', () => dispatchSwitch(valStr, btn));
-        return btn;
-      })
-    );
-
+    const strVal = value === null || value === undefined ? 'Unknown' : String(value);
+    const isOn = strVal === 'ON' || value === true;
     card.appendChild(
-      el('div', { class: 'switch-widget-body' }, [
-        el('div', { class: 'metric-value-sm tabular-nums', text: stateStr }),
-        controls,
-        statusNote
+      el('div', { class: 'row-between' }, [
+        el('div', { class: 'widget-reading mono', text: strVal }),
+        ep.writable ? el('span', { class: 'meta-tag', text: 'Writable' }) : el('span', { class: 'meta-tag', text: 'Read-only' })
       ])
     );
-  } else if (widgetType === 'ACCESS_STATE') {
-    const stateStr = value !== null && value !== undefined ? String(value).toUpperCase() : 'UNKNOWN';
-    const canUnlock = isAdmin() && device.enabled && !device.archived_at;
-    const unlockBtn = el('button', {
-      type: 'button',
-      class: 'btn btn-danger btn-sm',
-      text: 'Emergency Unlock',
-      disabled: !canUnlock,
-      title: canUnlock ? 'Dispatch audited emergency door unlock' : 'Admin privilege required'
-    });
-    unlockBtn.addEventListener('click', async () => {
-      const confirmed = await confirmDialog({
-        title: 'Confirm Emergency Door Unlock',
-        subtitle: 'Audited Physical Access Override',
-        message: 'This dispatches an immediate door unlock command over the local network and records an operator audit entry. Edge safety interlocks remain autonomous.',
-        confirmLabel: 'Confirm & Unlock',
-        danger: true,
-        specs: [
-          ['Device', `${device.name} (${device.device_id})`],
-          ['Endpoint', endpoint.endpoint_key],
-          ['Action', 'EMERGENCY_DOOR_UNLOCK -> OPEN']
-        ]
-      });
-      if (!confirmed) return;
-      unlockBtn.disabled = true;
-      try {
-        await api.sendLegacyCommand({ command: 'EMERGENCY_DOOR_UNLOCK', state: 'OPEN' });
-        showToast('Emergency unlock dispatched', 'Command logged to SQLite audit trail.', 'warning');
-        onRefresh();
-      } catch (err) {
-        showToast('Unlock failed', err.message, 'error');
-      } finally {
-        unlockBtn.disabled = false;
-      }
-    });
 
-    card.appendChild(
-      el('div', { class: 'access-widget-body' }, [
-        el('div', { class: 'metric-value-sm tabular-nums', text: stateStr }),
-        unlockBtn
-      ])
-    );
-  } else if (widgetType === 'CAMERA_SNAPSHOT') {
-    const previewWrap = el('div', { class: 'camera-snapshot-frame' });
-    const statusText = el('span', { class: 'text-muted', text: 'Click Refresh Snapshot to fetch authenticated frame' });
-    previewWrap.appendChild(statusText);
-
-    const loadSnap = async () => {
-      statusText.textContent = 'Requesting frame from local camera proxy...';
-      try {
-        const res = await fetch(
-          `/api/v1/registry/${encodeURIComponent(device.device_id)}/snapshot?t=${Date.now()}`,
-          { credentials: 'same-origin' }
-        );
-        if (!res.ok) {
-          const errJson = await res.json().catch(() => ({}));
-          throw new Error(errJson.message || `HTTP ${res.status}`);
+    if (admin && ep.writable && device.transport === 'MQTT_V1' && device.enabled && !device.archived) {
+      const dispatchSwitch = async (targetVal) => {
+        const ok = await confirmDialog({
+          title: `Set ${ep.label || ep.endpoint_key} to ${targetVal}?`,
+          subtitle: 'MQTT_V1 Switch Command',
+          message:
+            'This publishes a non-retained MQTT command and tracks PUBLISHED -> ACKNOWLEDGED -> STATE_REPORTED. Publishing alone does not prove physical relay actuation.',
+          confirmLabel: `Send ${targetVal}`,
+          specs: [
+            ['Device', `${device.name} (${device.device_id})`],
+            ['Endpoint', ep.endpoint_key],
+            ['Requested State', targetVal]
+          ]
+        });
+        if (!ok) return;
+        try {
+          const res = await api.sendDeviceCommand(device.device_id, {
+            endpoint_key: ep.endpoint_key,
+            value: targetVal
+          });
+          showToast(
+            'Command published',
+            `Command ${res.command?.command_id?.slice(0, 8) || ''} state: ${res.command?.state || 'PUBLISHED'}`,
+            'info'
+          );
+          if (onMutated) onMutated();
+        } catch (err) {
+          showToast('Command rejected', err.message, 'error');
         }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        previewWrap.replaceChildren(
-          el('img', {
-            src: url,
-            alt: `${device.name} live snapshot`,
-            class: 'camera-snapshot-img',
-            onLoad: () => setTimeout(() => URL.revokeObjectURL(url), 5000)
+      };
+
+      card.appendChild(
+        el('div', { class: 'btn-row' }, [
+          el('button', {
+            type: 'button',
+            class: `btn btn-sm ${isOn ? 'btn-primary' : 'btn-secondary'}`,
+            disabled: device.in_maintenance || !device.fresh,
+            title: !device.fresh ? 'Fresh device observation required before switching' : undefined,
+            text: 'Set ON',
+            onClick: () => dispatchSwitch('ON')
+          }),
+          el('button', {
+            type: 'button',
+            class: `btn btn-sm ${!isOn && strVal !== 'Unknown' ? 'btn-primary' : 'btn-secondary'}`,
+            disabled: device.in_maintenance || !device.fresh,
+            title: !device.fresh ? 'Fresh device observation required before switching' : undefined,
+            text: 'Set OFF',
+            onClick: () => dispatchSwitch('OFF')
           })
-        );
-      } catch (err) {
-        previewWrap.replaceChildren(
-          el('div', { class: 'camera-snapshot-error', text: `Snapshot unavailable: ${err.message}` })
+        ])
+      );
+      if (!device.fresh) {
+        card.appendChild(
+          el('div', { class: 'text-xs text-muted', text: 'Control disabled until fresh device telemetry/heartbeat arrives.' })
         );
       }
-    };
+    } else if (admin && device.slot === 'node2' && (ep.endpoint_key === 'fan_relay' || ep.endpoint_key === 'light_state')) {
+      const legacyCmd = ep.endpoint_key === 'fan_relay' ? 'TOGGLE_HVAC_FAN' : 'TOGGLE_AUX_LIGHT';
+      const sendLegacy = async (state) => {
+        const ok = await confirmDialog({
+          title: `Dispatch ${legacyCmd} (${state})?`,
+          subtitle: 'Audited Legacy Node Command',
+          message: 'Publishes an audited command to the built-in environmental controller via the central backend.',
+          confirmLabel: `Send ${state}`,
+          specs: [
+            ['Target Node', device.device_id],
+            ['Command', legacyCmd],
+            ['State', state]
+          ]
+        });
+        if (!ok) return;
+        try {
+          const res = await api.sendLegacyCommand({ command: legacyCmd, state });
+          showToast('Command dispatched', `Lifecycle: ${res.lifecycle_state || 'published'}`, 'info');
+          if (onMutated) onMutated();
+        } catch (err) {
+          showToast('Command failed', err.message, 'error');
+        }
+      };
+      card.appendChild(
+        el('div', { class: 'btn-row' }, [
+          el('button', { type: 'button', class: 'btn btn-secondary btn-sm', text: 'ON', onClick: () => sendLegacy('ON') }),
+          el('button', { type: 'button', class: 'btn btn-secondary btn-sm', text: 'OFF', onClick: () => sendLegacy('OFF') })
+        ])
+      );
+    }
+  } else if (widgetType === 'ACCESS_STATE') {
+    const strVal = value === null || value === undefined ? 'Unknown' : String(value);
+    card.appendChild(
+      el('div', { class: 'stack-xs' }, [
+        el('div', { class: 'widget-reading mono', text: strVal }),
+        el('div', {
+          class: 'text-xs text-muted',
+          text: 'Edge access controller retains local safety & break-glass egress independence.'
+        })
+      ])
+    );
 
-    const refreshBtn = el('button', {
+    if (admin && device.slot === 'node1') {
+      card.appendChild(
+        el('div', { class: 'btn-row' }, [
+          el('button', {
+            type: 'button',
+            class: 'btn btn-danger btn-sm',
+            onClick: async () => {
+              const ok = await confirmDialog({
+                title: 'Dispatch Emergency Door Unlock?',
+                subtitle: 'Safety-Audited Remote Override',
+                danger: true,
+                message:
+                  'This sends an audited EMERGENCY_DOOR_UNLOCK command to the access controller. Physical emergency egress must remain independently operable.',
+                confirmLabel: 'Dispatch Emergency Unlock',
+                specs: [
+                  ['Target Controller', `${device.name} (${device.device_id})`],
+                  ['Command', 'EMERGENCY_DOOR_UNLOCK'],
+                  ['Requested State', 'OPEN']
+                ]
+              });
+              if (!ok) return;
+              try {
+                const res = await api.sendLegacyCommand({ command: 'EMERGENCY_DOOR_UNLOCK', state: 'OPEN' });
+                showToast('Override dispatched', `Lifecycle: ${res.lifecycle_state || 'published'}`, 'warning');
+                if (onMutated) onMutated();
+              } catch (err) {
+                showToast('Override failed', err.message, 'error');
+              }
+            }
+          }, [svgIcon('icon-lock', 14), el('span', { text: 'Emergency Unlock' })])
+        ])
+      );
+    }
+  } else if (widgetType === 'CAMERA_SNAPSHOT') {
+    const frameBox = el('div', { class: 'camera-preview-frame' }, [
+      el('span', {
+        class: 'text-xs text-muted',
+        text: device.simulation
+          ? 'Isolated simulator: upstream camera capture disabled'
+          : 'No snapshot loaded yet — click Capture Snapshot'
+      })
+    ]);
+    let activeBlobUrl = null;
+    const captureBtn = el('button', {
       type: 'button',
       class: 'btn btn-secondary btn-sm',
-      text: 'Refresh Snapshot',
-      onClick: loadSnap
+      disabled: device.simulation || !device.enabled || device.archived,
+      text: 'Capture Snapshot',
+      onClick: async () => {
+        captureBtn.disabled = true;
+        captureBtn.textContent = 'Capturing...';
+        try {
+          const blob = await api.getCameraSnapshotBlob(device.device_id);
+          if (activeBlobUrl) URL.revokeObjectURL(activeBlobUrl);
+          activeBlobUrl = URL.createObjectURL(blob);
+          clear(frameBox);
+          frameBox.appendChild(
+            el('img', {
+              src: activeBlobUrl,
+              alt: `${device.name} authenticated backend JPEG snapshot`
+            })
+          );
+          showToast('Snapshot captured', 'Fetched via authenticated backend proxy.', 'success');
+        } catch (err) {
+          clear(frameBox);
+          frameBox.appendChild(
+            el('span', {
+              class: 'text-xs text-warn',
+              text: err.message || 'Camera in standby or unreachable.'
+            })
+          );
+          showToast('Snapshot unavailable', err.message, 'warning');
+        } finally {
+          captureBtn.disabled = device.simulation || !device.enabled || device.archived;
+          captureBtn.textContent = 'Capture Snapshot';
+        }
+      }
     });
 
+    card.appendChild(frameBox);
     card.appendChild(
-      el('div', { class: 'camera-widget-body' }, [previewWrap, refreshBtn])
+      el('div', { class: 'row-between' }, [
+        captureBtn,
+        el('span', { class: 'text-xs text-muted', text: 'Via /api/v1/registry/:id/snapshot' })
+      ])
     );
   } else {
     card.appendChild(
-      el('div', { class: 'unsupported-widget-body' }, [
-        el('div', { class: 'metric-value-sm tabular-nums', text: formatEndpointValue(value, endpoint) }),
-        el('div', { class: 'endpoint-footnote', text: `Generic renderer (${endpoint.kind}/${endpoint.data_type || 'UNKNOWN'})` })
-      ])
+      el('div', {
+        class: 'text-xs text-muted',
+        text: `Unsupported widget profile (${ep.kind}/${ep.data_type}). Raw value: ${formatEndpointValue(value, ep)}`
+      })
     );
   }
 
-  // Footer link to endpoint history
-  const footer = el('div', { class: 'endpoint-widget-foot' }, [
-    el('span', { class: 'text-muted tabular-nums', text: lastSeenAt ? `Updated ${formatAge(lastSeenAt)}` : 'Awaiting first frame' }),
-    el('button', {
-      type: 'button',
-      class: 'btn-link',
-      text: 'History →',
-      onClick: () =>
-        navigate(
-          `/app/devices/${encodeURIComponent(device.device_id)}/endpoints/${encodeURIComponent(endpoint.endpoint_key)}`
-        )
-    })
-  ]);
-  card.appendChild(footer);
+  // Footer: observed age + history drilldown
+  card.appendChild(
+    el('div', { class: 'row-between' }, [
+      el('span', {
+        class: 'text-xs text-muted mono tabular-nums',
+        text: observedAt ? `Observed ${formatAge(observedAt)}` : 'Never observed'
+      }),
+      ep.kind !== 'CAMERA'
+        ? el('button', {
+            type: 'button',
+            class: 'btn btn-ghost btn-sm',
+            text: 'History →',
+            onClick: () =>
+              navigate(
+                `/app/devices/${encodeURIComponent(device.device_id)}/endpoints/${encodeURIComponent(ep.endpoint_key)}`
+              )
+          })
+        : null
+    ])
+  );
 
   return card;
 }
