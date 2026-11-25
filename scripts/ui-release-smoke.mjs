@@ -234,6 +234,14 @@ try {
   await page.waitForSelector('text=viewer_ui');
   await page.getByRole('tab', { name: 'Facility People & Credentials' }).click();
   await page.waitForSelector('text=Physical Credential Policy Boundary');
+  await page.getByRole('button', { name: 'Add Account / Person' }).click();
+  await modal.waitFor({ state: 'visible' });
+  await modal.locator('input').first().fill('Reader UI Smoke Person');
+  await modal.getByRole('button', { name: 'Add Person' }).click();
+  await page.getByText('Reader UI Smoke Person').waitFor();
+  await page.getByRole('button', { name: 'Scan on Reader' }).first().click();
+  await modal.getByText(/door reader must be online/i).waitFor({ state: 'visible' });
+  await modal.getByRole('button', { name: 'Close' }).click();
 
   // 10. Visit remaining core routes & verify zero errors
   for (const route of ['/app/overview', '/app/notifications', '/app/diagnostics', '/app/settings', '/app/profile']) {
