@@ -880,7 +880,7 @@ export function renderUsersPage() {
                       text: p.status === 'ACTIVE' ? 'Suspend' : 'Activate',
                       onClick: async () => {
                         try {
-                          await api.updatePerson(p.person_id || p.id, {
+                          await api.updatePerson(p.subject_id, {
                             display_name: p.display_name,
                             reference: p.reference || '',
                             status: p.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE',
