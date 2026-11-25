@@ -362,14 +362,6 @@ try {
   await page.goto(`${baseUrl}/app/users`, { waitUntil: 'networkidle' });
   const viewerRow = page.locator('tr').filter({ hasText: 'viewer_ui' });
   await viewerRow.getByRole('button', { name: 'Delete' }).click();
-  await page.waitForURL(`${baseUrl}/login`);
-  await page.fill('#login-username', 'admin');
-  await page.fill('#login-password', adminPass);
-  await page.click('#login-submit-btn');
-  await page.waitForURL(`${baseUrl}/app/overview`);
-  await page.goto(`${baseUrl}/app/users`, { waitUntil: 'networkidle' });
-  const viewerRow = page.locator('tr').filter({ hasText: 'viewer_ui' });
-  await viewerRow.getByRole('button', { name: 'Delete' }).click();
   await modal.waitFor({ state: 'visible' });
   const deleteOperatorPromise = page.waitForResponse((response) =>
     response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/users/delete'
