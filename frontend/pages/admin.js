@@ -167,9 +167,9 @@ export function renderDiagnosticsPage({ navigate }) {
           keyValueList([
             { label: 'MQTT Enabled', value: mqtt.enabled === false ? 'No (Standby)' : 'Yes' },
             { label: 'Subscriptions', value: mqtt.subscriptions_ready ? 'Verified' : mqtt.enabled === false ? 'N/A' : 'Degraded' },
-            { label: 'WS Telemetry Clients', value: String(ws.telemetry ?? 0), mono: true },
-            { label: 'WS Notification Clients', value: String(ws.notifications ?? 0), mono: true },
-            { label: 'WS MFA Clients', value: String(ws.mfa ?? 0), mono: true }
+            { label: 'WS Telemetry Clients', value: String(ws.telemetryClients ?? 0), mono: true },
+            { label: 'WS Notification Clients', value: String(ws.notificationClients ?? 0), mono: true },
+            { label: 'WS MFA Clients', value: String(ws.mfaClients ?? 0), mono: true }
           ])
         ]),
         el('section', { class: 'card stack-sm' }, [
